@@ -78,6 +78,8 @@ def move_hand(dx, dy, dz):
 
 def key_callback(keycode):
 
+    # ---------- 前后左右 ----------
+
     # ↑ 前
     if keycode == 265:
         move_hand(STEP, 0, 0)
@@ -98,26 +100,41 @@ def key_callback(keycode):
         move_hand(0, -STEP, 0)
         print("右")
 
-    # Page Up：上
-    elif keycode == 266:
+    # ---------- 上下 ----------
+
+    # I：上
+    elif keycode == ord('I') or keycode == ord('i'):
         move_hand(0, 0, STEP)
         print("上")
 
-    # Page Down：下
-    elif keycode == 267:
+    # K：下
+    elif keycode == ord('K') or keycode == ord('k'):
         move_hand(0, 0, -STEP)
         print("下")
 
+    # ---------- 夹爪 ----------
+
+    # J：张开
+    elif keycode == ord('J') or keycode == ord('j'):
+        data.ctrl[7] = 255
+        print("夹爪张开")
+
+    # L：闭合
+    elif keycode == ord('L') or keycode == ord('l'):
+        data.ctrl[7] = 0
+        print("夹爪闭合")
+        
 with mujoco.viewer.launch_passive(
     model,
     data,
     key_callback=key_callback
 ) as viewer:
 
-    print("↑ ↓ ← → = 平面移动")
-    print("Page Up = 上")
-    print("Page Down = 下")
-
+    print("====== Panda 键盘控制 ======")
+    print("↑ ↓ ← → : 前后左右")
+    print("I / K     : 上 / 下")
+    print("J / L     : 张开 / 闭合夹爪")
+    print("===========================")
     while viewer.is_running():
 
         mujoco.mj_step(model, data)
