@@ -3,8 +3,9 @@ import mujoco
 import mujoco.viewer
 
 model = mujoco.MjModel.from_xml_path(
-    "mujoco_menagerie/franka_emika_panda/push_scene.xml"
+    "mujoco_menagerie/franka_emika_panda/scene.xml"
 )
+
 data = mujoco.MjData(model)
 
 with mujoco.viewer.launch_passive(model, data) as viewer:
