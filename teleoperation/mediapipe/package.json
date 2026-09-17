@@ -1,0 +1,16 @@
+{
+  "name": "interaction-demo",
+  "version": "1.0.0",
+  "description": "A browser-based hand landmark demo powered by MediaPipe Gesture Recognizer.",
+  "scripts": {
+    "test": "node --check app.js && node --check server.js && node --test interaction-state.test.js",
+    "start": "node server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@mediapipe/tasks-vision": "^1.0.1"
+  },
+  "type": "module"
+}

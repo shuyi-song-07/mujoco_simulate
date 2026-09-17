@@ -1,0 +1,41 @@
+<mujoco model="panda push task">
+
+    <!-- 导入 Panda -->
+    <include file="../mujoco_menagerie/franka_emika_panda/panda.xml"/>
+    <worldbody>
+
+        <!-- 灯光 -->
+        <light pos="0 0 2" dir="0 0 -1"/>
+
+        <!-- 地面 -->
+        <geom
+            name="floor"
+            type="plane"
+            size="2 2 0.1"
+            rgba="0.8 0.8 0.8 1"
+        />
+
+        <!-- 桌子 -->
+        <body name="table" pos="0.5 0 0.2">
+            <geom
+                type="box"
+                size="0.4 0.5 0.2"
+                rgba="0.6 0.4 0.2 1"
+            />
+        </body>
+
+        <!-- 可以被推动的方块 -->
+        <body name="cube" pos="0.5 0 0.45">
+            <freejoint/>
+
+            <geom
+                type="box"
+                size="0.04 0.04 0.04"
+                mass="0.1"
+                rgba="1 0 0 1"
+            />
+        </body>
+
+    </worldbody>
+
+</mujoco>

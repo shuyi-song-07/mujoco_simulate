@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="使用 MediaPipe 绘制实时手部关键点的网页 Demo" />
+    <title>Gesture Interaction</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="hero">
+        <p class="eyebrow">MEDIAPIPE · GESTURE RECOGNIZER</p>
+        <h1>Gesture Interaction</h1>
+        <p class="intro">用摄像头识别手势并控制 MuJoCo Panda，同时将成功操作保存为 LeRobot demonstrations。</p>
+        <div class="feature-list" aria-label="项目特性">
+          <span>21 个手部关键点</span>
+          <span>CPU 实时识别</span>
+          <span>本地隐私处理</span>
+        </div>
+      </header>
+
+      <section class="demo-panel" aria-labelledby="camera-title">
+        <div class="panel-heading">
+          <div>
+            <p class="step-label">实时检测</p>
+            <h2 id="camera-title">摄像头画面</h2>
+          </div>
+          <div id="status" class="status" role="status" aria-live="polite">
+            <span class="status-dot" aria-hidden="true"></span>
+            <span id="status-text">等待启动</span>
+          </div>
+        </div>
+
+        <div class="camera-stage">
+          <video id="webcam" autoplay playsinline muted></video>
+          <canvas id="output-canvas" aria-label="手部关键点绘制层"></canvas>
+          <div id="camera-placeholder" class="camera-placeholder">
+            <span class="hand-icon" aria-hidden="true">✋</span>
+            <span class="loading-spinner" aria-hidden="true"></span>
+            <p id="camera-placeholder-text">点击下方按钮开启摄像头</p>
+          </div>
+        </div>
+
+        <div class="controls">
+          <button id="camera-button" type="button">启动摄像头</button>
+          <p class="privacy-note">视频只在当前浏览器中处理，不会上传。</p>
+        </div>
+
+        <div id="app-notice" class="app-notice" role="alert" hidden>
+          <span class="notice-icon" aria-hidden="true">!</span>
+          <div>
+            <strong id="app-notice-title"></strong>
+            <p id="app-notice-text"></p>
+          </div>
+        </div>
+
+        <div class="recognition-panel" aria-labelledby="recognition-title">
+          <div class="recognition-heading">
+            <div>
+              <p class="step-label">识别结果</p>
+              <h2 id="recognition-title">当前手势</h2>
+            </div>
+            <span class="result-hint">最多显示两只手</span>
+          </div>
+          <div id="recognition-results" class="recognition-results" aria-live="polite">
+            <p class="empty-result">启动摄像头并将手放入画面</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="robot-panel" aria-labelledby="robot-title">
+        <div class="robot-heading">
+          <div>
+            <p class="step-label">MUJOCO · LEROBOT</p>
+            <h2 id="robot-title">Panda 数据收集</h2>
+          </div>
+          <div id="robot-status" class="status" data-state="error" role="status" aria-live="polite">
+            <span class="status-dot" aria-hidden="true"></span>
+            <span id="robot-status-text">MuJoCo 未连接</span>
+          </div>
+        </div>
+
+        <p class="robot-help">张开手掌或握拳时，上下移动手控制直线升降；抓住方块并将方块抬到约 0.50 m 后自动锁定 Z、切换为俯视视角。方块靠近圆心（约 5 cm 内）并稳定后才自动解锁、恢复斜视角；若仍夹着方块移出圆盘，会重新锁定 Z 并恢复俯视。三个相隔约 120° 的固定第三人称相机全程同步录制 visual observation；action 同步记录底座坐标系下的 XYZ、RX/RY/RZ 和夹爪目标。</p>
+
+        <section id="side-preview-panel" class="side-preview-panel" hidden aria-labelledby="side-preview-title">
+          <div class="side-preview-heading">
+            <div>
+              <p class="step-label">实时辅助视角</p>
+              <h3 id="side-preview-title">侧视 + 正面辅助</h3>
+            </div>
+            <span>仅用于操作，不写入训练数据</span>
+          </div>
+          <div class="aux-preview-grid">
+            <figure>
+              <img id="side-preview-image" alt="MuJoCo Panda 侧视辅助画面" />
+              <figcaption>侧视图</figcaption>
+            </figure>
+            <figure>
+              <img id="front-preview-image" alt="MuJoCo Panda 正面辅助画面" />
+              <figcaption>正面图</figcaption>
+            </figure>
+          </div>
+        </section>
+
+        <div class="robot-controls">
+          <button id="record-start" type="button">开始录制</button>
+          <button id="record-save" type="button">成功并保存</button>
+          <button id="record-discard" type="button">失败并重录</button>
+          <button id="record-stop" type="button">结束录制</button>
+        </div>
+
+        <p id="robot-feedback" class="robot-feedback" role="status" aria-live="polite">等待连接 MuJoCo…</p>
+
+        <div class="robot-gesture-guide">
+          <div><code>Open_Palm</code><strong>松开夹爪 / 手上下控制升降</strong></div>
+          <div><code>Closed_Fist</code><strong>闭合夹爪 / 手上下控制升降</strong></div>
+          <div><code>Victory</code><strong>左右移动</strong></div>
+          <div><code>Thumb_Up</code><strong>前后移动</strong></div>
+          <div><code>ILoveYou</code><strong>斜向移动</strong></div>
+        </div>
+      </section>
+
+    </main>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

@@ -2,6 +2,7 @@
 .venv/
 venv/
 env/
+node_modules/
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -30,6 +31,7 @@ runs/
 wandb/
 outputs/
 checkpoints/
+.cache/
 
 # Large datasets and recordings
 data/
