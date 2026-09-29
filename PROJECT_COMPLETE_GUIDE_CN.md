@@ -1,824 +1,575 @@
-# 手势遥操作 MuJoCo Panda、LeRobot 数据采集与 ACT Baseline 项目全解
+# 基于视觉手势驱动的机器人遥操作与示范数据采集系统 Guide
 
-> 本文档按照当前项目的实际代码与数据编写，目标是让项目成员能够理解、运行、讲解、复查并独立复现整个系统。
+> 本文档是项目唯一的总体 Guide，用于说明研究目标、系统结构、当前实现、任务规划、数据规范、训练评估和真机扩展路线。项目运行命令以根目录 [README.md](README.md) 为准。
 
-## 1. 项目概述
+## 1. 项目定位
 
-本项目构建了一个在 Mac 上运行的机器人学习数据采集系统。操作者通过电脑摄像头做手势，网页使用 MediaPipe 识别手势，Python 后端把手势转换为 Panda 机械臂末端运动，MuJoCo 执行物理仿真，同时将机器人状态、动作目标和三个固定相机的 RGB 图像同步保存为 LeRobot Dataset v3 数据。
+本项目研发一套低成本、轻量化、可扩展的纯视觉手势遥操作与机器人学习系统。系统使用普通 RGB 摄像头捕捉人体手势，通过 MediaPipe 获取手部关键点和手势类别，将人的连续运动与离散意图映射为机器人末端执行器控制指令。
 
-系统当前完成的任务是：
-
-1. Panda 机械臂接近并抓住桌面上的方块；
-2. 将方块抬升到运输高度；
-3. 锁定末端执行器 Z 高度，在水平面内搬运方块；
-4. 到达白色圆盘中心附近后解除 Z 锁定；
-5. 下降并松开夹爪，将方块放在圆盘上；
-6. 将整段过程保存为一条 demonstration（一个 episode）。
-
-它包含三个层次：
-
-- **复现**：运行并理解 MediaPipe、MuJoCo、LeRobot 和 ACT 的开源能力；
-- **任务适配**：把手势识别接到 MuJoCo Panda，并定义抓取放置任务规则；
-- **二次开发**：增加 Z 锁定、视角切换、多相机同步、随机布局、独立 episode 视频和控制积压治理。
-
-## 2. 完整技术路线
+项目不仅用于控制机器人，还要打通完整的机器人学习流程：
 
 ```text
-Mac 摄像头
+视觉手势遥操作
     ↓
-浏览器 getUserMedia 获取视频
+MuJoCo 仿真任务
     ↓
-MediaPipe Gesture Recognizer（CPU）
+Demonstrations 采集与校验
     ↓
-手势名称 + 21 个手部关键点
+ACT / Diffusion Policy 等策略训练
     ↓
-JavaScript 将手腕位移映射为控制方向
+MuJoCo 闭环 Rollout 与量化评估
+    ↓
+真实机器人部署与验证
+```
+
+与专用外设相比，这套系统希望使用消费级摄像头和普通电脑降低遥操作与示范采集门槛，并从单臂任务逐步扩展到双臂协同任务。
+
+## 2. 核心目标
+
+### 2.1 构建轻量化遥操作基础
+
+- 使用普通 PC 摄像头采集手部图像；
+- 实时提取手部关键点和手势类别；
+- 将手部连续位移映射为机器人末端 XYZ 运动；
+- 将离散手势映射为夹爪或任务状态指令；
+- 通过滤波、死区和请求合并降低视觉抖动与控制延迟。
+
+### 2.2 构建高质量示范数据管线
+
+- 同步记录多视角 RGB、机器人状态和 action；
+- 为每个 episode 保存清晰边界和独立视频；
+- 随机化物体与目标初始状态；
+- 分开保存成功和失败 episode；
+- 形成可供 LeRobot 及不同 policy 读取的数据格式。
+
+### 2.3 验证任务与策略扩展性
+
+- 从 single-arm pick-and-place 开始；
+- 扩展到 single-arm pushing；
+- 进一步实现 dual-arm pushing or grasping；
+- 根据后续研究需要探索双人四臂协同。
+
+### 2.4 建立仿真到真机的验证闭环
+
+- 在仿真中完成任务、采集数据、训练和 Rollout；
+- 在真实机器人上复现视觉手势接口；
+- 加入工作空间、奇异位形和碰撞安全限制；
+- 使用真机 demonstrations 训练或调整模型；
+- 对比仿真与真实环境中的可行性和性能差异。
+
+## 3. 总体实施路线
+
+项目按四个阶段推进。
+
+### 阶段一：视觉手势交互与控制接口
+
+1. 获取摄像头画面；
+2. 运行 MediaPipe Gesture Recognizer；
+3. 提取手势类别、置信度与手部关键点；
+4. 计算手腕相对位移；
+5. 将连续位移映射为末端平移；
+6. 将离散手势映射为夹爪或任务操作；
+7. 使用死区、滤波、节流与请求合并提高稳定性。
+
+### 阶段二：仿真任务与数据采集
+
+1. 在 MuJoCo 中搭建机器人、桌面、物体和目标；
+2. 定义任务状态机和成功条件；
+3. 同步记录视觉观测、机器人状态和 action；
+4. 随机化合法的初始位姿；
+5. 对每个 episode 进行自动和人工质量检查；
+6. 输出标准化数据集。
+
+### 阶段三：策略训练与仿真闭环评估
+
+1. 使用 demonstrations 训练 ACT、Diffusion Policy 或其他 visuomotor policy；
+2. 将模型接回 MuJoCo 进行闭环 Rollout；
+3. 统计成功率、位置误差、角度误差和完成时间；
+4. 比较不同初始状态下的泛化能力；
+5. 分析多视角与人类示范对任务性能的影响。
+
+### 阶段四：真机部署与验证
+
+1. 将视觉手势接口接入真实机器人；
+2. 增加工作空间、速度、碰撞和急停限制；
+3. 采集真实机器人 demonstrations；
+4. 训练真机模型，或在已有模型基础上继续训练；
+5. 完成真实环境中的模型部署与评估。
+
+## 4. 任务规划
+
+### Task 1：单臂基础抓取与放置
+
+目标：控制单台 Panda 抓取桌面方块，并放置到指定目标区域。
+
+作用：
+
+- 验证手势到末端运动的映射；
+- 验证抓取、升高、平面运输和放置状态机；
+- 打通数据采集、校验、训练和 Rollout 的最小闭环；
+- 作为后续复杂任务的基础任务。
+
+当前状态：仿真遥操作和数据采集已经实现；policy 训练和闭环 Rollout 属于下一阶段。
+
+### Task 2：单臂复杂物体推动
+
+目标：使用单臂推动 T 形刚体，使其达到指定目标位置和方向。
+
+作用：
+
+- 研究非抓取、接触密集型操作；
+- 验证人类操作者选择接触位置和修正轨迹的能力；
+- 采集包含位置与方向调整的示范；
+- 为不同 policy 的 pushing 实验提供数据。
+
+当前状态：single-arm Push-T 仿真遥操作、随机布局、成功判定与数据采集已经实现。
+
+### Task 3：双臂协同推动或抓取
+
+目标：在同一空间中配置两台机器人，由双手分别控制左右机械臂，完成大型或不规则物体的协同推动或抓取。
+
+研究内容：
+
+- 两台机械臂的同步控制；
+- 双臂相对位姿约束；
+- 机器人之间以及机器人与环境之间的碰撞避免；
+- 双臂 observation/action schema；
+- 双臂 demonstrations 的数据表示；
+- 双臂 policy 训练与闭环评估。
+
+当前状态：计划扩展，尚未实现。
+
+### Task 4：双人四臂协同（可选远期方向）
+
+目标：引入第二位操作者和第二套视觉输入，在同一个仿真环境中共同控制四台机械臂，完成大型物体搬运等复杂协作任务。
+
+这一任务只作为后续研究方向。当前阶段应优先完成 Task 1 至 Task 3 的稳定闭环。
+
+## 5. 当前系统架构
+
+```text
+RGB 摄像头
+    ↓
+浏览器 getUserMedia
+    ↓
+MediaPipe Gesture Recognizer
+    ↓
+手势类别 + 手部关键点
+    ↓
+JavaScript 位移映射与请求合并
     ↓ HTTP/JSON
-Python Flask 控制接口（127.0.0.1:5001）
+Python 控制接口
     ↓
-末端 XYZ 增量 + 固定姿态约束
+任务状态机 + 笛卡尔末端目标
     ↓
 阻尼最小二乘逆运动学
     ↓
-Panda 7 个关节目标 + 夹爪目标
-    ↓
-MuJoCo 物理仿真
-    ├── 操作者主窗口与辅助视角
-    └── 30 FPS 同步记录 state、action、三路 RGB
+MuJoCo 关节控制与物理仿真
+    ├── 操作窗口与辅助视角
+    └── 多相机 RGB + state + action 同步录制
             ↓
-      LeRobot Dataset v3
-            ↓
-      ACT baseline 训练与推理
+       LeRobot Dataset
 ```
 
-## 3. 项目位置与目录结构
-
-项目根目录：
+## 6. 项目结构
 
 ```text
-/Users/susilyeon/Desktop/git/lerobot
+mujoco_simulate_sync/
+├── simulation/
+│   └── mujoco/
+│       ├── record_mujoco_panda.py
+│       ├── record_mujoco_push_t.py
+│       ├── render_workers.py
+│       └── assets/franka_emika_panda/
+├── teleoperation/
+│   └── mediapipe/
+├── dataset/
+│   └── demonstrations/
+├── evaluation/
+├── training/
+│   └── ACT/
+├── datasets/                  # 本地数据，默认不提交 Git
+├── outputs/                   # 训练输出，默认不提交 Git
+├── requirements.txt
+├── README.md
+└── PROJECT_COMPLETE_GUIDE_CN.md
 ```
 
-核心文件位于：
+后续新增任务或 policy 时，建议使用独立模块：
 
 ```text
-examples/mujoco_panda/
-├── PROJECT_COMPLETE_GUIDE_CN.md       # 本文档
-├── README_CN.md                       # 简明运行说明
-├── record_mujoco_panda.py             # 主控制、仿真、录制与本地 API
-├── render_workers.py                  # 训练相机、辅助相机和视频编码进程
-├── validate_multicam_dataset.py       # 数据集完整性检查
-├── analyze_action_trajectory.py       # action 轨迹分析
-├── train_act_baseline_mps.sh          # Mac MPS 上的 ACT baseline 配置
-├── assets/franka_emika_panda/         # Panda 模型、场景、网格与 XML
-└── web/
-    ├── index.html                     # 页面结构
-    ├── style.css                      # 页面外观和布局
-    ├── app.js                         # 摄像头、MediaPipe、控制与录制按钮
-    ├── interaction-state.js           # 平面手势到 XY 的映射
-    ├── interaction-state.test.js      # 网页控制映射测试
-    ├── server.js                      # localhost:8000 网页服务器和 API 代理
-    ├── package.json                   # Node.js 依赖与命令
-    └── models/gesture_recognizer.task # MediaPipe 手势模型
+simulation/mujoco/<task_name>/
+training/<policy_name>/
+evaluation/<task_or_policy_name>/
 ```
 
-数据位于：
+## 7. 当前手势控制规则
 
-```text
-datasets/
-├── mujoco_panda_pick_20260908_220959/       # 正式 50 episodes
-└── mujoco_panda_pick_act_20260903_53eps/    # 保留的旧 53 episodes
-```
+### 7.1 Pick-and-place
 
-正式 50 条数据已经上传到：
+| 手势 | 操作 |
+|---|---|
+| `Open_Palm` | 松开夹爪；手上下移动时控制末端升降 |
+| `Closed_Fist` | 闭合夹爪；手上下移动时控制末端升降 |
+| `Victory` | 左右移动 |
+| `Thumb_Up` | 前后移动 |
+| `ILoveYou` | 斜向平面移动 |
 
-```text
-https://huggingface.co/datasets/shuyisong07/act_50eps
-```
+关键状态：
 
-## 4. 环境与版本
+1. 接近并抓住方块；
+2. 抬升到运输高度；
+3. 锁定末端 Z，只允许平面运输；
+4. 到达目标中心附近并稳定后解除 Z；
+5. 下降并松开方块；
+6. 如果仍夹着方块离开目标区域，则重新锁定 Z。
 
-当前集成项目使用独立的 Python 3.12 虚拟环境：
+### 7.2 Push-T
 
-```text
-Python 3.12.14
-LeRobot 0.6.2
-MuJoCo 3.12.0
-NumPy 2.2.6
-Node.js 22.22.3
-```
+| 手势 | 操作 |
+|---|---|
+| `Victory` | 左右移动 |
+| `Thumb_Up` | 前后移动 |
+| `ILoveYou` | 斜向平面移动 |
+| `Open_Palm` / `Closed_Fist` | 不改变夹爪和高度 |
 
-虚拟环境位于：
+Push-T 中夹爪保持闭合目标，末端从开始到结束固定在推动高度，只允许 XY 平面运动。
 
-```text
-/Users/susilyeon/Desktop/git/lerobot/.venv
-```
+### 7.3 通用规则
 
-原来的 Python 3.11 和旧 MuJoCo `.venv` 没有被覆盖。采用多版本并存是为了满足 LeRobot 对较新 Python 的要求，同时保护旧项目环境。
+- `Pointing_Up` 不绑定控制动作；
+- 摄像头镜像已经在网页映射中修正；
+- 平面移动时不能误触发松爪；
+- 不回放积压的旧移动命令；
+- 一个任务的手势规则不能无意覆盖另一个任务。
 
-macOS 上运行 MuJoCo GUI 使用 `mjpython`，而不是普通 `python`。PyAV 自带的 FFmpeg 与 Homebrew FFmpeg 同时载入时可能出现 `AVFFrameReceiver` 或 `AVFAudioReceiver` 重复类警告。当前实现将视频依赖限制在独立渲染进程，并固定使用 PyAV backend，以降低库冲突和崩溃风险。
+## 8. 坐标系与数据接口
 
-## 5. 系统组成
-
-### 5.1 网页前端
-
-网页运行在 `http://localhost:8000`，职责包括：
-
-- 请求并显示 Mac 摄像头；
-- 加载 MediaPipe Gesture Recognizer；
-- 绘制手部关键点；
-- 显示手势名称和置信度；
-- 根据手腕在屏幕中的位移计算移动方向；
-- 将控制命令发送给 MuJoCo 后端；
-- 显示 MuJoCo 连接状态；
-- 显示侧视和正视辅助画面；
-- 提供开始、保存、丢弃和结束录制按钮。
-
-MediaPipe 使用：
-
-```text
-runningMode: VIDEO
-numHands: 2
-delegate: CPU
-输入摄像头理想分辨率: 640×480
-```
-
-网页每 2 秒检查一次 MuJoCo 是否在线，并持续按需请求辅助画面。
-
-### 5.2 本地 HTTP 接口
-
-Python 后端监听：
-
-```text
-http://127.0.0.1:5001
-```
-
-接口包括：
-
-| 接口 | 方法 | 作用 |
-|---|---|---|
-| `/control` | POST | 接收手势和录制命令 |
-| `/health` | GET | 返回连接、录制、Z 锁定和高度状态 |
-| `/side-preview` | GET | 返回侧视辅助 JPEG |
-| `/front-preview` | GET | 返回正视辅助 JPEG |
-
-网页的 `server.js` 把 `/api/...` 请求代理到 Python，因此浏览器只需要访问 8000 端口。
-
-### 5.3 MuJoCo 主控制进程
-
-主进程负责：
-
-- 60 Hz 物理和 UI 控制循环；
-- 处理网页命令与备用键盘输入；
-- 逆运动学；
-- Panda 关节与夹爪控制；
-- Z 锁定和目标区域状态机；
-- MuJoCo 主窗口视角切换；
-- 按 30 FPS 产生录制快照。
-
-### 5.4 训练数据渲染进程
-
-训练渲染独立于主控制进程，负责：
-
-- 按顺序接收每一帧 MuJoCo 状态快照；
-- 渲染三台固定训练相机；
-- 写入 LeRobotDataset；
-- 编码训练视频；
-- 为每个 episode 生成三个独立 MP4。
-
-### 5.5 辅助视角渲染进程
-
-辅助进程只服务网页操作，不进入训练数据。它交替渲染侧视和正视，保留最新快照，丢弃过期请求，避免渲染积压拖慢机械臂。
-
-## 6. 手势与操作规则
-
-### 6.1 当前有效规则
-
-| 手势 | 操作 | 附加规则 |
-|---|---|---|
-| `Open_Palm` 张开手掌 | 松开夹爪；手上下移动时控制末端升降 | ILoveYou 后短时间内会屏蔽误识别出来的张掌 |
-| `Closed_Fist` 握拳 | 闭合夹爪；手上下移动时控制末端升降 | 进入竖直移动时固定 XY，避免升降时横向漂移 |
-| `Victory` | 左右移动 | 摄像头镜像方向已经校正；仅这个左右规则使用对应映射 |
-| `Thumb_Up` | 前后移动 | 由手腕在画面中的上下位移决定前后方向 |
-| `ILoveYou` | 斜向二维移动 | 只有夹爪处于闭合/搬运状态时有效，并强制锁定 Z |
-
-`Pointing_Up` 控制功能已删除。`Thumb_Down` 可能仍能被 MediaPipe 显示为识别结果，但没有绑定机器人控制动作。
-
-### 6.2 不是“看到一个手势就连续移动”
-
-系统使用手腕位置变化控制方向和幅度。以平面移动为例：
-
-```text
-当前手腕位置 - 上一时刻手腕位置
-→ 屏幕 dx/dy
-→ 镜像修正
-→ 死区过滤
-→ 归一化
-→ 机器人底座坐标系中的 XY 增量
-```
-
-关键网页参数：
-
-```text
-控制间隔                 40 ms
-平面灵敏度               0.03
-竖直死区                 0.015
-平面死区                 0.09
-夹爪命令重试间隔         300 ms
-ILoveYou 张掌保护时间     650 ms
-斜走识别短暂保持         180 ms
-```
-
-### 6.3 摄像头镜像
-
-自拍摄像头画面通常是镜像的。代码先把屏幕位移转换为视觉方向：
-
-```text
-visualRight   = -screenDx / sensitivity
-visualForward = -screenDy / sensitivity
-```
-
-再按手势映射：
-
-```text
-Victory  → (dx=0,             dy=visualRight)
-Thumb_Up → (dx=visualForward, dy=0)
-ILoveYou → (dx=visualForward, dy=-visualRight)
-```
-
-### 6.4 防止斜走时松开夹爪
-
-`ILoveYou` 容易在手指形态变化时被短暂识别成 `Open_Palm`。系统采用两层保护：
-
-1. ILoveYou 后 650 ms 内不接受张掌命令；
-2. 必须出现一个明确的非张掌、非 ILoveYou 手势或手离开画面，才允许真正松开。
-
-这保证斜走不会因为单帧误识别而掉落方块。
-
-## 7. 坐标系、state 与 action
-
-### 7.1 坐标原点
-
-action 使用 Panda 底座 `link0` 坐标系：
-
-- 原点：机器人底座；
-- 平移：X、Y、Z，单位为米；
-- 旋转：RX、RY、RZ，单位为弧度；
-- 姿态表示：ZYX 约定下的 roll、pitch、yaw。
-
-即使未来把机器人整体移动或旋转，代码也会先通过底座旋转矩阵进行坐标转换，而不是默认世界坐标永远等于底座坐标。
-
-### 7.2 observation.state
-
-每帧状态为 8 维：
+### 8.1 当前单臂 state
 
 ```text
 [joint1, joint2, joint3, joint4, joint5, joint6, joint7, finger_width_m]
 ```
 
-前 7 项是 Panda 实际关节位置；最后一项是两根手指关节位置之和，即实际夹爪宽度。
+共 8 维，包含 Panda 7 个实际关节位置和实际夹爪宽度。
 
-### 7.3 action
-
-每帧 action 为 7 维：
+### 8.2 当前单臂 action
 
 ```text
 [target_x, target_y, target_z, target_rx, target_ry, target_rz, gripper_target]
 ```
 
-它不是 7 个关节目标，而是底座坐标系中的完整末端目标：
+共 7 维，表示 Panda 底座 `link0` 坐标系下的末端位置、姿态和夹爪目标。它不是 7 个关节目标。
 
-- XYZ：3 维位置；
-- RX/RY/RZ：3 维姿态；
-- gripper：1 维夹爪目标，范围 0–255。
+### 8.3 双臂扩展
 
-因此它是 7 维。机器人内部仍会把末端目标通过逆运动学转换为 7 个关节控制目标。
+双臂数据必须明确：
 
-## 8. 逆运动学与稳定控制
+- 左臂和右臂字段顺序；
+- 每条臂的 state/action 定义；
+- 坐标系是各自底座、世界坐标还是公共任务坐标；
+- 两臂命令与图像的时间同步方式；
+- 夹爪字段；
+- 数据版本。
 
-### 8.1 为什么需要逆运动学
-
-用户想表达的是“夹爪向前、向左或向上移动”，但 Panda 执行器接收的是关节目标。逆运动学解决：
+一种候选的末端 action 表示为：
 
 ```text
-希望的末端位移和姿态
-→ 求解 7 个关节应该怎样改变
+[
+  left_xyz, left_rpy, left_gripper,
+  right_xyz, right_rpy, right_gripper
+]
 ```
 
-### 8.2 当前解法
+该格式只是设计候选，必须在实现 Task 3 时结合控制接口和训练 policy 正式确定。
 
-系统使用位置 Jacobian 和旋转 Jacobian组成 6×7 任务 Jacobian，并用阻尼最小二乘求解：
+## 9. 稳定控制
+
+当前控制器使用阻尼最小二乘逆运动学：
 
 ```text
 dq = Jᵀ (J Jᵀ + λ²I)⁻¹ Δtask
 ```
 
-当前阻尼 `λ = 0.03`。阻尼用于降低接近奇异位形时关节突然大幅旋转的风险。
+系统包含以下稳定措施：
 
-### 8.3 防止机械臂乱甩的措施
+- 限制单步末端位移；
+- 限制单步关节增量；
+- 限制命令目标领先实际关节的距离；
+- 丢弃过期控制请求；
+- 移动队列只保留最新命令；
+- 网页请求合并；
+- Z 锁定高度只在进入锁定时记录一次；
+- 控制、渲染和视频编码相互隔离。
 
-1. **从命令目标计算下一步**：不用滞后的真实关节状态重复累积同一个姿态误差；
-2. **单次关节步长限制**：默认最大 `0.08 rad`；
-3. **目标领先限制**：命令目标最多领先真实关节 `0.12 rad`；
-4. **统一缩放 7 维关节增量**：保留笛卡尔运动方向，不逐关节破坏轨迹；
-5. **平面单步限制**：默认最大 `0.015 m`；
-6. **丢弃过期命令**：超过 `250 ms` 的移动命令不执行；
-7. **只执行队列中最新移动命令**：防止卡顿后回放旧动作；
-8. **网页请求合并**：同一时刻只发送一个请求，积压时只保留最新动作；
-9. **渲染进程隔离**：视频编码不阻塞物理控制循环。
+这些约束需要在新增任务和双臂控制中继续保留，并根据双臂碰撞与同步需求扩展。
 
-## 9. Z 锁定与视角状态机
+## 10. 相机与视觉观测
 
-### 9.1 为什么锁定 Z
-
-老师要求搬运阶段减少自由度：方块到达固定高度后，运动变成二维平面控制。这样操作者只需处理前后左右，方块不会在运输过程中上下漂移。
-
-### 9.2 进入锁定
-
-默认运输高度：
+当前数据包含三路固定第三人称 RGB：
 
 ```text
-cube_z >= 0.50 m
+observation.images.overview
+observation.images.camera_2
+observation.images.camera_3
 ```
 
-抓住方块并达到该高度后：
+当前规格：
 
-- 记录一次末端的命令高度 `locked_z`；
-- 将 `z_locked` 设为真；
-- MuJoCo 操作窗口切到 top-down；
-- 网页显示侧视和正视辅助视角；
-- 所有平面命令的 `dz` 被替换为返回锁定平面的高度误差。
+- 分辨率：640×480；
+- 帧率：30 FPS；
+- 与 state/action 同步；
+- 每个 episode 可生成独立检查视频。
 
-ILoveYou 平面移动还会显式发送 `lockZ=true`，避免抓取检测短暂抖动导致锁定失效。
+需要区分：
 
-### 9.3 锁定高度只能记录一次
+- 训练相机：写入数据集；
+- MuJoCo 操作视角：供人操作，不写入数据；
+- 网页辅助视角：供精确定位，不写入数据。
 
-一个重要 bug 曾经是：每个 ILoveYou 请求都用当前实际高度重新覆盖 `locked_z`。机械臂的实际位置存在微小滞后，于是锁定平面会一层层向下移动。
+双臂任务需要重新验证所有关键接触区域是否被相机遮挡。
 
-当前规则是：
+## 11. Pick-and-place 任务规范
+
+### 11.1 随机化
+
+方块和目标区域在经过验证的 Panda 可达范围内随机生成。随机化需要满足：
+
+- 初始状态不重叠；
+- 目标不是任务开始时就已经完成；
+- Panda 在固定末端姿态下可以稳定到达；
+- 覆盖足够的位置变化，避免模型记忆固定轨迹。
+
+### 11.2 Z 锁定
+
+抓住方块并达到运输高度后：
+
+- 记录一次命令高度；
+- 锁定 Z；
+- 平面命令只能改变 XY；
+- 到达目标中心附近并稳定后才解锁；
+- 移出目标后重新锁定。
+
+## 12. Single-arm Push-T 任务规范
+
+### 12.1 物体与目标
+
+- 红色 T 形物体是一个完整刚体；
+- 平面外轮廓约为 `100 × 100 mm`；
+- 高度约 `30 mm`；
+- 总质量约 `0.1 kg`；
+- 白色目标 T 是不可碰撞的视觉区域；
+- 目标边界比物体每侧约多 `5 mm`。
+
+### 12.2 固定推动高度
+
+T 形物体底面位于桌面顶面，末端接触高度设置在物体中线附近。当前程序保持闭合夹爪和固定末端高度，以降低翻滚并将控制约束在 XY 平面。
+
+### 12.3 当前随机范围
 
 ```text
-未锁定 → 锁定：记录一次命令高度
-已经锁定 → 再次收到锁定：保持原值，不覆盖
-解除锁定：清空 locked_z
+T 刚体：
+X = 0.46 ～ 0.54 m
+Y = -0.10 ～ 0.10 m
+yaw = -30° ～ 30°
+
+T 目标：
+X = 0.57 ～ 0.66 m
+Y = -0.14 ～ 0.14 m
+
+刚体与目标中心最小距离 = 0.14 m
 ```
 
-主循环即使没有新的移动手势，也会持续调用平面保持逻辑。
+范围的选择需要同时满足可达性、接触空间和 IK 稳定性。
 
-### 9.4 解除锁定
+### 12.4 成功判定
 
-只在方块中心满足以下条件时解除：
+当前使用二维 T 形覆盖率：
 
 ```text
-方块与圆盘中心 XY 距离 ≤ 0.05 m
-并连续稳定 ≥ 0.25 s
+进入成功候选：coverage ≥ 0.90
+退出成功候选：coverage < 0.85
+稳定时间：0.5 s
 ```
 
-解除后：
+覆盖率同时约束位置和朝向。进入和退出阈值形成滞回，避免边界抖动。
 
-- 恢复斜视操作相机；
-- 隐藏网页辅助视角；
-- 允许操作者下降并放置。
+## 13. Episode 与数据保存
 
-如果仍抓着方块并移出圆盘边界，系统会重新锁定 Z 并恢复俯视操作。
-
-单纯张开夹爪不能绕过目标区域规则，也不能在圆盘之外提前解除 Z。
-
-## 10. 夹爪、方块和圆盘规则
-
-### 10.1 夹爪
-
-- 最大张开宽度：8 cm；
-- 张开控制目标：255；
-- 闭合控制目标：0；
-- 方块边长：6 cm（半尺寸 0.030 m）；
-- 实际抓住后，碰撞约束使夹爪停在方块宽度附近。
-
-抓取状态综合判断：
-
-- 已发送闭合状态；
-- 实际夹爪宽度位于合理区间；
-- 夹爪与方块的空间距离足够近。
-
-### 10.2 随机初始位置
-
-每次成功保存或失败丢弃后，方块和圆盘都会重新随机生成：
+一条 demonstration 对应一个 episode：
 
 ```text
-方块 X: 0.44–0.51 m
-方块 Y: -0.07–0.07 m
-圆盘 X: 0.54–0.62 m
-圆盘 Y: -0.13–0.09 m
-二者中心距离至少: 0.16 m
+随机初始化
+  → 开始录制
+  → 完成或失败一次任务
+  → 保存到对应目录
+  → 随机重置
 ```
 
-这个范围的目的：
+当前操作：
 
-- 增加数据多样性；
-- 让模型学习物体位置变化，而不是记住固定轨迹；
-- 保持在 Panda 固定夹爪姿态下较稳定的可达区域；
-- 避免初始状态就相互重叠。
-
-每条 episode 的实际初始位置记录在：
-
-```text
-episode_videos/initial_positions.jsonl
-```
-
-## 11. 相机系统
-
-### 11.1 操作者相机
-
-MuJoCo 主窗口根据任务阶段切换：
-
-- 抓取、抬升、最终下降：斜视；
-- 固定高度运输：top-down 俯视。
-
-它用于人操作，不写入训练数据。
-
-### 11.2 网页辅助相机
-
-网页在运输阶段显示：
-
-- 侧视：方位角 90°；
-- 正视：方位角 180°；
-- 距离：0.78；
-- 仰角：-12°；
-- 渲染尺寸：320×240；
-- 每路约 8 FPS。
-
-辅助相机仅用于精确定位，不进入 ACT 数据。
-
-### 11.3 三台训练相机
-
-训练数据始终使用固定相机，不随操作窗口切换：
-
-| 数据字段 | 方位角 | 分辨率 | 帧率 |
-|---|---:|---:|---:|
-| `observation.images.overview` | 145° | 640×480 | 30 FPS |
-| `observation.images.camera_2` | 25° | 640×480 | 30 FPS |
-| `observation.images.camera_3` | 265° | 640×480 | 30 FPS |
-
-三台相机围绕任务区域提供不同第三人称观察。操作视角放大、切换 top-down 或网页辅助视角变化都不会改变已经定义的训练观测。
-
-## 12. demonstration 与 episode 生命周期
-
-一条 demonstration 等于一个 episode：
-
-```text
-开始录制
-→ 完成一次抓取放置
-→ 成功保存或失败丢弃
-```
-
-操作方式：
-
-| 网页按钮 | 键盘 | 作用 |
+| 操作 | 网页 | 键盘 |
 |---|---|---|
-| 开始录制 | S | 开始当前 episode |
-| 成功并保存 | N | 保存当前 episode，并随机重置 |
-| 失败并重录 | R | 丢弃当前 episode，并随机重置 |
-| 结束录制 | Q | 完成整个数据集并退出 |
+| 开始 episode | 开始录制 | `S` |
+| 保存成功 | 成功并保存 | `N` |
+| 保存失败 | 失败并保存 | `R` |
+| 结束会话 | 结束录制 | `Q` |
 
-必须对每一次成功 demonstration 单独按“成功并保存”。不能连续完成多次任务后才一起保存，因为 episode 的边界、重置和初始位置记录都在保存时确定。
-
-如果只是想随机重置而不保存，使用“失败并重录/丢弃”即可。未开始录制时它也会重置布局。
-
-## 13. LeRobot 数据集结构
-
-正式数据集包含：
+数据结构：
 
 ```text
 dataset_root/
-├── data/                  # Parquet：state、action、时间戳和索引
-├── meta/                  # info、stats、tasks 和 episode 元数据
-├── videos/                # LeRobot/ACT 正式读取的三路视频
-├── episode_videos/        # 每个 episode 单独三个 MP4，供人工检查
-└── analysis/              # 本地验证报告；不参与训练
+├── data/
+├── meta/
+├── videos/
+└── episode_videos/
 ```
 
-### 13.1 训练必需目录
+成功与失败数据分开保存。一个数据集不能静默混入不同机器人、任务或不兼容的 action schema。
+
+## 14. 数据质量标准
+
+训练前检查：
+
+1. episode 数量、索引和边界正确；
+2. state、action、时间戳和视频帧同步；
+3. action 维度、单位、坐标系和数值范围正确；
+4. 视频无黑帧、冻结、损坏和明显错位；
+5. 数据不存在 NaN、Inf 或异常关节跳变；
+6. 随机初始状态覆盖预定范围；
+7. 成功 episode 确实满足任务条件；
+8. 每个 episode 可以通过独立视频人工检查。
+
+数据集由具体实验单独管理，不在本 Guide 中固定指定数据集名称或下载地址。
+
+## 15. Policy 训练
+
+项目不限定只能使用 ACT。当前 `training/ACT/` 提供 ACT baseline 启动脚本，未来 policy 放在独立目录：
 
 ```text
-data + meta + videos
+training/<policy_name>/
+├── README.md
+├── configs/
+├── train.py
+└── evaluate.py
 ```
 
-### 13.2 老师要求的独立视频
+每种 policy 需要明确：
 
-为了让每条数据方便查验，额外保存：
+- observation 和 action schema；
+- 相机数量与图像预处理；
+- 单臂或双臂兼容性；
+- 数据归一化；
+- 控制频率和 action chunk；
+- 训练硬件和主要超参数；
+- checkpoint 保存与恢复；
+- MuJoCo 闭环推理接口。
 
-```text
-episode_videos/
-├── initial_positions.jsonl
-├── episode_000000/
-│   ├── overview.mp4
-│   ├── camera_2.mp4
-│   └── camera_3.mp4
-├── episode_000001/
-│   └── ...
-└── episode_000049/
-    └── ...
-```
+ACT 可以使用官方 ResNet18 ImageNet 权重初始化，这不等同于自行进行大规模机器人预训练。
 
-这满足“每个 eps 对应一个单独视频”的要求，而且每个 eps 实际有三视角独立视频。它们用于人工查验，不会被 ACT 重复读取。
+## 16. 仿真闭环评估
 
-### 13.3 analysis
+训练完成不代表任务完成。模型需要重新接入 MuJoCo 独立产生 action，并在未见过的随机初始状态下 Rollout。
 
-`analysis/` 由本地验证脚本生成，包括：
+通用指标：
 
-- JSON 总报告；
-- 每条 episode 的 action 检查表；
-- episode 最终画面拼图。
+- 任务成功率；
+- 完成时间；
+- 末端轨迹长度；
+- 碰撞或关节限位次数；
+- 不同初始位置下的分组结果。
 
-它不参与训练。Hugging Face 的 `act_50eps` 中已删除该目录，本地可以保留用于复查。
+Pushing 额外指标：
 
-## 14. 正式 50 条数据的检查结果
+- 最终位置误差；
+- 最终角度误差；
+- T 形覆盖率；
+- 物体轨迹长度；
+- 接触丢失次数。
 
-数据集：
+双臂任务还需要评估动作同步、相对末端位姿和双臂碰撞。
 
-```text
-mujoco_panda_pick_20260908_220959
-```
+## 17. Dual-arm pushing 实施步骤
 
-检查结果：
+### 17.1 双臂场景
 
-```text
-episodes: 50
-frames: 19,682
-fps: 30
-action shape: [7]
-state shape: [8]
-训练相机: 3
-每路分辨率: 640×480
-所有视频帧数与数据帧数一致: 是
-所有时间戳与帧序号连续: 是
-所有数值有限，无 NaN/Inf: 是
-所有 episode 均含夹爪闭合和松开: 是
-结束画面均显示方块位于圆盘上: 是
-```
+- 加入两台机械臂；
+- 确定两套底座坐标系；
+- 设计无碰撞 home pose；
+- 验证左右臂工作空间；
+- 确保相机能看清两臂、物体和目标。
 
-这说明数据结构符合 ACT 输入要求，但“格式有效”不等于保证模型一定达到高成功率。最终效果还取决于数据覆盖范围、动作一致性、训练步数、模型设置和评估条件。
+### 17.2 独立控制
 
-## 15. 数据验证方法
+- 为左右臂分别建立末端目标与 IK；
+- 分别限制速度、关节和工作空间；
+- 支持单独选择左臂或右臂；
+- 防止控制命令串到另一条臂。
 
-运行：
+### 17.3 同步协作
 
-```bash
-cd /Users/susilyeon/Desktop/git/lerobot
-source .venv/bin/activate
-python examples/mujoco_panda/validate_multicam_dataset.py \
-  datasets/mujoco_panda_pick_20260908_220959
-```
+- 统一控制时间戳；
+- 定义双臂 action schema；
+- 增加双臂之间的碰撞检测；
+- 定义相对位姿或协作约束；
+- 处理一侧失去接触、到达关节限位或控制中断。
 
-验证脚本检查：
+### 17.4 数据与策略
 
-- metadata 的 episode 与 frame 数；
-- 每个 episode 的 `frame_index`；
-- 30 FPS 时间戳；
-- action 7 维和 state 8 维；
-- NaN 与 Inf；
-- XYZ/RPY 相邻帧跳变；
-- 夹爪开合是否完整；
-- 三路训练视频尺寸和总帧数；
-- 每条 episode 的最终画面。
+- 同步记录两臂 state/action；
+- 在 metadata 中记录左右顺序和坐标变换；
+- 双臂数据与单臂数据分开版本管理；
+- 先通过遥操作和数据校验，再训练 policy；
+- 从协同平移开始，再扩展到位置与姿态联合调整。
 
-## 16. 启动完整系统
+## 18. 真机验证
 
-### 16.1 终端一：网页
+真机阶段不能简单复制仿真控制参数。需要完成：
 
-首次安装或依赖变化时：
+1. 真实机器人 SDK 与控制频率适配；
+2. 摄像头标定与坐标变换；
+3. 速度、加速度、力、关节和工作空间限制；
+4. 奇异位形、碰撞和急停处理；
+5. 低速遥操作测试；
+6. 真机 demonstrations 采集；
+7. 真机模型训练或继续训练；
+8. 分阶段部署和任务成功率测试。
 
-```bash
-cd /Users/susilyeon/Desktop/git/lerobot/examples/mujoco_panda/web
-npm install
-npm start
-```
+仿真数据可用于验证接口和初始策略，但是否能直接迁移到真机需要通过实验判断。可靠路线是并行保留仿真验证和真机数据闭环。
 
-以后只需：
-
-```bash
-cd /Users/susilyeon/Desktop/git/lerobot/examples/mujoco_panda/web
-npm start
-```
-
-浏览器打开：
-
-```text
-http://localhost:8000
-```
-
-### 16.2 终端二：MuJoCo 与录制
-
-```bash
-cd /Users/susilyeon/Desktop/git/lerobot
-source .venv/bin/activate
-mjpython examples/mujoco_panda/record_mujoco_panda.py
-```
-
-### 16.3 网页操作
-
-1. 等待“MuJoCo 已连接”；
-2. 点击“启动摄像头”；
-3. 允许浏览器摄像头权限；
-4. 先测试动作，再开始录制；
-5. 每次任务完成按“成功并保存”；
-6. 失败按“失败并重录”；
-7. 全部完成按“结束录制”。
-
-每次运行都会在 `datasets/` 下创建新的时间戳目录，不覆盖旧数据。
-
-## 17. ACT baseline
-
-### 17.1 ACT 学习什么
-
-ACT 的训练关系是：
-
-```text
-当前三路图像 + 当前机器人状态
-→ 预测未来一段 7 维 action
-```
-
-ACT 不是简单逐帧预测下一步，而是一次预测一个 action chunk，以降低长任务中的误差累积。
-
-### 17.2 baseline 的含义
-
-复现 ACT baseline 指：
-
-1. 使用 LeRobot 官方 ACT 实现；
-2. 保持论文/官方模型结构与主要参数；
-3. 把自己的 LeRobot 数据接入；
-4. 跑通训练并得到 checkpoint；
-5. 将 checkpoint 接回 MuJoCo；
-6. 让模型替代手势自主控制；
-7. 在随机初始位置上统计成功率。
-
-不要求从头编写 ResNet 或 Transformer，也不要求从零进行大规模视觉预训练。
-
-### 17.3 当前 baseline 配置
-
-`train_act_baseline_mps.sh` 当前包含：
-
-```text
-policy: ACT
-device: Apple MPS
-vision backbone: ResNet18
-backbone weights: ImageNet1K V1
-chunk size: 100
-action steps: 100
-model dimension: 512
-attention heads: 8
-feedforward dimension: 3200
-encoder layers: 4
-decoder layers: 1
-VAE: enabled
-latent dimension: 32
-KL weight: 10
-batch size: 8
-training steps: 100,000
-checkpoint interval: 10,000
-```
-
-### 17.4 预训练与 ResNet18 权重
-
-老师说“不需要预训练”通常表示不需要自行收集海量通用图像并从零训练视觉骨干。`ResNet18_Weights.IMAGENET1K_V1` 是已经在 ImageNet 上训练好的通用图像特征参数，ACT 使用它作为视觉起点，然后用本项目 demonstrations 学习机器人任务。
-
-使用已有 ResNet18 权重不等于自己进行大规模预训练。
-
-### 17.5 本机算力
-
-当前 Mac 没有 NVIDIA CUDA GPU，但不是完全没有算力：
-
-- 可以使用 CPU/MPS 检查数据加载；
-- 可以运行少量 steps 验证训练链路；
-- 可以调试模型配置和推理接口；
-- 100,000 steps 的正式训练速度和稳定性不如实验室 NVIDIA GPU。
-
-因此推荐先在 Mac 上完成 smoke test，再将同一数据和配置交给实验室 GPU 正式训练。
-
-## 18. 如何独立复现和学习
-
-不要从头重写 MuJoCo、MediaPipe、LeRobot 或 ACT。科研中的“复现”通常是阅读论文和开源代码，独立完成环境配置、运行核心流程、验证结果、解释原理，并在此基础上做任务适配。
-
-建议学习顺序：
-
-1. **Python 基础**：变量、判断、循环、函数、类、NumPy、JSON；
-2. **MuJoCo 基础**：模型、data、qpos、ctrl、mj_step、相机；
-3. **机器人基础**：坐标系、正/逆运动学、Jacobian、关节约束；
-4. **网页基础**：HTML、JavaScript、getUserMedia、async/await、fetch；
-5. **MediaPipe**：视频推理、手部关键点、手势类别和置信度；
-6. **数据采集**：observation、action、episode、同步与帧率；
-7. **LeRobot Dataset**：data/meta/videos 和数据读取；
-8. **ACT**：视觉骨干、Transformer、action chunk、训练和推理。
-
-可在单独的练习目录中按最小系统重新实现：
-
-```text
-摄像头页面
-→ 显示手势名称
-→ 把手势映射为文字指令
-→ Python 接收 HTTP 指令
-→ 键盘控制 MuJoCo
-→ 手势替换键盘
-→ 保存一条简单 episode
-→ 转成 LeRobot 数据
-→ 小规模运行 ACT
-```
-
-当前完整项目应保留为参考和最终成果，不要为了学习而破坏它。
-
-## 19. 常见问题与排查
-
-### 19.1 网页打不开
-
-- 检查 `npm start` 是否仍在运行；
-- 确认访问 `http://localhost:8000`；
-- 8000 端口被占用时先关闭旧网页服务。
-
-### 19.2 网页显示 MuJoCo 未连接
-
-- 确认第二个终端已经运行 `mjpython ...`；
-- 后端应监听 `127.0.0.1:5001`；
-- 一个端口只能有一个 MuJoCo 录制进程。
-
-### 19.3 摄像头点不开
-
-- 在 Safari 网站设置中允许 localhost 使用摄像头；
-- 关闭会议、拍照等占用摄像头的软件；
-- 刷新网页后重新点击；
-- 确保通过 localhost 打开，而不是直接双击 HTML 文件。
-
-### 19.4 机械臂卡顿或延迟后乱动
-
-- 不要同时运行多个 recorder；
-- 检查辅助视角刷新是否正常；
-- 不要提高辅助相机分辨率或帧率；
-- 旧动作应由前端合并和后端 250 ms 过期策略丢弃；
-- 若只在第二次 episode 变慢，检查旧视频编码任务是否正常结束。
-
-### 19.5 斜走时向下掉
-
-检查 `/health` 中：
-
-```text
-z_locked
-hand_z_m
-locked_z_m
-```
-
-ILoveYou 搬运时 `z_locked` 应为真，且 `locked_z_m` 不应随命令不断下降。
-
-### 19.6 保存后没有重置
-
-保存是同步收尾过程。系统会等 LeRobot 和独立 MP4 写完后才重置，避免数据损坏。视频较长时可能需要短暂等待。
-
-### 19.7 无效 demonstration
-
-- 当前 episode 失败：使用“失败并重录”，不要保存；
-- 已经保存：先用验证脚本和视频确认，再按 episode 索引删除；
-- 不要仅凭时长判断有效性，应同时检查最终画面、动作连续性和夹爪开合。
-
-## 20. 设计边界与注意事项
-
-1. 网页侧视和正视只用于操作，不是训练相机；
-2. MuJoCo 主窗口切换视角不会改变训练视频；
-3. `episode_videos` 不参与 ACT 训练，但满足人工检查要求；
-4. action 当前是末端目标 7 维，不是关节目标 8 维；
-5. state 是实际关节状态 8 维；
-6. 数据结构有效不代表策略一定泛化成功；
-7. 模型评估必须在未见过的随机布局上进行；
-8. 修改任何手势映射前应运行网页测试并逐项回归原有规则；
-9. 修改相机时必须区分操作相机、辅助相机和训练相机；
-10. 删除数据前先确认 episode 数、路径和是否已上传。
-
-## 21. 当前项目状态
+## 19. 当前完成情况
 
 ### 已完成
 
-- Python 3.12 独立 LeRobot 环境；
-- MuJoCo Panda 抓取放置场景；
-- 摄像头与 MediaPipe 手势识别网页；
-- 网页到 Python 的实时控制；
-- 末端位置与姿态控制；
-- Z 锁定和 top-down 任务状态机；
-- 侧视、正视辅助定位；
-- 三路固定训练相机；
-- 随机物体与目标位置；
-- LeRobot Dataset v3 同步录制；
-- 每 episode 独立三视角 MP4；
-- 50 条正式 demonstrations 的完整校验；
-- Hugging Face 公开上传；
-- ACT baseline 训练配置。
+- MediaPipe 手势识别与网页控制；
+- Panda MuJoCo 单臂遥操作；
+- pick-and-place 数据采集；
+- single-arm Push-T 数据采集；
+- Z 锁定与稳定控制；
+- 多相机同步观测；
+- 成功和失败 episode 分离；
+- LeRobot 数据组织和校验入口；
+- ACT baseline 启动脚本。
 
-### 尚待完成
+### 下一阶段
 
-- 在本机用少量 steps 完成 ACT smoke test；
-- 在合适 GPU 上完成正式训练；
-- 保存并加载 ACT checkpoint；
-- 编写/完善 MuJoCo 闭环推理接口；
-- 在随机初始位置上重复评估；
-- 统计成功率、失败类型和泛化结果；
-- 整理最终实验报告与演示视频。
+1. 在具备 GPU 的环境运行现有数据的 ACT baseline；
+2. 将训练模型接回 MuJoCo 完成闭环 Rollout；
+3. 建立统一评估脚本；
+4. 完成 single-arm pushing 的训练与评估；
+5. 设计并实现 dual-arm pushing；
+6. 在真实机器人上复现遥操作与数据采集；
+7. 完成真机策略部署和测试。
 
-## 22. 一句话总结
+## 20. 项目边界
 
-本项目将基于 MediaPipe 的视觉手势交互 Demo 扩展成了一个完整的 MuJoCo Panda 遥操作与 LeRobot 数据采集系统：操作者通过手势完成具有随机初始位置的抓取放置任务，系统使用稳定的逆运动学和阶段性 Z 锁定控制机械臂，以三个固定视角同步记录 observation，以底座坐标系下的 7 维末端目标记录 action，并生成可用于 LeRobot ACT baseline 的标准数据集以及便于人工检查的逐 episode 视频。
+当前尚未完成：
+
+- dual-arm pushing 代码；
+- Diffusion Policy 训练入口；
+- 统一 MuJoCo policy Rollout；
+- sim-to-real adaptation；
+- 真实机器人部署；
+- 双人四臂协同。
+
+这些内容应按实施路线逐项实现和验证，不能仅因为被列入计划就视为已完成。

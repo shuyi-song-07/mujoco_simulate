@@ -1,149 +1,250 @@
-# Gesture-Controlled MuJoCo Panda + LeRobot ACT
+# MuJoCo Robot Learning and Teleoperation
 
-这是一个使用 MediaPipe 手势遥操作 MuJoCo Panda、采集 LeRobot demonstrations，并训练 ACT baseline 的完整项目。
+这是一个面向机器人操作研究的可扩展项目，覆盖从**仿真任务设计、视觉手势遥操作、demonstration 采集、数据校验，到策略训练与评估**的完整流程。
+
+项目目前以 MuJoCo 中的 Franka Panda 单臂为基础，已经支持 pick-and-place 和 Push-T 数据采集，并提供 LeRobot ACT baseline 的训练入口。后续将逐步加入 dual-arm pushing、更多操作任务、不同机器人平台和多种 policy。
+
+> 当前已经实现的功能与后续计划会在本文中分别标注。README 不绑定某一个训练数据集；数据集可根据实验需要从本地目录或 Hugging Face 单独获取。
+
+## 项目目标
+
+本项目希望提供一套模块化的机器人学习实验流程：
+
+```text
+任务与场景设计
+      ↓
+遥操作与 demonstrations 采集
+      ↓
+数据校验与格式转换
+      ↓
+Policy 训练
+      ↓
+MuJoCo 推理与量化评估
+      ↓
+真实机器人部署（后续）
+```
+
+每个任务、遥操作方式和训练策略保持独立，方便逐步扩展机器人、数据集和 policy。
+
+## 当前进度
+
+### 已实现
+
+- MuJoCo Franka Panda 单臂仿真；
+- 基于 MediaPipe 的网页手势遥操作；
+- pick-and-place 任务；
+- 固定末端工作高度的单臂 Push-T 任务；
+- 任务初始位置随机化；
+- 机器人状态、action 与多视角 RGB 图像同步采集；
+- 成功 episode 与失败 episode 分开保存；
+- LeRobot 兼容的数据组织与校验工具；
+- ACT baseline 的 Apple Silicon（MPS）和 NVIDIA CUDA 训练脚本。
+
+### 后续扩展
+
+- dual-arm pushing；
+- 更多 single-arm / dual-arm manipulation 任务；
+- 更多机器人模型与遥操作设备；
+- ACT 之外的 behavior cloning、Diffusion Policy、VLA 等策略；
+- 统一的离线评估、MuJoCo rollout 和成功率统计；
+- 仿真到真机迁移及真实机器人部署。
 
 ## 项目结构
 
 ```text
-mujoco_simulate/
+mujoco_simulate_sync/
 ├── simulation/
-│   └── mujoco/                  # Panda 场景、控制、逆运动学和录制主程序
+│   └── mujoco/                  # MuJoCo 场景、任务入口与渲染逻辑
 ├── teleoperation/
-│   └── mediapipe/               # 摄像头网页、MediaPipe 手势识别和控制映射
+│   └── mediapipe/               # 网页端手势识别与遥操作界面
 ├── dataset/
-│   └── demonstrations/          # 数据集说明和 action 轨迹分析工具
+│   └── demonstrations/          # 本地采集数据（默认不提交到 Git）
 ├── training/
-│   └── ACT/                     # LeRobot ACT baseline 训练脚本
-├── evaluation/                  # 数据完整性与多相机验证工具
-├── PROJECT_COMPLETE_GUIDE_CN.md # 完整中文项目说明
-├── requirements.txt             # Python 依赖
+│   └── ACT/                     # 当前 ACT baseline 训练入口
+├── evaluation/                  # 数据校验与后续策略评估工具
+├── PROJECT_COMPLETE_GUIDE_CN.md # 项目原理、规则与完整流程
+├── requirements.txt
 └── README.md
 ```
 
-训练数据不存入 GitHub。正式的 50 episodes 数据位于 Hugging Face：
+后续新增内容建议按模块放置：
 
-<https://huggingface.co/datasets/shuyisong07/act_50eps>
+```text
+simulation/mujoco/<new_task>/     # 新任务或场景
+training/<policy_name>/           # 新 policy 的配置与训练入口
+evaluation/<task_or_policy>/      # 对应评估代码
+```
 
-## 1. 环境
+如果暂时不调整现有目录，也应保证不同任务和 policy 使用独立、可识别的文件名与输出目录。
 
-推荐 Python 3.12。创建环境后安装依赖：
+## 环境配置
+
+建议使用 Python 3.12 的独立虚拟环境：
 
 ```bash
+cd /path/to/mujoco_simulate_sync
 python3.12 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
-网页依赖：
+训练代码依赖 LeRobot。可将本项目与 LeRobot 放在同一级目录，或通过环境变量指定 LeRobot 路径。
+
+## 启动遥操作网页
 
 ```bash
 cd teleoperation/mediapipe
 npm install
-```
-
-## 2. 启动网页
-
-终端一：
-
-```bash
-cd teleoperation/mediapipe
 npm start
 ```
 
-浏览器打开 <http://localhost:8000>。
+浏览器打开：
 
-## 3. 启动 MuJoCo
+```text
+http://127.0.0.1:8000/
+```
 
-终端二，在项目根目录运行：
+网页负责识别手势并发送控制信息；具体动作规则、锁高逻辑和任务状态机请以对应任务代码及项目完整说明为准。
+
+## 运行当前任务
+
+先进入项目根目录并激活虚拟环境：
 
 ```bash
+cd /path/to/mujoco_simulate_sync
 source .venv/bin/activate
+```
+
+### Pick-and-place
+
+```bash
 mjpython simulation/mujoco/record_mujoco_panda.py
 ```
 
-项目保留 Pick-and-place 与 Push-T 两个任务。原普通方块 pushing 任务已移除。Push-T 使用T形刚体、T形目标和90%二维覆盖率成功判定：
+### Single-arm Push-T
 
 ```bash
 mjpython simulation/mujoco/record_mujoco_push_t.py
 ```
 
-Push-T 启动时夹爪固定闭合，指尖接触中心固定在 T 刚体高度的一半（世界坐标 `Z=0.415 m`）。`Victory`、`Thumb Up` 和 `ILoveYou` 分别控制左右、前后与斜向平移，Z 全程锁定。
+运行前需要允许终端和浏览器访问摄像头。建议先确认网页显示“MuJoCo 已连接”，再开始遥操作或录制。
 
-网页显示“MuJoCo 已连接”后，允许摄像头权限即可操作。
+## Demonstration 采集
 
-录制控制：
+网页端提供以下录制操作：
 
-- `S` / 开始录制：开始一条 demonstration；
-- `N` / 成功并保存：保存 episode 并随机重置；
-- `R` / 失败并保存：把 episode 完整保存到独立的 `*_failures_*` 数据集并随机重置；
-- `Q` / 结束录制：完成并关闭数据集。
+- **开始录制**：开始当前 episode；
+- **成功并保存**：将成功 episode 写入正式数据目录，并重置场景；
+- **失败并保存**：将失败 episode 单独保存，便于排查与分析，并重置场景；
+- **结束录制**：安全结束当前录制会话。
 
-成功与失败不会混在同一训练集。例如一次 Push-T 录制会同时建立：
+不同任务、不同机器人配置和不同 action 定义的数据，不应直接混入同一个训练数据集。建议每个数据集至少记录：
 
-```text
-datasets/mujoco_panda_push_t_时间戳/           # 成功 demonstrations
-datasets/mujoco_panda_push_t_failures_时间戳/  # 失败 demonstrations
-```
+- 任务名称与版本；
+- 机器人和关节配置；
+- observation 字段、相机名称与图像尺寸；
+- action 的语义、维度与坐标系；
+- episode 边界、时间戳和成功标签；
+- 场景随机化范围与任务成功条件。
 
-## 4. 下载数据
+数据集可保存在任意本地路径，或单独托管在 Hugging Face。大型数据、视频和模型权重不应直接提交到本代码仓库。
 
-```bash
-hf download shuyisong07/act_50eps \
-  --repo-type dataset \
-  --local-dir datasets/act_50eps
-```
+## 数据校验
 
-核心训练目录是 `data/`、`meta/` 和 `videos/`；`episode_videos/` 用于逐条人工检查。
-
-## 5. 验证数据
+将 `<dataset_path>` 替换为实际数据目录：
 
 ```bash
-python evaluation/validate_multicam_dataset.py datasets/act_50eps
+python evaluation/validate_multicam_dataset.py \
+  --dataset-root <dataset_path> \
+  --require-success
 ```
 
-## 6. 运行 ACT baseline
+训练前至少需要检查：
 
-Mac MPS 示例：
+- episode 数量和首尾索引是否正确；
+- observation 与 action 的帧数是否同步；
+- action 维度及数值范围是否符合当前机器人；
+- 视频能否解码，且每个 episode 可单独查验；
+- 是否存在 NaN、缺帧、冻结画面或异常关节跳变；
+- 场景初始位置是否覆盖预先规定的随机范围。
+
+## Policy 训练
+
+项目不限定只能使用 ACT。不同 policy 应拥有独立的训练目录、配置、依赖说明和输出目录，并通过清晰的数据接口读取 observation、state 和 action。
+
+### 当前提供：LeRobot ACT baseline
+
+以下命令使用已有脚本启动 ACT。请把数据和输出目录替换为实际绝对路径。
+
+Apple Silicon：
 
 ```bash
-DATASET_ROOT="$PWD/datasets/act_50eps" \
-OUTPUT_DIR="$PWD/outputs/act_panda_baseline" \
-PYTHON_BIN="$PWD/../lerobot/.venv/bin" \
-zsh training/ACT/train_act_baseline_mps.sh
+DATASET_ROOT=/absolute/path/to/dataset \
+OUTPUT_DIR=/absolute/path/to/outputs/act_run \
+bash training/ACT/train_act_baseline_mps.sh
 ```
 
-另一台 NVIDIA GPU 电脑应把训练设备改为 CUDA。训练前先用少量 steps 做 smoke test，再进行正式训练。
-
-NVIDIA CUDA 电脑可直接使用：
+NVIDIA CUDA：
 
 ```bash
-DATASET_ROOT="$PWD/datasets/act_50eps" \
-PYTHON_BIN="$PWD/../lerobot/.venv/bin" \
-STEPS=1000 \
+DATASET_ROOT=/absolute/path/to/dataset \
+OUTPUT_DIR=/absolute/path/to/outputs/act_run \
+STEPS=100000 \
 bash training/ACT/train_act_baseline_cuda.sh
 ```
 
-确认 smoke test 正常后，将 `STEPS` 改为 `100000` 正式训练。
+当前 MPS 脚本使用固定训练步数；CUDA 脚本可通过 `STEPS` 和 `BATCH_SIZE` 覆盖默认值。训练前请根据使用的 LeRobot 版本检查参数兼容性。
 
-## 7. 详细说明
+### 新增其他 policy
 
-完整的手势规则、坐标系、Z 锁定、相机设计、数据字段、ACT 参数和故障排查见：
+建议每种 policy 使用如下结构：
 
-[PROJECT_COMPLETE_GUIDE_CN.md](PROJECT_COMPLETE_GUIDE_CN.md)
+```text
+training/<policy_name>/
+├── README.md            # 依赖、数据要求和运行命令
+├── configs/             # 训练与评估配置
+├── train.py             # 训练入口
+└── evaluate.py          # 可选的离线评估入口
+```
 
-包含最新 Push-T 功能、双任务运行方式和当前故障排查的状态文档：
+新增 policy 时应说明：
 
-[CURRENT_PROJECT_GUIDE_CN.md](CURRENT_PROJECT_GUIDE_CN.md)
+1. 支持的 observation 和 action schema；
+2. 是否支持单臂、双臂及多相机输入；
+3. 训练所需硬件与主要超参数；
+4. checkpoint 保存与恢复方式；
+5. 如何接入 MuJoCo 进行闭环推理。
 
-## 数据与大文件
+## 新增任务规范
 
-以下内容不会上传到 GitHub：
+为了让 single-arm、dual-arm 和后续任务可以长期共存，新增任务时建议完成以下内容：
 
-- `.venv/`
-- `node_modules/`
-- `datasets/`
-- `outputs/`
-- checkpoints 与训练视频
+1. **场景定义**：机器人、物体、目标区域、碰撞和物理参数；
+2. **控制接口**：明确 action 维度、坐标系、控制频率和安全限制；
+3. **Observation schema**：相机、机器人状态和任务状态字段；
+4. **任务状态机**：初始化、运行、成功、失败和重置逻辑；
+5. **随机化规则**：物体和目标的合法生成范围；
+6. **数据命名空间**：避免与其他任务的数据、视频和元数据混合；
+7. **评估指标**：成功率、完成时间、轨迹长度、碰撞或任务特定指标；
+8. **文档与测试**：提供启动命令、控制规则和最小可复现检查。
 
-它们分别通过本地安装、Hugging Face Dataset 或训练过程获得。
+对于 dual-arm pushing，还需要额外明确双臂 observation/action 的排列顺序、同步控制方式、工作空间约束、机械臂之间的碰撞保护及任务协作逻辑。
+
+## 文档
+
+- [项目完整说明](PROJECT_COMPLETE_GUIDE_CN.md)
+- [数据目录说明](dataset/demonstrations/README.md)
+- [评估工具说明](evaluation/README.md)
+
+## 仓库管理约定
+
+以下内容默认不提交到 Git：
+
+- demonstration 数据与录制视频；
+- checkpoint、训练日志和评估输出；
+- `.venv`、Conda 环境和缓存；
+- `node_modules`；
+- Hugging Face token、密钥及其他本机凭据。
+
+GitHub 用于保存可复现的代码、配置和文档；数据集与模型产物由各实验单独管理。
