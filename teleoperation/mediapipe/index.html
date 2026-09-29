@@ -106,15 +106,15 @@
         <div class="robot-controls">
           <button id="record-start" type="button">开始录制</button>
           <button id="record-save" type="button">成功并保存</button>
-          <button id="record-discard" type="button">失败并重录</button>
+          <button id="record-failure" type="button">失败并保存</button>
           <button id="record-stop" type="button">结束录制</button>
         </div>
 
         <p id="robot-feedback" class="robot-feedback" role="status" aria-live="polite">等待连接 MuJoCo…</p>
 
         <div class="robot-gesture-guide">
-          <div><code>Open_Palm</code><strong>松开夹爪 / 手上下控制升降</strong></div>
-          <div><code>Closed_Fist</code><strong>闭合夹爪 / 手上下控制升降</strong></div>
+          <div><code>Open_Palm</code><strong id="open-palm-rule">松开夹爪 / 手上下控制升降</strong></div>
+          <div><code>Closed_Fist</code><strong id="closed-fist-rule">闭合夹爪 / 手上下控制升降</strong></div>
           <div><code>Victory</code><strong>左右移动</strong></div>
           <div><code>Thumb_Up</code><strong>前后移动</strong></div>
           <div><code>ILoveYou</code><strong>斜向移动</strong></div>
@@ -123,6 +123,6 @@
 
     </main>
 
-    <script type="module" src="./app.js"></script>
+    <script type="module" src="./app.js?v=save-failures-7"></script>
   </body>
 </html>

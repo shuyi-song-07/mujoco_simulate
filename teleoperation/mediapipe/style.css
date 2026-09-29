@@ -352,9 +352,10 @@ h2 {
 
 .robot-controls button:hover { transform: translateY(-1px); }
 .robot-controls button:disabled { cursor: not-allowed; opacity: 0.5; transform: none; }
+
 #robot-toggle[aria-pressed="true"] { color: #fff; background: var(--accent); }
 #record-save { color: #fff; background: #26834f; }
-#record-discard { color: #8b2f2b; background: #fff0ef; }
+#record-failure { color: #8b2f2b; background: #fff0ef; }
 #record-stop { color: #fff; background: #17251f; }
 
 .robot-feedback { min-height: 1.5em; margin: 0; font-weight: 700; }

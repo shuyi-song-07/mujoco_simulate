@@ -29,6 +29,61 @@ DEFAULT_MODEL_PATH = (
     Path(__file__).resolve().parent / "assets" / "franka_emika_panda" / "scene.xml"
 )
 INITIAL_ARM_QPOS = np.array([0.0, -0.5, 0.0, -2.0, 0.0, 1.5, 0.8])
+# With closed fingers, this pose puts the fingertip contact-pad centres at
+# Z=0.415 m: the 0.400 m table top plus half of the 30 mm Push-T height.
+# The hand-body origin is Z=0.5234 m because the pads sit 0.1084 m below it.
+PUSH_T_INITIAL_ARM_QPOS = np.array(
+    [0.0, -0.548481772, 0.0, -2.36977552, 0.0, 1.82129375, 0.8]
+)
+
+# Push-T footprint in the body's local XY frame.  The two non-overlapping
+# rectangles form one rigid body: a 100x30 mm top bar and a 70x30 mm stem.
+PUSH_T_OBJECT_BAR_X = (0.020, 0.050)
+PUSH_T_OBJECT_BAR_Y_HALF = 0.050
+PUSH_T_OBJECT_STEM_X = (-0.050, 0.020)
+PUSH_T_OBJECT_STEM_Y_HALF = 0.015
+PUSH_T_TARGET_PADDING = 0.005
+
+
+def make_push_t_sample_points(resolution: int = 81) -> np.ndarray:
+    """Return uniform local-XY samples covering the physical Push-T footprint."""
+    axis = np.linspace(-0.05, 0.05, resolution)
+    xx, yy = np.meshgrid(axis, axis, indexing="xy")
+    in_bar = (
+        (xx >= PUSH_T_OBJECT_BAR_X[0])
+        & (xx <= PUSH_T_OBJECT_BAR_X[1])
+        & (np.abs(yy) <= PUSH_T_OBJECT_BAR_Y_HALF)
+    )
+    in_stem = (
+        (xx >= PUSH_T_OBJECT_STEM_X[0])
+        & (xx <= PUSH_T_OBJECT_STEM_X[1])
+        & (np.abs(yy) <= PUSH_T_OBJECT_STEM_Y_HALF)
+    )
+    return np.column_stack((xx[in_bar | in_stem], yy[in_bar | in_stem]))
+
+
+def push_t_coverage(
+    object_xy: np.ndarray,
+    object_rotation_xy: np.ndarray,
+    target_xy: np.ndarray,
+    target_rotation_xy: np.ndarray,
+    sample_points: np.ndarray,
+) -> float:
+    """Approximate the fraction of the physical T footprint inside its goal."""
+    world_points = sample_points @ object_rotation_xy.T + object_xy
+    target_points = (world_points - target_xy) @ target_rotation_xy
+    padding = PUSH_T_TARGET_PADDING
+    in_bar = (
+        (target_points[:, 0] >= PUSH_T_OBJECT_BAR_X[0] - padding)
+        & (target_points[:, 0] <= PUSH_T_OBJECT_BAR_X[1] + padding)
+        & (np.abs(target_points[:, 1]) <= PUSH_T_OBJECT_BAR_Y_HALF + padding)
+    )
+    in_stem = (
+        (target_points[:, 0] >= PUSH_T_OBJECT_STEM_X[0] - padding)
+        & (target_points[:, 0] <= PUSH_T_OBJECT_STEM_X[1] + padding)
+        & (np.abs(target_points[:, 1]) <= PUSH_T_OBJECT_STEM_Y_HALF + padding)
+    )
+    return float(np.mean(in_bar | in_stem))
 
 
 def training_render_process(*args) -> None:
@@ -149,6 +204,8 @@ class MujocoPandaRecorder:
         self.saving_episode = False
         self.episode_frames = 0
         self.saved_episodes = 0
+        self.failed_episodes = 0
+        self.attempted_episodes = 0
         self.rng = np.random.default_rng(args.random_seed)
 
         self.base_id = self._body_id("link0")
@@ -161,6 +218,12 @@ class MujocoPandaRecorder:
         self.initial_target_z = float(self.model.body_pos[self.target_plate_id][2])
         self.current_cube_xy = np.zeros(2)
         self.current_target_xy = np.zeros(2)
+        self.current_cube_yaw = 0.0
+        self.current_target_yaw = 0.0
+        self.push_t_samples = (
+            make_push_t_sample_points() if args.task_mode == "push_t" else None
+        )
+        self.current_push_t_coverage = 0.0
         # The normal operator camera remains in the control process. All
         # offscreen training and auxiliary cameras live in render workers.
         self.observation_camera = mujoco.MjvCamera()
@@ -313,11 +376,17 @@ class MujocoPandaRecorder:
     def reset_simulation(self) -> None:
         mujoco.mj_resetData(self.model, self.data)
         self.randomize_object_positions()
-        self.data.qpos[:7] = INITIAL_ARM_QPOS
+        initial_arm_qpos = (
+            PUSH_T_INITIAL_ARM_QPOS
+            if self.args.task_mode == "push_t"
+            else INITIAL_ARM_QPOS
+        )
+        self.data.qpos[:7] = initial_arm_qpos
+        finger_position = 0.0 if self.args.task_mode == "push_t" else 0.04
         for address in self.finger_qpos_addresses:
-            self.data.qpos[address] = 0.04
-        self.data.ctrl[:7] = INITIAL_ARM_QPOS
-        self.data.ctrl[7] = 255.0
+            self.data.qpos[address] = finger_position
+        self.data.ctrl[:7] = initial_arm_qpos
+        self.data.ctrl[7] = 0.0 if self.args.task_mode == "push_t" else 255.0
         mujoco.mj_forward(self.model, self.data)
         base_rotation = self.data.xmat[self.base_id].reshape(3, 3)
         hand_rotation = self.data.xmat[self.hand_id].reshape(3, 3)
@@ -326,11 +395,15 @@ class MujocoPandaRecorder:
             self.target_hand_rotation_in_base
         )
 
-        self.z_locked = False
-        self.locked_z = None
+        self.z_locked = self.args.task_mode == "push_t"
+        self.locked_z = (
+            float(self.data.xpos[self.hand_id][2])
+            if self.z_locked
+            else None
+        )
         self.cube_over_target = False
         self.target_entered_sim_time = None
-        self.gripper_closed = False
+        self.gripper_closed = self.args.task_mode == "push_t"
         self.z_lock_used_for_current_grasp = False
         self.vertical_anchor_xy = None
         self.last_gripper_command_at = float("-inf")
@@ -361,11 +434,19 @@ class MujocoPandaRecorder:
             cube_xy[1],
             self.initial_cube_z,
         ]
+        cube_yaw = 0.0
+        if self.args.task_mode == "push_t":
+            cube_yaw = np.deg2rad(
+                self.rng.uniform(
+                    self.args.cube_yaw_min_deg,
+                    self.args.cube_yaw_max_deg,
+                )
+            )
         self.data.qpos[self.cube_qpos_address + 3 : self.cube_qpos_address + 7] = [
-            1.0,
+            np.cos(cube_yaw / 2.0),
             0.0,
             0.0,
-            0.0,
+            np.sin(cube_yaw / 2.0),
         ]
         self.model.body_pos[self.target_plate_id] = [
             target_xy[0],
@@ -374,6 +455,9 @@ class MujocoPandaRecorder:
         ]
         self.current_cube_xy = cube_xy
         self.current_target_xy = target_xy
+        self.current_cube_yaw = float(cube_yaw)
+        self.current_target_yaw = 0.0
+        self.current_push_t_coverage = 0.0
 
     def move_hand(self, dx: float, dy: float, dz: float) -> None:
         # Build the next Cartesian step from the commanded joint target, not
@@ -392,7 +476,11 @@ class MujocoPandaRecorder:
 
         if self.z_locked and self.locked_z is not None:
             dz = float(self.locked_z - target_pos[2])
-        elif self.gripper_closed and dz < 0:
+        elif (
+            self.args.task_mode == "pick_place"
+            and self.gripper_closed
+            and dz < 0
+        ):
             cube_z = float(self.data.xpos[self.cube_id][2])
             support_z = self.args.target_top_z if self.cube_over_target else self.args.table_top_z
             minimum_cube_z = support_z + self.args.cube_half_size + 0.002
@@ -503,6 +591,8 @@ class MujocoPandaRecorder:
 
     def update_transport_state(self) -> None:
         """Enter the top-down XY transport phase at a fixed absolute height."""
+        if self.args.task_mode == "push_t":
+            return
         cube_z = float(self.data.xpos[self.cube_id][2])
         if (
             self.gripper_closed
@@ -530,6 +620,7 @@ class MujocoPandaRecorder:
 
     def get_runtime_status(self) -> dict:
         return {
+            "task_mode": self.args.task_mode,
             "z_locked": self.z_locked,
             "operator_view": "topdown" if self.z_locked else "overview",
             "visual_observation": [
@@ -547,6 +638,11 @@ class MujocoPandaRecorder:
             "hand_z_m": round(float(self.data.xpos[self.hand_id][2]), 4),
             "locked_z_m": None if self.locked_z is None else round(self.locked_z, 4),
             "transport_cube_z_m": self.args.transport_cube_z,
+            "push_t_coverage": (
+                round(self.current_push_t_coverage, 4)
+                if self.args.task_mode == "push_t"
+                else None
+            ),
         }
 
     def get_side_preview(self) -> bytes | None:
@@ -585,6 +681,9 @@ class MujocoPandaRecorder:
             mujoco.mj_forward(self.model, self.data)
 
     def update_target_state(self) -> None:
+        if self.args.task_mode == "push_t":
+            self.update_push_t_target_state()
+            return
         distance = np.linalg.norm(
             self.data.xpos[self.cube_id][:2] - self.data.xpos[self.target_plate_id][:2]
         )
@@ -595,7 +694,7 @@ class MujocoPandaRecorder:
                 stable_time = float(self.data.time) - self.target_entered_sim_time
                 if stable_time >= self.args.target_dwell_s:
                     self.cube_over_target = True
-                    if self.z_locked:
+                    if self.args.task_mode != "push_t" and self.z_locked:
                         self.set_z_lock(False, reason="target")
             else:
                 self.target_entered_sim_time = None
@@ -605,6 +704,8 @@ class MujocoPandaRecorder:
         if distance > exit_radius:
             self.cube_over_target = False
             self.target_entered_sim_time = None
+            if self.args.task_mode == "push_t":
+                return
             cube_high_enough = (
                 float(self.data.xpos[self.cube_id][2])
                 >= self.args.transport_cube_z - self.args.relock_height_margin
@@ -612,6 +713,35 @@ class MujocoPandaRecorder:
             if self.is_holding_cube() and cube_high_enough and not self.z_locked:
                 self.set_z_lock(True, reason="left_target")
                 self.z_lock_used_for_current_grasp = True
+
+    def update_push_t_target_state(self) -> None:
+        """Track Push-T success using 2D object/goal footprint coverage."""
+        if self.push_t_samples is None:
+            return
+        object_rotation = self.data.xmat[self.cube_id].reshape(3, 3)[:2, :2]
+        target_rotation = self.data.xmat[self.target_plate_id].reshape(3, 3)[:2, :2]
+        coverage = push_t_coverage(
+            self.data.xpos[self.cube_id][:2],
+            object_rotation,
+            self.data.xpos[self.target_plate_id][:2],
+            target_rotation,
+            self.push_t_samples,
+        )
+        self.current_push_t_coverage = coverage
+        if not self.cube_over_target:
+            if coverage >= self.args.push_t_success_coverage:
+                if self.target_entered_sim_time is None:
+                    self.target_entered_sim_time = float(self.data.time)
+                stable_time = float(self.data.time) - self.target_entered_sim_time
+                if stable_time >= self.args.target_dwell_s:
+                    self.cube_over_target = True
+            else:
+                self.target_entered_sim_time = None
+            return
+
+        if coverage < self.args.push_t_exit_coverage:
+            self.cube_over_target = False
+            self.target_entered_sim_time = None
 
     def handle_gesture(self, payload: dict) -> None:
         command = payload.get("command")
@@ -621,11 +751,15 @@ class MujocoPandaRecorder:
         if command == "record_save":
             self.save_episode()
             return
-        if command == "record_discard":
-            self.discard_episode()
+        if command in {"record_failure", "record_discard"}:
+            self.save_failed_episode()
             return
         if command == "record_stop":
             self.stop_requested = True
+            return
+
+        if self.args.task_mode == "push_t":
+            self.handle_pushing_gesture(payload)
             return
 
         if command in {"close", "open"}:
@@ -691,7 +825,66 @@ class MujocoPandaRecorder:
                 0.0,
             )
 
+    def handle_pushing_gesture(self, payload: dict) -> None:
+        """Apply pushing-only controls without changing pick-and-place rules."""
+        command = payload.get("command")
+        # Push-T uses one fixed, closed pushing surface for the whole episode.
+        if command in {"open", "close"}:
+            return
+        if command == "start_vertical":
+            return
+        if command in {"up", "down"}:
+            return
+        if command == "start_planar":
+            self.vertical_anchor_xy = None
+            if not self.z_locked:
+                self.set_z_lock(True, reason="pushing")
+            return
+        if command == "move_xy":
+            self.vertical_anchor_xy = None
+            if not self.z_locked:
+                self.set_z_lock(True, reason="pushing")
+            dx = np.clip(float(payload.get("dx", 0.0)), -1.0, 1.0)
+            dy = np.clip(float(payload.get("dy", 0.0)), -1.0, 1.0)
+            self.move_hand(
+                dx * self.args.max_planar_step,
+                dy * self.args.max_planar_step,
+                0.0,
+            )
+            return
+        # Keep the keyboard-style single-axis commands usable from the web API.
+        planar_deltas = {
+            "left": (0.0, self.args.step, 0.0),
+            "right": (0.0, -self.args.step, 0.0),
+            "forward": (self.args.step, 0.0, 0.0),
+            "backward": (-self.args.step, 0.0, 0.0),
+        }
+        if command in planar_deltas:
+            if not self.z_locked:
+                self.set_z_lock(True, reason="pushing")
+            self.move_hand(*planar_deltas[command])
+
     def handle_key(self, keycode: int) -> None:
+        if self.args.task_mode == "push_t":
+            if keycode in {ord("S"), ord("s")}:
+                self.start_episode()
+            elif keycode in {ord("N"), ord("n")}:
+                self.save_episode()
+            elif keycode in {ord("R"), ord("r")}:
+                self.save_failed_episode()
+            elif keycode in {ord("Q"), ord("q")}:
+                self.stop_requested = True
+            elif keycode in {265, 264, 263, 262}:
+                if not self.z_locked:
+                    self.set_z_lock(True, reason="pushing")
+                deltas = {
+                    265: (self.args.step, 0.0, 0.0),
+                    264: (-self.args.step, 0.0, 0.0),
+                    263: (0.0, self.args.step, 0.0),
+                    262: (0.0, -self.args.step, 0.0),
+                }
+                self.move_hand(*deltas[keycode])
+            return
         if keycode == 265:
             self.move_hand(self.args.step, 0.0, 0.0)
         elif keycode == 264:
@@ -715,7 +908,7 @@ class MujocoPandaRecorder:
         elif keycode in {ord("N"), ord("n")}:
             self.save_episode()
         elif keycode in {ord("R"), ord("r")}:
-            self.discard_episode()
+            self.save_failed_episode()
         elif keycode in {ord("Q"), ord("q")}:
             self.stop_requested = True
 
@@ -762,19 +955,23 @@ class MujocoPandaRecorder:
         self.training_queue.put(
             {
                 "type": "start",
-                "episode_index": self.saved_episodes,
+                "attempt_index": self.attempted_episodes,
                 "cube_xy_m": self.current_cube_xy.tolist(),
                 "target_plate_xy_m": self.current_target_xy.tolist(),
+                "cube_yaw_rad": self.current_cube_yaw,
+                "target_yaw_rad": self.current_target_yaw,
             }
         )
         self._wait_training_reply("started")
         self.recording = True
         self.episode_frames = 0
-        print(f"[LeRobot] 开始录制 demonstration {self.saved_episodes + 1}。")
+        self.attempted_episodes += 1
+        print(f"[LeRobot] 开始录制 demonstration 尝试 {self.attempted_episodes}。")
         print(
             "[随机初始位置] "
             f"方块=({self.current_cube_xy[0]:.3f}, {self.current_cube_xy[1]:.3f}) m，"
-            f"圆盘=({self.current_target_xy[0]:.3f}, {self.current_target_xy[1]:.3f}) m。"
+            f"目标=({self.current_target_xy[0]:.3f}, {self.current_target_xy[1]:.3f}) m，"
+            f"方块 yaw={np.rad2deg(self.current_cube_yaw):.1f}°。"
         )
 
     def save_episode(self) -> None:
@@ -784,7 +981,13 @@ class MujocoPandaRecorder:
         episode_frames = self.episode_frames
         self.saving_episode = True
         try:
-            self.training_queue.put({"type": "save", "frames": episode_frames})
+            self.training_queue.put(
+                {
+                    "type": "save",
+                    "episode_index": self.saved_episodes,
+                    "frames": episode_frames,
+                }
+            )
             result = self._wait_training_reply("saved")
         except Exception as error:
             self.saving_episode = False
@@ -805,14 +1008,39 @@ class MujocoPandaRecorder:
         self.episode_frames = 0
         self.reset_simulation()
 
-    def discard_episode(self) -> None:
-        if self.recording:
-            self.training_queue.put({"type": "discard"})
-            self._wait_training_reply("discarded")
+    def save_failed_episode(self) -> None:
+        if not self.recording or self.episode_frames == 0:
+            print("[LeRobot] 没有正在录制的数据，先按 S 开始。")
+            return
+        episode_frames = self.episode_frames
+        self.saving_episode = True
+        try:
+            self.training_queue.put(
+                {
+                    "type": "save_failure",
+                    "episode_index": self.failed_episodes,
+                    "frames": episode_frames,
+                }
+            )
+            result = self._wait_training_reply("failure_saved")
+        except Exception as error:
+            self.saving_episode = False
+            print(f"[LeRobot] 失败轨迹保存失败，场景未重置：{error}")
+            return
+        if result.get("inspection_error"):
+            print(
+                "[检查视频] 失败 episode 核心数据已保存，但独立检查视频收尾失败："
+                f"{result['inspection_error']}"
+            )
+        self.failed_episodes += 1
+        print(
+            f"[LeRobot] 已将失败 demonstration {self.failed_episodes} 保存到失败数据集，"
+            f"共 {episode_frames} 帧。"
+        )
         self.recording = False
+        self.saving_episode = False
         self.episode_frames = 0
         self.reset_simulation()
-        print("[LeRobot] 本次 demonstration 已丢弃，仿真已重置。")
 
     def record_frame(self) -> None:
         finger_width = float(
@@ -870,7 +1098,10 @@ class MujocoPandaRecorder:
                 self.update_target_state()
                 self.update_transport_state()
                 self.record_frame()
-            self.save_episode()
+            if self.args.test_failure:
+                self.save_failed_episode()
+            else:
+                self.save_episode()
 
     def run_interactive(self) -> None:
         self.server = GestureServer(
@@ -884,9 +1115,10 @@ class MujocoPandaRecorder:
         print(f"[手势控制] 已监听 http://127.0.0.1:{self.args.port}/control")
         print("\n========== MuJoCo + LeRobot 录制 ==========")
         print("S：开始录制   N：成功并保存")
-        print("R：失败并重录 Q：结束并写入数据集")
+        print("R：失败并保存 Q：结束并写入数据集")
         print("方向键/I/K/J/L 仍可作为备用控制")
         print(f"数据集目录：{self.args.dataset_root}")
+        print(f"失败数据集：{self.args.failure_dataset_root}")
         print("===========================================\n")
 
         ui_hz = 60
@@ -947,7 +1179,9 @@ class MujocoPandaRecorder:
         if self.server is not None:
             self.server.stop()
         print(f"[LeRobot] 录制结束，共保存 {self.saved_episodes} 个 demonstrations。")
+        print(f"[LeRobot] 失败数据集共保存 {self.failed_episodes} 个 demonstrations。")
         print(f"[LeRobot] 数据集：{self.args.dataset_root}")
+        print(f"[LeRobot] 失败数据集：{self.args.failure_dataset_root}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -957,9 +1191,20 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--model-path", type=Path, default=DEFAULT_MODEL_PATH)
     parser.add_argument(
+        "--task-mode",
+        choices=("pick_place", "push_t"),
+        default="pick_place",
+        help="Select task-specific control rules without changing the other task.",
+    )
+    parser.add_argument(
         "--dataset-root",
         type=Path,
         default=REPO_ROOT / "datasets" / f"mujoco_panda_pick_{timestamp}",
+    )
+    parser.add_argument(
+        "--failure-dataset-root",
+        type=Path,
+        default=REPO_ROOT / "datasets" / f"mujoco_panda_pick_failures_{timestamp}",
     )
     parser.add_argument("--repo-id", default="local/mujoco_panda_pick")
     parser.add_argument(
@@ -1026,6 +1271,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--plate-y-min", type=float, default=-0.13)
     parser.add_argument("--plate-y-max", type=float, default=0.09)
     parser.add_argument("--object-min-separation", type=float, default=0.16)
+    parser.add_argument("--cube-yaw-min-deg", type=float, default=0.0)
+    parser.add_argument("--cube-yaw-max-deg", type=float, default=0.0)
+    parser.add_argument("--push-t-success-coverage", type=float, default=0.90)
+    parser.add_argument("--push-t-exit-coverage", type=float, default=0.85)
     parser.add_argument("--random-seed", type=int, default=None)
     parser.add_argument(
         "--streaming-encoding",
@@ -1036,9 +1285,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--test-frames", type=int, default=8)
     parser.add_argument("--test-episodes", type=int, default=1)
     parser.add_argument("--test-motion", action="store_true")
+    parser.add_argument("--test-failure", action="store_true")
     args = parser.parse_args()
     args.model_path = args.model_path.expanduser().resolve()
     args.dataset_root = args.dataset_root.expanduser().resolve()
+    args.failure_dataset_root = args.failure_dataset_root.expanduser().resolve()
     if not args.model_path.is_file():
         parser.error(f"MuJoCo scene not found: {args.model_path}")
     if args.dataset_root.exists():
@@ -1046,6 +1297,13 @@ def parse_args() -> argparse.Namespace:
             f"Dataset directory already exists: {args.dataset_root}. "
             "Choose a new --dataset-root so existing data is never overwritten."
         )
+    if args.failure_dataset_root.exists():
+        parser.error(
+            f"Failure dataset directory already exists: {args.failure_dataset_root}. "
+            "Choose a new --failure-dataset-root so existing data is never overwritten."
+        )
+    if args.failure_dataset_root == args.dataset_root:
+        parser.error("Success and failure dataset roots must be different.")
     if args.side_preview_fps <= 0:
         parser.error("--side-preview-fps must be greater than zero.")
     if args.max_joint_step <= 0:
@@ -1065,6 +1323,12 @@ def parse_args() -> argparse.Namespace:
             parser.error(f"--{name}-y-min must be less than --{name}-y-max.")
     if args.object_min_separation <= 0:
         parser.error("--object-min-separation must be greater than zero.")
+    if args.cube_yaw_min_deg > args.cube_yaw_max_deg:
+        parser.error("--cube-yaw-min-deg must not exceed --cube-yaw-max-deg.")
+    if not 0 < args.push_t_exit_coverage < args.push_t_success_coverage <= 1:
+        parser.error(
+            "Push-T coverage must satisfy 0 < exit < success <= 1."
+        )
     return args
 
 

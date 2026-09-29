@@ -62,14 +62,29 @@ source .venv/bin/activate
 mjpython simulation/mujoco/record_mujoco_panda.py
 ```
 
+项目保留 Pick-and-place 与 Push-T 两个任务。原普通方块 pushing 任务已移除。Push-T 使用T形刚体、T形目标和90%二维覆盖率成功判定：
+
+```bash
+mjpython simulation/mujoco/record_mujoco_push_t.py
+```
+
+Push-T 启动时夹爪固定闭合，指尖接触中心固定在 T 刚体高度的一半（世界坐标 `Z=0.415 m`）。`Victory`、`Thumb Up` 和 `ILoveYou` 分别控制左右、前后与斜向平移，Z 全程锁定。
+
 网页显示“MuJoCo 已连接”后，允许摄像头权限即可操作。
 
 录制控制：
 
 - `S` / 开始录制：开始一条 demonstration；
 - `N` / 成功并保存：保存 episode 并随机重置；
-- `R` / 失败并重录：丢弃 episode 并随机重置；
+- `R` / 失败并保存：把 episode 完整保存到独立的 `*_failures_*` 数据集并随机重置；
 - `Q` / 结束录制：完成并关闭数据集。
+
+成功与失败不会混在同一训练集。例如一次 Push-T 录制会同时建立：
+
+```text
+datasets/mujoco_panda_push_t_时间戳/           # 成功 demonstrations
+datasets/mujoco_panda_push_t_failures_时间戳/  # 失败 demonstrations
+```
 
 ## 4. 下载数据
 
@@ -94,6 +109,7 @@ Mac MPS 示例：
 ```bash
 DATASET_ROOT="$PWD/datasets/act_50eps" \
 OUTPUT_DIR="$PWD/outputs/act_panda_baseline" \
+PYTHON_BIN="$PWD/../lerobot/.venv/bin" \
 zsh training/ACT/train_act_baseline_mps.sh
 ```
 
@@ -103,6 +119,7 @@ NVIDIA CUDA 电脑可直接使用：
 
 ```bash
 DATASET_ROOT="$PWD/datasets/act_50eps" \
+PYTHON_BIN="$PWD/../lerobot/.venv/bin" \
 STEPS=1000 \
 bash training/ACT/train_act_baseline_cuda.sh
 ```
@@ -114,6 +131,10 @@ bash training/ACT/train_act_baseline_cuda.sh
 完整的手势规则、坐标系、Z 锁定、相机设计、数据字段、ACT 参数和故障排查见：
 
 [PROJECT_COMPLETE_GUIDE_CN.md](PROJECT_COMPLETE_GUIDE_CN.md)
+
+包含最新 Push-T 功能、双任务运行方式和当前故障排查的状态文档：
+
+[CURRENT_PROJECT_GUIDE_CN.md](CURRENT_PROJECT_GUIDE_CN.md)
 
 ## 数据与大文件
 

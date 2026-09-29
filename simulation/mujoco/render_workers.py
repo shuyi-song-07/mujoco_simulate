@@ -196,6 +196,7 @@ def _dataset_features(args) -> dict:
 def training_render_worker(args, command_queue, reply_queue) -> None:
     """Render and encode every training snapshot in order in a separate process."""
     dataset = None
+    failure_dataset = None
     renderer = None
     inspection_recorder = None
     temporary_video_dir = None
@@ -222,8 +223,23 @@ def training_render_worker(args, command_queue, reply_queue) -> None:
             encoder_threads=2,
             image_writer_threads=4,
         )
+        failure_dataset = LeRobotDataset.create(
+            repo_id=f"{args.repo_id}_failures",
+            fps=args.fps,
+            root=args.failure_dataset_root,
+            robot_type="mujoco_panda",
+            features=_dataset_features(args),
+            use_videos=True,
+            video_backend="pyav",
+            streaming_encoding=args.streaming_encoding,
+            rgb_encoder=RGBEncoderConfig(vcodec="auto", crf=23),
+            encoder_threads=2,
+            image_writer_threads=4,
+        )
         video_root = args.dataset_root / "episode_videos"
         manifest_path = video_root / "initial_positions.jsonl"
+        failure_video_root = args.failure_dataset_root / "episode_videos"
+        failure_manifest_path = failure_video_root / "initial_positions.jsonl"
         reply_queue.put({"type": "ready"})
 
         while True:
@@ -231,7 +247,7 @@ def training_render_worker(args, command_queue, reply_queue) -> None:
             kind = command["type"]
             if kind == "start":
                 episode_info = command
-                temporary_video_dir = video_root / f".episode_{command['episode_index']:06d}_recording"
+                temporary_video_dir = video_root / f".attempt_{command['attempt_index']:06d}_recording"
                 if temporary_video_dir.exists():
                     shutil.rmtree(temporary_video_dir)
                 inspection_recorder = EpisodeVideoRecorder(
@@ -257,13 +273,25 @@ def training_render_worker(args, command_queue, reply_queue) -> None:
                         "task": args.task,
                     }
                 )
+                failure_dataset.add_frame(
+                    {
+                        "observation.state": command["state"],
+                        "observation.images.overview": images["overview"],
+                        "observation.images.camera_2": images["camera_2"],
+                        "observation.images.camera_3": images["camera_3"],
+                        "action": command["action"],
+                        "task": args.task,
+                    }
+                )
             elif kind == "save":
                 dataset.save_episode()
+                if failure_dataset.has_pending_frames():
+                    failure_dataset.clear_episode_buffer()
                 inspection_error = None
                 try:
                     if inspection_recorder is not None:
                         inspection_recorder.close()
-                    final_dir = video_root / f"episode_{episode_info['episode_index']:06d}"
+                    final_dir = video_root / f"episode_{command['episode_index']:06d}"
                     if temporary_video_dir is not None:
                         temporary_video_dir.rename(final_dir)
                 except Exception as error:
@@ -273,10 +301,13 @@ def training_render_worker(args, command_queue, reply_queue) -> None:
                     manifest.write(
                         json.dumps(
                             {
-                                "episode_index": episode_info["episode_index"],
+                                "episode_index": command["episode_index"],
+                                "outcome": "success",
                                 "frames": command["frames"],
                                 "cube_xy_m": episode_info["cube_xy_m"],
                                 "target_plate_xy_m": episode_info["target_plate_xy_m"],
+                                "cube_yaw_rad": episode_info.get("cube_yaw_rad", 0.0),
+                                "target_yaw_rad": episode_info.get("target_yaw_rad", 0.0),
                             },
                             ensure_ascii=False,
                         )
@@ -286,9 +317,48 @@ def training_render_worker(args, command_queue, reply_queue) -> None:
                 temporary_video_dir = None
                 episode_info = None
                 reply_queue.put({"type": "saved", "inspection_error": inspection_error})
+            elif kind == "save_failure":
+                failure_dataset.save_episode()
+                if dataset.has_pending_frames():
+                    dataset.clear_episode_buffer()
+                inspection_error = None
+                try:
+                    if inspection_recorder is not None:
+                        inspection_recorder.close()
+                    failure_video_root.mkdir(parents=True, exist_ok=True)
+                    final_dir = failure_video_root / f"episode_{command['episode_index']:06d}"
+                    if temporary_video_dir is not None:
+                        temporary_video_dir.rename(final_dir)
+                except Exception as error:
+                    inspection_error = str(error)
+                failure_video_root.mkdir(parents=True, exist_ok=True)
+                with failure_manifest_path.open("a", encoding="utf-8") as manifest:
+                    manifest.write(
+                        json.dumps(
+                            {
+                                "episode_index": command["episode_index"],
+                                "outcome": "failure",
+                                "frames": command["frames"],
+                                "cube_xy_m": episode_info["cube_xy_m"],
+                                "target_plate_xy_m": episode_info["target_plate_xy_m"],
+                                "cube_yaw_rad": episode_info.get("cube_yaw_rad", 0.0),
+                                "target_yaw_rad": episode_info.get("target_yaw_rad", 0.0),
+                            },
+                            ensure_ascii=False,
+                        )
+                        + "\n"
+                    )
+                inspection_recorder = None
+                temporary_video_dir = None
+                episode_info = None
+                reply_queue.put(
+                    {"type": "failure_saved", "inspection_error": inspection_error}
+                )
             elif kind == "discard":
                 if dataset.has_pending_frames():
                     dataset.clear_episode_buffer()
+                if failure_dataset.has_pending_frames():
+                    failure_dataset.clear_episode_buffer()
                 if inspection_recorder is not None:
                     inspection_recorder.close()
                 if temporary_video_dir is not None:
@@ -300,11 +370,14 @@ def training_render_worker(args, command_queue, reply_queue) -> None:
             elif kind == "close":
                 if dataset.has_pending_frames():
                     dataset.clear_episode_buffer()
+                if failure_dataset.has_pending_frames():
+                    failure_dataset.clear_episode_buffer()
                 if inspection_recorder is not None:
                     inspection_recorder.close()
                 if temporary_video_dir is not None:
                     shutil.rmtree(temporary_video_dir, ignore_errors=True)
                 dataset.finalize()
+                failure_dataset.finalize()
                 reply_queue.put({"type": "closed"})
                 break
     except Exception as error:

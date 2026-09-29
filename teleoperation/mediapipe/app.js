@@ -26,12 +26,14 @@ const sidePreviewImage = document.querySelector("#side-preview-image");
 const frontPreviewImage = document.querySelector("#front-preview-image");
 const recordStartButton = document.querySelector("#record-start");
 const recordSaveButton = document.querySelector("#record-save");
-const recordDiscardButton = document.querySelector("#record-discard");
+const recordFailureButton = document.querySelector("#record-failure");
 const recordStopButton = document.querySelector("#record-stop");
+const openPalmRule = document.querySelector("#open-palm-rule");
+const closedFistRule = document.querySelector("#closed-fist-rule");
 const robotButtons = [
   recordStartButton,
   recordSaveButton,
-  recordDiscardButton,
+  recordFailureButton,
   recordStopButton,
 ];
 
@@ -58,6 +60,9 @@ let mediaStream;
 let animationFrameId;
 let lastVideoTime = -1;
 let robotConnected = false;
+let robotTaskMode = "pick_place";
+let robotZLocked = false;
+let pushingPlanarGestureStartedAt = Number.NEGATIVE_INFINITY;
 let lastFistY = null;
 let lastOpenPalmY = null;
 let lastPlanarPoint = null;
@@ -73,6 +78,10 @@ let lastDiagonalGestureAt = Number.NEGATIVE_INFINITY;
 let diagonalOpenBlocked = false;
 let motionRequestInFlight = false;
 let pendingMotionRequest;
+
+function isPushingTask() {
+  return robotTaskMode === "push_t";
+}
 
 const CONTROL_INTERVAL_MS = 40;
 const PLANAR_SENSITIVITY = 0.03;
@@ -112,7 +121,10 @@ function setRobotConnected(isConnected) {
     hideSidePreview();
     robotFeedback.textContent = "请先运行 MuJoCo LeRobot 录制程序。";
   } else if (!wasConnected) {
-    robotFeedback.textContent = "MuJoCo 已连接，可以启用机器人控制并开始录制。";
+    robotFeedback.textContent =
+      isPushingTask()
+        ? "MuJoCo Push-T 已连接：夹爪已闭合，推动高度固定在 T 刚体中线。"
+        : "MuJoCo 已连接，可以启用机器人控制并开始录制。";
   }
 }
 
@@ -167,6 +179,18 @@ async function pollSidePreview() {
 async function checkRobotConnection() {
   try {
     const response = await fetch(`${robotApiBase}/health`, { cache: "no-store" });
+    if (response.ok) {
+      const runtime = await response.json();
+      robotTaskMode = runtime.task_mode ?? "pick_place";
+      robotZLocked = runtime.z_locked === true;
+      if (robotTaskMode === "push_t") {
+        openPalmRule.textContent = "夹爪保持闭合；推动高度固定";
+        closedFistRule.textContent = "夹爪保持闭合；推动高度固定";
+      } else {
+        openPalmRule.textContent = "松开夹爪 / 手上下控制升降";
+        closedFistRule.textContent = "闭合夹爪 / 手上下控制升降";
+      }
+    }
     setRobotConnected(response.ok);
   } catch {
     setRobotConnected(false);
@@ -228,6 +252,7 @@ function processRobotControl(result, timestamp) {
     lastPlanarPoint = null;
     diagonalOpenBlocked = false;
     pendingMotionRequest = undefined;
+    pushingPlanarGestureStartedAt = Number.NEGATIVE_INFINITY;
     return;
   }
 
@@ -235,6 +260,12 @@ function processRobotControl(result, timestamp) {
   const gesture = topGesture?.categoryName ?? "None";
   const wrist = result.landmarks[0][0];
   const gestureChanged = gesture !== lastRobotGesture;
+
+  if (isPushingTask()) {
+    processPushingControl({ gesture, gestureChanged, wrist, timestamp });
+    lastRobotGesture = gesture;
+    return;
+  }
 
   if (gesture === "ILoveYou") {
     lastDiagonalGestureAt = timestamp;
@@ -370,6 +401,71 @@ function processRobotControl(result, timestamp) {
   }
 
   lastRobotGesture = gesture;
+}
+
+function processPushingControl({ gesture, gestureChanged, wrist, timestamp }) {
+  // Push-T uses a closed gripper and fixed midpoint contact height. Palm and
+  // fist no longer change the gripper or Z; only planar gestures move it.
+  const isVerticalGesture = gesture === "Open_Palm" || gesture === "Closed_Fist";
+  if (isVerticalGesture) {
+    robotFeedback.textContent =
+      "Push-T：夹爪保持闭合，推动高度固定在 T 刚体中线。";
+    lastOpenPalmY = null;
+  }
+
+  const isPlanarGesture =
+    gesture === "Victory" || gesture === "Thumb_Up" || gesture === "ILoveYou";
+  if (!isPlanarGesture) {
+    lastPlanarPoint = null;
+    pushingPlanarGestureStartedAt = Number.NEGATIVE_INFINITY;
+    if (robotZLocked) {
+      robotFeedback.textContent = "Push-T：固定高度已锁定，等待平面移动手势。";
+    }
+    return;
+  }
+
+  if (gestureChanged) {
+    pushingPlanarGestureStartedAt = timestamp;
+    lastPlanarPoint = { x: wrist.x, y: wrist.y };
+  }
+  if (lastPlanarPoint && timestamp - lastControlSentAt >= CONTROL_INTERVAL_MS) {
+    const screenDx = wrist.x - lastPlanarPoint.x;
+    const screenDy = wrist.y - lastPlanarPoint.y;
+    let { dx, dy } = mapPlanarMotion({
+      gesture,
+      screenDx,
+      screenDy,
+      sensitivity: PLANAR_SENSITIVITY,
+      carrying: true,
+    });
+    const magnitude = Math.hypot(dx, dy);
+    if (magnitude > 1) {
+      dx /= magnitude;
+      dy /= magnitude;
+    }
+    const gestureIsStable = timestamp - pushingPlanarGestureStartedAt >= 250;
+    if (gestureIsStable && magnitude > PLANAR_DEAD_ZONE) {
+      if (!robotZLocked) {
+        void sendRobotCommand("start_planar", { lockZ: true });
+        robotZLocked = true;
+      }
+      sendLatestMotionCommand("move_xy", { dx, dy, lockZ: true });
+      lastControlSentAt = timestamp;
+    }
+  }
+  lastPlanarPoint = { x: wrist.x, y: wrist.y };
+  const messages = robotZLocked
+    ? {
+        Victory: "Push-T：固定高度已锁定，正在左右移动。",
+        Thumb_Up: "Push-T：固定高度已锁定，正在前后移动。",
+        ILoveYou: "Push-T：固定高度已锁定，正在斜向移动。",
+      }
+    : {
+        Victory: "Push-T：正在左右移动。",
+        Thumb_Up: "Push-T：正在前后移动。",
+        ILoveYou: "Push-T：正在斜向移动。",
+      };
+  robotFeedback.textContent = messages[gesture];
 }
 
 function setCameraLoading(isLoading, message = "正在准备摄像头…") {
@@ -642,9 +738,10 @@ recordSaveButton.addEventListener("click", async () => {
   }
 });
 
-recordDiscardButton.addEventListener("click", async () => {
-  if (await sendRobotCommand("record_discard")) {
-    robotFeedback.textContent = "已丢弃失败 demonstration，MuJoCo 将自动重置。";
+recordFailureButton.addEventListener("click", async () => {
+  if (await sendRobotCommand("record_failure")) {
+    robotFeedback.textContent =
+      "失败 demonstration 已保存到独立失败数据集，MuJoCo 将自动重置。";
   }
 });
 
