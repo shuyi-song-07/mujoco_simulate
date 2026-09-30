@@ -74,15 +74,22 @@
       size="0.030 0.030 0.030"
       mass="0.1"
       friction="2 0.08 0.05"
+      solref="0.02 1.5"
+      solimp="0.90 0.98 0.02"
       rgba="1 0 0 1"/>
     </body>
 
     <!-- 白色放置目标：方块进入圆盘范围后自动解除 Z 锁定 -->
-    <body name="target_plate" pos="0.60 -0.16 0.408">
+    <!-- The plate is thickened downward; its top remains at z=0.416 m. -->
+    <body name="target_plate" pos="0.60 -0.16 0.404">
       <geom name="target_plate_geom"
             type="cylinder"
-            size="0.09 0.008"
+            size="0.09 0.012"
             friction="1.5 0.08 0.05"
+            margin="0.002"
+            gap="0"
+            solref="0.005 1.5"
+            solimp="0.95 0.99 0.001"
             rgba="1 1 1 1"/>
     </body>
 
