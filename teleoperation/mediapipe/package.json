@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "A browser-based hand landmark demo powered by MediaPipe Gesture Recognizer.",
   "scripts": {
-    "test": "node --check app.js && node --check server.js && node --test interaction-state.test.js",
+    "test": "node --check app.js && node --check server.js && node --check dual-arm-app.js && node --check dual-gesture-worker.js && node --test interaction-state.test.js dual-interaction-state.test.js dual-arm-app.test.js",
     "start": "node server.js"
   },
   "keywords": [],
