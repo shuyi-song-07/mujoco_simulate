@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Task 3 · 双臂协同采集</title>
+    <link rel="stylesheet" href="./dual-arm-style.css" />
+  </head>
+  <body>
+    <main>
+      <header class="page-header">
+        <div><p class="eyebrow">TASK 3 / BIMANUAL TELEOPERATION</p><h1>双臂协同采集</h1></div>
+        <a href="./index.html">返回单臂任务</a>
+      </header>
+      <div class="status-bar" aria-live="polite">
+        <span id="connection" data-state="error">仿真未连接</span>
+        <span>任务 <strong id="task-state">—</strong></span>
+        <span>夹爪 <strong id="gripper">等待同步</strong></span>
+        <span>录制 <strong id="recording-state">未开始</strong></span>
+        <span>采集用时 <strong id="task-elapsed">—</strong></span>
+        <span id="session-mode">未录制练习</span>
+      </div>
+      <section id="control-status" class="control-status" data-state="paused" aria-live="polite" aria-label="当前控制状态">
+        <div class="control-status-heading"><span>当前控制状态</span><strong id="control-status-title">已暂停</strong><span id="control-gripper-state">夹爪状态待确认</span></div>
+        <p id="notice" class="notice" role="status">请运行 START-TASK3.cmd，然后启动本机摄像头。</p>
+        <p id="control-recording-note" hidden></p>
+      </section>
+      <div class="workspace">
+        <section class="panel main-view">
+          <div class="panel-title"><h2 id="main-view-title">俯视 · XY 对准（↑ −X，→ +Y）</h2><span id="preview-state">等待仿真画面</span></div>
+          <label class="control-row">主画面 <select id="view-select"><option value="auto">XY 看正上方 / Z 看内侧近景</option><option value="top">正上方 · 对平面</option><option value="front">内侧近景 · 对准与高度</option><option value="side">斜侧方 · 看接触</option></select></label>
+          <p class="view-help">俯视中的机械臂半透明，便于观察物块；内侧近景看对准与高度，斜侧视看接触。</p>
+          <div class="image-frame"><img id="main-preview" alt="双臂任务主视角" hidden /><p id="main-placeholder">连接后显示固定俯视；Z 模式自动显示内侧近景。</p></div>
+          <div class="auxiliary">
+            <figure><div class="image-frame"><img id="side-preview" alt="辅助视角一" hidden /><p id="side-placeholder">等待画面</p></div><figcaption id="auxiliary-view-one">斜侧方 · 两侧接触辅助</figcaption></figure>
+            <figure><div class="image-frame"><img id="front-preview" alt="辅助视角二" hidden /><p id="front-placeholder">等待画面</p></div><figcaption id="auxiliary-view-two">内侧近景 · 对准与高度</figcaption></figure>
+          </div>
+        </section>
+        <aside>
+          <section class="panel camera-panel">
+            <div class="panel-title"><h2>本机双手摄像头</h2></div>
+            <div class="camera-frame"><video id="webcam" autoplay playsinline muted></video><canvas id="output-canvas"></canvas><p id="camera-placeholder">摄像头仅在你点击启动并授权后开启。</p></div>
+            <button id="camera-button" class="primary">启动摄像头</button>
+            <div class="motion-settings">
+              <label class="control-row">移动速度 <select id="motion-speed"><option value="0.3">精细 · 30%</option><option value="0.7" selected>标准 · 70%</option><option value="1">快速 · 100%</option></select></label>
+              <p id="motion-detail">默认随手移动，无需回中。放下双手会暂停，重新入镜后恢复。</p>
+            </div>
+            <div class="hand-cards">
+              <article><h3>左手 → 左臂</h3><p id="left-gesture">等待识别</p><progress id="left-evidence" max="1" value="0" aria-label="左手抓放确认进度"></progress></article>
+              <article><h3>右手 → 右臂</h3><p id="right-gesture">等待识别</p><progress id="right-evidence" max="1" value="0" aria-label="右手抓放确认进度"></progress></article>
+            </div>
+            <p id="gripper-detail" role="status">双手握拳闭合、张掌打开；等待仿真同步当前确认门槛。</p>
+            <p id="calibration-state" role="status">双手张掌稳定 2 秒即绑定，无需确认。</p>
+            <progress id="calibration-progress" max="1" value="0" aria-label="免点击左右手绑定进度"></progress>
+            <p id="calibration-detail" role="status">两只手需要同时完整入镜，掌心朝向摄像头；下方会说明未开始计时的原因。</p>
+            <button id="unbind-hands" disabled>解除绑定</button>
+            <details class="advanced-settings">
+              <summary>识别诊断与高级设置</summary>
+              <p id="camera-state">未启动</p>
+              <p>前端手势模式：<span id="mode">暂停</span></p>
+              <div class="identity-diagnostics"><p>左手：<span id="left-identity">左右身份待确认</span></p><p>右手：<span id="right-identity">左右身份待确认</span></p></div>
+              <label class="check-row"><input type="checkbox" id="swap-labels" /> 左右标签相反，交换并重新绑定</label>
+              <label class="control-row">移动方式 <select id="motion-mapping"><option value="incremental" selected>随手位移（默认）</option><option value="rate">回中速度</option></select></label>
+            </details>
+          </section>
+          <section class="panel">
+            <div class="panel-title"><h2>示范录制</h2><span id="dataset-counts">成功 0 / 失败 0</span></div>
+            <p>点击后才录制三路仿真画面；不录制你的摄像头视频。</p>
+            <div class="record-buttons">
+              <button data-command="record_start" class="primary" disabled>开始录制</button>
+              <button data-command="record_save" disabled>保存成功</button>
+              <button data-command="record_failure" disabled>保存失败</button>
+              <button data-command="record_discard" disabled>放弃本轮</button>
+            </div>
+            <p id="record-feedback">成功保存需要仿真自动判定 DONE；失败轨迹独立保存。</p>
+            <div class="button-row"><button id="pause-button">暂停 / 重定位</button><button data-command="reset" disabled>重置场景</button></div>
+            <button data-command="record_stop" class="subtle" disabled>结束采集并退出仿真</button>
+          </section>
+        </aside>
+      </div>
+      <details class="panel instructions">
+        <summary>操作帮助与手势表</summary>
+        <p>启动摄像头 → 双手张掌 2 秒绑定 → 对准 → 握拳抓取 → 搬运并放置 → 张掌释放。正式采集需先点击“开始录制”，成功后再保存。</p>
+        <div class="gesture-guide">
+          <p><strong>双手 I Love You</strong><span>XY 平移：向上 −X，向右 +Y。默认随手位移，无需回中。</span></p>
+          <p><strong>双手剪刀手 Victory</strong><span>Z 升降：手向上抬升、向下降低。观察内侧近景，小步下降。</span></p>
+          <p><strong>双手握拳 / 张掌</strong><span id="gripper-guide">双手同时保持，达到确认门槛后同步闭合 / 打开。</span></p>
+          <p><strong>双手张掌稳定 2 秒</strong><span>未绑定时自动绑定。绑定时的张掌不触发释放，先换操作手势再正常控制。</span></p>
+          <p><strong>暂停与重新定位</strong><span>放下双手会暂停，重新入镜后建立新基准；也可用暂停按钮、空格或 Esc。未分配手势不会继续移动。</span></p>
+        </div>
+        <p>丢手只暂停、保留绑定和夹爪状态；恢复双手后重新建立移动基准。未录制可不限时练习，失败后仍须重置；录制中的失败请先保存或放弃本轮。失败时仍可张掌松爪。</p>
+      </details>
+    </main>
+    <script type="module" src="./dual-arm-app.js"></script>
+  </body>
+</html>

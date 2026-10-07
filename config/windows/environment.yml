@@ -1,0 +1,13 @@
+name: mujoco_repro
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - nodejs=24
+  - ffmpeg=7
+# After creating/activating this environment, run from the project root:
+# python -m pip install torch==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cu130
+# python -m pip install -r config/windows/requirements.txt
+# cd teleoperation/mediapipe
+# npm ci
