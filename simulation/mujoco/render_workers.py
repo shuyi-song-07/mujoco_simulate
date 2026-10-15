@@ -69,6 +69,12 @@ def _training_cameras(args):
 
 def _auxiliary_cameras(args):
     return {
+        "top": _free_camera(
+            [args.topdown_lookat_x, args.topdown_lookat_y, args.topdown_lookat_z],
+            args.topdown_distance,
+            args.topdown_azimuth,
+            -90.0,
+        ),
         "side": _free_camera(
             [args.side_lookat_x, args.side_lookat_y, args.side_lookat_z],
             args.side_distance,
@@ -90,6 +96,13 @@ def _apply_snapshot(model, data, target_plate_id: int, snapshot: dict) -> None:
     data.ctrl[:] = snapshot["ctrl"]
     data.time = snapshot["time"]
     model.body_pos[target_plate_id] = snapshot["target_plate_pos"]
+    if "randomized_geom_sizes" in snapshot:
+        geom_ids = [int(model.body_geomadr[_body_id(model, "cube")])]
+        for name in ("distractor_blue", "distractor_green", "distractor_yellow"):
+            body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, name)
+            if body_id >= 0:
+                geom_ids.append(int(model.body_geomadr[body_id]))
+        model.geom_size[geom_ids] = snapshot["randomized_geom_sizes"]
     mujoco.mj_forward(model, data)
 
 
@@ -103,8 +116,9 @@ class EpisodeVideoRecorder:
         self.outputs = {}
         for camera_name in CAMERA_NAMES:
             container = av.open(str(directory / f"{camera_name}.mp4"), mode="w")
+            encoder = "h264_videotoolbox" if "h264_videotoolbox" in av.codecs_available else "libx264"
             stream = container.add_stream(
-                "h264_videotoolbox",
+                encoder,
                 rate=fps,
                 options={"q:v": "60"},
             )
@@ -152,11 +166,11 @@ def _dataset_features(args) -> dict:
     return {
         "observation.state": {
             "dtype": "float32",
-            "shape": (8,),
+            "shape": (9,),
             "names": {
                 "axes": [
                     "joint1", "joint2", "joint3", "joint4",
-                    "joint5", "joint6", "joint7", "finger_width_m",
+                    "joint5", "joint6", "joint7", "gripper_yaw_rad", "finger_width_m",
                 ]
             },
         },
@@ -190,6 +204,9 @@ def _dataset_features(args) -> dict:
                 ]
             },
         },
+        "observation.gesture": {"dtype": "int64", "shape": (1,), "names": ["mediapipe_gesture_code"]},
+        "observation.gesture_score": {"dtype": "float32", "shape": (1,), "names": ["confidence_0_1"]},
+        "observation.hand_visible": {"dtype": "int64", "shape": (1,), "names": ["visible_0_1"]},
     }
 
 
@@ -219,7 +236,7 @@ def training_render_worker(args, command_queue, reply_queue) -> None:
             # which otherwise loads Homebrew FFmpeg into the same macOS process.
             video_backend="pyav",
             streaming_encoding=args.streaming_encoding,
-            rgb_encoder=RGBEncoderConfig(vcodec="auto", crf=23),
+            rgb_encoder=RGBEncoderConfig(vcodec="h264_videotoolbox" if "h264_videotoolbox" in av.codecs_available else "h264", crf=23),
             encoder_threads=2,
             image_writer_threads=4,
         )
@@ -232,7 +249,7 @@ def training_render_worker(args, command_queue, reply_queue) -> None:
             use_videos=True,
             video_backend="pyav",
             streaming_encoding=args.streaming_encoding,
-            rgb_encoder=RGBEncoderConfig(vcodec="auto", crf=23),
+            rgb_encoder=RGBEncoderConfig(vcodec="h264_videotoolbox" if "h264_videotoolbox" in av.codecs_available else "h264", crf=23),
             encoder_threads=2,
             image_writer_threads=4,
         )
@@ -270,6 +287,9 @@ def training_render_worker(args, command_queue, reply_queue) -> None:
                         "observation.images.camera_2": images["camera_2"],
                         "observation.images.camera_3": images["camera_3"],
                         "action": command["action"],
+                        "observation.gesture": command["gesture"],
+                        "observation.gesture_score": command["gesture_score"],
+                        "observation.hand_visible": command["hand_visible"],
                         "task": args.task,
                     }
                 )
@@ -280,6 +300,9 @@ def training_render_worker(args, command_queue, reply_queue) -> None:
                         "observation.images.camera_2": images["camera_2"],
                         "observation.images.camera_3": images["camera_3"],
                         "action": command["action"],
+                        "observation.gesture": command["gesture"],
+                        "observation.gesture_score": command["gesture_score"],
+                        "observation.hand_visible": command["hand_visible"],
                         "task": args.task,
                     }
                 )
@@ -308,6 +331,8 @@ def training_render_worker(args, command_queue, reply_queue) -> None:
                                 "target_plate_xy_m": episode_info["target_plate_xy_m"],
                                 "cube_yaw_rad": episode_info.get("cube_yaw_rad", 0.0),
                                 "target_yaw_rad": episode_info.get("target_yaw_rad", 0.0),
+                                "layout": episode_info.get("layout", []),
+                                "layout_reachability": episode_info.get("layout_reachability"),
                             },
                             ensure_ascii=False,
                         )
@@ -343,6 +368,8 @@ def training_render_worker(args, command_queue, reply_queue) -> None:
                                 "target_plate_xy_m": episode_info["target_plate_xy_m"],
                                 "cube_yaw_rad": episode_info.get("cube_yaw_rad", 0.0),
                                 "target_yaw_rad": episode_info.get("target_yaw_rad", 0.0),
+                                "layout": episode_info.get("layout", []),
+                                "layout_reachability": episode_info.get("layout_reachability"),
                             },
                             ensure_ascii=False,
                         )
@@ -390,7 +417,7 @@ def training_render_worker(args, command_queue, reply_queue) -> None:
 
 
 def auxiliary_render_worker(args, command_queue, result_queue, ready_queue) -> None:
-    """Render only the newest side/front snapshot in a separate process."""
+    """Render the newest top/side/front snapshots in a separate process."""
     renderer = None
     try:
         model = mujoco.MjModel.from_xml_path(str(args.model_path))
@@ -398,18 +425,20 @@ def auxiliary_render_worker(args, command_queue, result_queue, ready_queue) -> N
         target_plate_id = _body_id(model, "target_plate")
         cameras = _auxiliary_cameras(args)
         renderer = mujoco.Renderer(model, height=args.aux_height, width=args.aux_width)
-        next_camera = "side"
+        camera_order = ("top", "side", "front")
+        next_camera_index = 0
         ready_queue.put({"type": "ready"})
         while True:
             command = command_queue.get()
             if command is None:
                 break
             _apply_snapshot(model, data, target_plate_id, command)
-            renderer.update_scene(data, camera=cameras[next_camera])
+            camera_name = camera_order[next_camera_index]
+            renderer.update_scene(data, camera=cameras[camera_name])
             image = renderer.render()
             output = io.BytesIO()
             Image.fromarray(image).save(output, format="JPEG", quality=78)
-            result = (next_camera, output.getvalue())
+            result = (camera_name, output.getvalue())
             try:
                 result_queue.put_nowait(result)
             except queue.Full:
@@ -418,7 +447,7 @@ def auxiliary_render_worker(args, command_queue, result_queue, ready_queue) -> N
                 except queue.Empty:
                     pass
                 result_queue.put_nowait(result)
-            next_camera = "front" if next_camera == "side" else "side"
+            next_camera_index = (next_camera_index + 1) % len(camera_order)
     except Exception as error:
         ready_queue.put(
             {"type": "fatal", "error": str(error), "traceback": traceback.format_exc()}

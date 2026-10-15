@@ -44,6 +44,7 @@ createServer((request, response) => {
   if (isDualRoute ||
     pathname === "/api/health" ||
     pathname === "/api/control" ||
+    pathname === "/api/top-preview" ||
     pathname === "/api/side-preview" ||
     pathname === "/api/front-preview"
   ) {

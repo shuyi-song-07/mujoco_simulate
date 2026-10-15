@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="使用 MediaPipe 绘制实时手部关键点的网页 Demo" />
     <title>Gesture Interaction</title>
-    <link rel="stylesheet" href="./style.css" />
+    <link rel="stylesheet" href="./style.css?v=grasp-preview-2" />
   </head>
   <body>
     <main class="app-shell">
@@ -72,7 +72,7 @@
       <section class="robot-panel" aria-labelledby="robot-title">
         <div class="robot-heading">
           <div>
-            <p class="step-label">MUJOCO · LEROBOT</p>
+            <p class="step-label" id="backend-label">MUJOCO · LEROBOT</p>
             <h2 id="robot-title">Panda 数据收集</h2>
           </div>
           <div id="robot-status" class="status" data-state="error" role="status" aria-live="polite">
@@ -81,48 +81,63 @@
           </div>
         </div>
 
-        <p class="robot-help">张开手掌或握拳时，上下移动手控制直线升降；抓住方块并将方块抬到约 0.50 m 后自动锁定 Z、切换为俯视视角。方块靠近圆心（约 5 cm 内）并稳定后才自动解锁、恢复斜视角；若仍夹着方块移出圆盘，会重新锁定 Z 并恢复俯视。三个相隔约 120° 的固定第三人称相机全程同步录制 visual observation；action 同步记录底座坐标系下的 XYZ、RX/RY/RZ 和夹爪目标。</p>
+        <p class="robot-help" id="robot-help">手重新入镜后目标在 0.5 秒内恢复控制，同一手势可继续使用；可用“重置场景”重新随机摆放。空爪用 Victory 左右移动、Thumb_Up 前后移动、ILoveYou 斜向移动。张掌或握拳上下移动控制升降；握拳保持 50 毫秒闭爪，张掌松爪，抓取位置和高度由你手动调整。Pointing_Up 只在本场景初次调整夹爪朝向时生效；换成任一稳定手势后朝向固定，直到重置场景。MuJoCo 窗口斜走时显示俯视，抓取时用网页侧视和正面确认夹爪高度。夹爪准确位于红色刚体上方或夹住刚体进入圆盘时，窗口切回 overview。三路训练相机和每帧手势同步录制。</p>
 
         <section id="side-preview-panel" class="side-preview-panel" hidden aria-labelledby="side-preview-title">
           <div class="side-preview-heading">
             <div>
               <p class="step-label">实时辅助视角</p>
-              <h3 id="side-preview-title">侧视 + 正面辅助</h3>
+              <h3 id="side-preview-title">俯视 + 侧视 + 正面</h3>
             </div>
-            <span>仅用于操作，不写入训练数据</span>
+            <span id="preview-help">仅用于操作，不写入训练数据</span>
           </div>
-          <div class="aux-preview-grid">
+          <div class="aux-preview-grid" id="preview-grid">
+            <figure id="top-preview-figure" hidden>
+              <img id="top-preview-image" alt="Panda 俯视画面" />
+              <figcaption>俯视图</figcaption>
+            </figure>
             <figure>
-              <img id="side-preview-image" alt="MuJoCo Panda 侧视辅助画面" />
+              <img id="side-preview-image" alt="Panda 侧视辅助画面" />
               <figcaption>侧视图</figcaption>
             </figure>
             <figure>
-              <img id="front-preview-image" alt="MuJoCo Panda 正面辅助画面" />
+              <img id="front-preview-image" alt="Panda 正面辅助画面" />
               <figcaption>正面图</figcaption>
             </figure>
           </div>
         </section>
 
         <div class="robot-controls">
+          <label id="motion-speed-control" class="motion-speed-control" hidden>遥操速度
+            <select id="motion-speed">
+              <option value="0.5">慢速 50%</option>
+              <option value="1" selected>标准 100%</option>
+              <option value="1.5">快速 150%</option>
+            </select>
+          </label>
+          <button id="reset-scene" type="button" hidden>重置场景</button>
           <button id="record-start" type="button">开始录制</button>
           <button id="record-save" type="button">成功并保存</button>
           <button id="record-failure" type="button">失败并保存</button>
           <button id="record-stop" type="button">结束录制</button>
         </div>
 
+        <p id="practice-hint" class="practice-hint" hidden>未录制也可直接遥操练习；点击“重置场景”可重新开始。</p>
+
         <p id="robot-feedback" class="robot-feedback" role="status" aria-live="polite">等待连接 MuJoCo…</p>
 
         <div class="robot-gesture-guide">
           <div><code>Open_Palm</code><strong id="open-palm-rule">松开夹爪 / 手上下控制升降</strong></div>
-          <div><code>Closed_Fist</code><strong id="closed-fist-rule">闭合夹爪 / 手上下控制升降</strong></div>
+          <div><code>Closed_Fist</code><strong id="closed-fist-rule">手上下控制升降；在红色刚体抓取位停稳后闭合</strong></div>
           <div><code>Victory</code><strong>左右移动</strong></div>
           <div><code>Thumb_Up</code><strong>前后移动</strong></div>
+          <div><code>Pointing_Up</code><strong>首次移动或闭爪前调整朝向</strong></div>
           <div><code>ILoveYou</code><strong>斜向移动</strong></div>
         </div>
       </section>
 
     </main>
 
-    <script type="module" src="./app.js?v=save-failures-7"></script>
+    <script type="module" src="./app.js?v=release-score-05-4"></script>
   </body>
 </html>

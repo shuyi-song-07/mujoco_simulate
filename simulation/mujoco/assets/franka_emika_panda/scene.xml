@@ -3,8 +3,8 @@
 
   <option timestep="0.001"
           integrator="implicitfast"
-          iterations="50"
-          noslip_iterations="5"/>
+          iterations="80"
+          noslip_iterations="10"/>
 
   <visual>
     <headlight diffuse="0.6 0.6 0.6"
@@ -61,8 +61,12 @@
 
     <!-- 桌子 -->
     <body name="table" pos="0.5 0 0.2">
-      <geom type="box"
+      <geom name="table_surface" type="box"
             size="0.4 0.5 0.2"
+            friction="2 0.1 0.02"
+            condim="4"
+            solref="0.002 1"
+            solimp="0.99 0.999 0.0002 0.5 2"
             rgba="0.55 0.35 0.2 1"/>
     </body>
 
@@ -73,8 +77,24 @@
       <geom type="box"
       size="0.030 0.030 0.030"
       mass="0.1"
-      friction="2 0.08 0.05"
+      friction="6 0.18 0.03"
+      condim="4"
+      solref="0.002 1"
+      solimp="0.99 0.999 0.0002 0.5 2"
       rgba="1 0 0 1"/>
+    </body>
+
+    <body name="distractor_blue" pos="0.42 0.18 0.427">
+      <freejoint/>
+      <geom name="distractor_blue_geom" type="box" size="0.025 0.025 0.025" mass="0.08" friction="4 0.12 0.02" condim="4" solref="0.002 1" solimp="0.99 0.999 0.0002 0.5 2" rgba="0.08 0.32 0.95 1"/>
+    </body>
+    <body name="distractor_green" pos="0.58 0.18 0.437">
+      <freejoint/>
+      <geom name="distractor_green_geom" type="box" size="0.035 0.035 0.035" mass="0.12" friction="4 0.12 0.02" condim="4" solref="0.002 1" solimp="0.99 0.999 0.0002 0.5 2" rgba="0.08 0.78 0.2 1"/>
+    </body>
+    <body name="distractor_yellow" pos="0.62 -0.2 0.422">
+      <freejoint/>
+      <geom name="distractor_yellow_geom" type="box" size="0.02 0.02 0.02" mass="0.06" friction="4 0.12 0.02" condim="4" solref="0.002 1" solimp="0.99 0.999 0.0002 0.5 2" rgba="0.98 0.8 0.08 1"/>
     </body>
 
     <!-- 白色放置目标：方块进入圆盘范围后自动解除 Z 锁定 -->
@@ -82,7 +102,10 @@
       <geom name="target_plate_geom"
             type="cylinder"
             size="0.09 0.008"
-            friction="1.5 0.08 0.05"
+            friction="2 0.1 0.02"
+            condim="4"
+            solref="0.002 1"
+            solimp="0.99 0.999 0.0002 0.5 2"
             rgba="1 1 1 1"/>
     </body>
 

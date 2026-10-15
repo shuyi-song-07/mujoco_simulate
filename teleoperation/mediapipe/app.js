@@ -4,7 +4,7 @@ import {
   GestureRecognizer,
 } from "./node_modules/@mediapipe/tasks-vision/vision_bundle.mjs";
 
-import { mapPlanarMotion, shouldStartPlanarLock } from "./interaction-state.js";
+import { mapPlanarMotion, pointingUpAngle, pointingControlCandidate, pointingYawFromWrist, shouldStartPlanarLock, nextPlanarAnchor, planarGestureAfterDiagonal, SingleHandRearmGate, openPalmAllowedAfterDiagonal, openPalmReadyToRelease, handClearForRelease, shouldCloseGripper } from "./interaction-state.js?v=release-score-05-4";
 
 const video = document.querySelector("#webcam");
 const canvas = document.querySelector("#output-canvas");
@@ -21,7 +21,11 @@ const recognitionResults = document.querySelector("#recognition-results");
 const robotStatus = document.querySelector("#robot-status");
 const robotStatusText = document.querySelector("#robot-status-text");
 const robotFeedback = document.querySelector("#robot-feedback");
+const resetSceneButton = document.querySelector("#reset-scene");
+const practiceHint = document.querySelector("#practice-hint");
 const sidePreviewPanel = document.querySelector("#side-preview-panel");
+const topPreviewFigure = document.querySelector("#top-preview-figure");
+const topPreviewImage = document.querySelector("#top-preview-image");
 const sidePreviewImage = document.querySelector("#side-preview-image");
 const frontPreviewImage = document.querySelector("#front-preview-image");
 const recordStartButton = document.querySelector("#record-start");
@@ -31,6 +35,7 @@ const recordStopButton = document.querySelector("#record-stop");
 const openPalmRule = document.querySelector("#open-palm-rule");
 const closedFistRule = document.querySelector("#closed-fist-rule");
 const robotButtons = [
+  resetSceneButton,
   recordStartButton,
   recordSaveButton,
   recordFailureButton,
@@ -46,6 +51,7 @@ const gestureNames = {
   Thumb_Up: "竖起拇指",
   Victory: "胜利手势",
   ILoveYou: "我爱你",
+  Pointing_Up: "向上指",
   None: "未识别手势",
 };
 
@@ -66,18 +72,75 @@ let pushingPlanarGestureStartedAt = Number.NEGATIVE_INFINITY;
 let lastFistY = null;
 let lastOpenPalmY = null;
 let lastPlanarPoint = null;
+let lastPlanarGesture = null;
 let gripperClosed = null;
 let lastControlSentAt = 0;
 let lastOpenSentAt = Number.NEGATIVE_INFINITY;
 let lastCloseSentAt = Number.NEGATIVE_INFINITY;
 let lastRobotGesture = "None";
 let sidePreviewPollTimer;
+let topPreviewObjectUrl;
 let sidePreviewObjectUrl;
 let frontPreviewObjectUrl;
 let lastDiagonalGestureAt = Number.NEGATIVE_INFINITY;
-let diagonalOpenBlocked = false;
+let openPalmSince = null;
 let motionRequestInFlight = false;
 let pendingMotionRequest;
+const rearmGate = new SingleHandRearmGate();
+let safetyTransport = Promise.resolve();
+let resumePending = false;
+let resumeConfirmed = false;
+let pendingResumeToken = null;
+let controlGeneration = 0;
+let backendContext = null;
+let controlToken = null;
+let sceneRecording = false;
+let lastCommandTimestamp = 0;
+let sceneResetInFlight = false;
+let pendingResetContext = null;
+let lastGestureReportAt = 0;
+let lastPointingAngle = null;
+let lastPointingSentAt = Number.NEGATIVE_INFINITY;
+let armMotionLocked = false;
+let gripperOrientationFinalized = false;
+let pointingExitGesture = null;
+let pointingExitSince = Number.NEGATIVE_INFINITY;
+let pointingFinalizationPending = false;
+let closedFistSince = Number.NEGATIVE_INFINITY;
+
+function queueSafetyCommand(command, extra = {}) {
+  safetyTransport = safetyTransport.catch(() => false).then(() =>
+    robotConnected ? sendRobotCommand(command, extra) : false,
+  );
+  return safetyTransport;
+}
+
+function disarmHand(reason = "hand_lost") {
+  const hadControl = rearmGate.armed || resumePending || resumeConfirmed || controlToken !== null;
+  const resumePointing = reason !== "scene_reset" && armMotionLocked && !gripperOrientationFinalized;
+  const retainedPointingAngle = lastPointingAngle;
+  controlGeneration += 1;
+  rearmGate.reset();
+  controlToken = null;
+  resumePending = false;
+  resumeConfirmed = false;
+  pendingResumeToken = null;
+  lastFistY = null;
+  lastOpenPalmY = null;
+  lastPlanarPoint = null;
+  lastPlanarGesture = null;
+  lastRobotGesture = "None";
+  lastPointingAngle = resumePointing ? retainedPointingAngle : null;
+  lastPointingSentAt = Number.NEGATIVE_INFINITY;
+  armMotionLocked = resumePointing;
+  pointingExitGesture = null;
+  pointingExitSince = Number.NEGATIVE_INFINITY;
+  pointingFinalizationPending = false;
+  closedFistSince = Number.NEGATIVE_INFINITY;
+  openPalmSince = null;
+  pendingMotionRequest = undefined;
+  if (hadControl) void queueSafetyCommand("pause", { reason });
+}
 
 function isPushingTask() {
   return robotTaskMode === "push_t";
@@ -87,9 +150,23 @@ const CONTROL_INTERVAL_MS = 40;
 const PLANAR_SENSITIVITY = 0.03;
 const VERTICAL_DEAD_ZONE = 0.015;
 const PLANAR_DEAD_ZONE = 0.09;
-const GRIPPER_RETRY_MS = 300;
-const DIAGONAL_OPEN_GUARD_MS = 650;
+const GRIPPER_CLOSE_RETRY_MS = 300;
+const GRIPPER_OPEN_RETRY_MS = 150;
+const GRIPPER_FIST_CONFIRM_MS = 50;
 const DIAGONAL_GESTURE_HOLD_MS = 180;
+const POINTING_EXIT_HOLD_MS = 200;
+
+function planarSensitivity() {
+  return PLANAR_SENSITIVITY;
+}
+
+function verticalDeadZone() {
+  return VERTICAL_DEAD_ZONE;
+}
+
+function planarDeadZone() {
+  return PLANAR_DEAD_ZONE;
+}
 
 function updateStatus(message, state = "idle") {
   statusText.textContent = message;
@@ -115,11 +192,12 @@ function setRobotConnected(isConnected) {
   robotStatus.dataset.state = isConnected ? "active" : "error";
   robotStatusText.textContent = isConnected ? "MuJoCo 已连接" : "MuJoCo 未连接";
   robotButtons.forEach((button) => {
-    button.disabled = !isConnected;
+    button.disabled = !isConnected || (button === resetSceneButton && (sceneRecording || sceneResetInFlight));
   });
   if (!isConnected) {
+    if (wasConnected) disarmHand("backend_disconnected");
     hideSidePreview();
-    robotFeedback.textContent = "请先运行 MuJoCo LeRobot 录制程序。";
+    robotFeedback.textContent = "请先运行 MuJoCo 仿真采集程序。";
   } else if (!wasConnected) {
     robotFeedback.textContent =
       isPushingTask()
@@ -130,8 +208,14 @@ function setRobotConnected(isConnected) {
 
 function hideSidePreview() {
   sidePreviewPanel.hidden = true;
+  topPreviewImage.removeAttribute("src");
+  topPreviewFigure.hidden = true;
   sidePreviewImage.removeAttribute("src");
   frontPreviewImage.removeAttribute("src");
+  if (topPreviewObjectUrl) {
+    URL.revokeObjectURL(topPreviewObjectUrl);
+    topPreviewObjectUrl = undefined;
+  }
   if (sidePreviewObjectUrl) {
     URL.revokeObjectURL(sidePreviewObjectUrl);
     sidePreviewObjectUrl = undefined;
@@ -148,27 +232,26 @@ async function pollSidePreview() {
       hideSidePreview();
       return;
     }
-    const [sideResponse, frontResponse] = await Promise.all([
-      fetch(`${robotApiBase}/side-preview`, { cache: "no-store" }),
-      fetch(`${robotApiBase}/front-preview`, { cache: "no-store" }),
-    ]);
-    if (sideResponse.status === 204 || frontResponse.status === 204) {
-      hideSidePreview();
-      return;
-    }
-    if (!sideResponse.ok || !frontResponse.ok) throw new Error("辅助视角读取失败");
-
-    const nextSideUrl = URL.createObjectURL(await sideResponse.blob());
-    const nextFrontUrl = URL.createObjectURL(await frontResponse.blob());
-    const previousSideUrl = sidePreviewObjectUrl;
-    const previousFrontUrl = frontPreviewObjectUrl;
-    sidePreviewObjectUrl = nextSideUrl;
-    frontPreviewObjectUrl = nextFrontUrl;
-    sidePreviewImage.src = nextSideUrl;
-    frontPreviewImage.src = nextFrontUrl;
-    sidePreviewPanel.hidden = false;
-    if (previousSideUrl) URL.revokeObjectURL(previousSideUrl);
-    if (previousFrontUrl) URL.revokeObjectURL(previousFrontUrl);
+    const feeds = [
+      { path: "top-preview", image: topPreviewImage, getUrl: () => topPreviewObjectUrl, setUrl: (url) => { topPreviewObjectUrl = url; } },
+      { path: "side-preview", image: sidePreviewImage, getUrl: () => sidePreviewObjectUrl, setUrl: (url) => { sidePreviewObjectUrl = url; } },
+      { path: "front-preview", image: frontPreviewImage, getUrl: () => frontPreviewObjectUrl, setUrl: (url) => { frontPreviewObjectUrl = url; } },
+    ];
+    await Promise.all(feeds.map(async ({ path, image, getUrl, setUrl }) => {
+      try {
+        const response = await fetch(`${robotApiBase}/${path}`, { cache: "no-store" });
+        if (!response.ok || response.status === 204) return;
+        const nextUrl = URL.createObjectURL(await response.blob());
+        const previousUrl = getUrl();
+        setUrl(nextUrl);
+        image.src = nextUrl;
+        if (previousUrl) URL.revokeObjectURL(previousUrl);
+      } catch (error) {
+        console.warn(`辅助视角 ${path} 暂不可用`, error);
+      }
+    }));
+    topPreviewFigure.hidden = !topPreviewObjectUrl;
+    sidePreviewPanel.hidden = !(topPreviewObjectUrl || sidePreviewObjectUrl || frontPreviewObjectUrl);
   } catch {
     hideSidePreview();
   } finally {
@@ -177,18 +260,57 @@ async function pollSidePreview() {
 }
 
 async function checkRobotConnection() {
+  const generationAtRequest = controlGeneration;
+  const tokenAtRequest = controlToken;
   try {
     const response = await fetch(`${robotApiBase}/health`, { cache: "no-store" });
     if (response.ok) {
       const runtime = await response.json();
+      resetSceneButton.hidden = false;
+      sceneRecording = runtime.recording === true || runtime.saving_episode === true;
+      practiceHint.hidden = sceneRecording;
+      const nextContext = `${runtime.session ?? ""}:${runtime.control_epoch ?? ""}`;
+      if (backendContext !== null && backendContext !== nextContext) disarmHand("scene_reset");
+      if (backendContext !== nextContext) gripperOrientationFinalized = false;
+      if (runtime.gripper_yaw_finalized === true) {
+        gripperOrientationFinalized = true;
+        armMotionLocked = false;
+        pointingFinalizationPending = false;
+      }
+      gripperClosed = runtime.gripper_closed === true;
+      backendContext = nextContext;
+      if (rearmGate.armed && tokenAtRequest &&
+          generationAtRequest === controlGeneration && tokenAtRequest === controlToken &&
+          (runtime.paused || runtime.control_token !== controlToken)) {
+        // A late pause or dropped resume must not leave the UI armed forever.
+        const candidate = rearmGate.candidate;
+        disarmHand("backend_control_mismatch");
+        rearmGate.candidate = candidate;
+        robotFeedback.textContent = "正在重新同步控制；无需换手势或重新入镜。";
+      }
+      if (sceneResetInFlight && nextContext !== pendingResetContext) {
+        sceneResetInFlight = false;
+        pendingResetContext = null;
+      }
+      document.querySelector("#preview-grid").dataset.backend = "MuJoCo";
+      document.querySelector("#side-preview-title").textContent = "俯视 + 侧视 + 正面";
       robotTaskMode = runtime.task_mode ?? "pick_place";
       robotZLocked = runtime.z_locked === true;
+      const xyErrorCm = ((runtime.grasp_xy_error_m ?? 0) * 100).toFixed(1);
+      const controlHint = runtime.paused ? "控制暂停／等待入镜确认" : "控制已恢复";
+      const graspHint = runtime.gripper_closed && runtime.holding_cube
+        ? "双侧接触红块，可手动抬升"
+        : runtime.gripper_closed ? "夹爪已关闭；握拳上下移动控制升降"
+        : `手动抓取，距红块中心 ${xyErrorCm} cm；没有自动对齐`;
+      document.querySelector("#preview-help").textContent =
+        `${controlHint}；${runtime.motion_limit_reason || graspHint}`;
+      document.querySelector("#preview-grid").dataset.grasp = runtime.gripper_approaching_cube ? "near" : "far";
       if (robotTaskMode === "push_t") {
         openPalmRule.textContent = "夹爪保持闭合；推动高度固定";
         closedFistRule.textContent = "夹爪保持闭合；推动高度固定";
       } else {
         openPalmRule.textContent = "松开夹爪 / 手上下控制升降";
-        closedFistRule.textContent = "闭合夹爪 / 手上下控制升降";
+        closedFistRule.textContent = "保持 50 ms 闭爪 / 手上下控制升降";
       }
     }
     setRobotConnected(response.ok);
@@ -203,13 +325,32 @@ async function sendRobotCommand(command, extra = {}) {
     return false;
   }
 
+  if (!armMotionLocked && !gripperOrientationFinalized &&
+      controlToken && ["open", "close", "start_vertical", "start_planar", "move_xy",
+        "up", "down", "left", "right", "forward", "backward"].includes(command)) {
+    // The first manipulation command ends the initial orientation window.
+    // Do this before the request so a delayed health poll cannot reopen it.
+    gripperOrientationFinalized = true;
+  }
+
   try {
+    lastCommandTimestamp = Math.max(Date.now(), lastCommandTimestamp + 0.001);
     const response = await fetch(`${robotApiBase}/control`, {
       method: "POST",
+      signal: AbortSignal.timeout(400),
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ command, sentAt: Date.now(), ...extra }),
+      body: JSON.stringify({
+        command, sentAt: lastCommandTimestamp, ...extra,
+        ...(controlToken &&
+          ["open", "close", "start_vertical", "start_planar", "move_xy", "set_gripper_yaw", "finalize_gripper_yaw", "up", "down", "left", "right", "forward", "backward"].includes(command)
+          ? { controlToken } : {}),
+      }),
     });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const result = await response.json();
+    if (!response.ok || result.ok === false || result.accepted === false) {
+      robotFeedback.textContent = `操作未执行：${result.reason ?? result.error ?? response.status}`;
+      return false;
+    }
     return true;
   } catch (error) {
     console.error(error);
@@ -225,6 +366,7 @@ async function flushLatestMotionRequest() {
     while (pendingMotionRequest) {
       const request = pendingMotionRequest;
       pendingMotionRequest = undefined;
+      if (request.generation !== controlGeneration) continue;
       await sendRobotCommand(request.command, request.extra);
     }
   } finally {
@@ -233,103 +375,252 @@ async function flushLatestMotionRequest() {
 }
 
 function sendLatestMotionCommand(command, extra = {}) {
-  pendingMotionRequest = { command, extra };
+  pendingMotionRequest = { command, extra, generation: controlGeneration };
   void flushLatestMotionRequest();
 }
 
 function processRobotControl(result, timestamp) {
+  if (robotConnected && timestamp - lastGestureReportAt >= 30) {
+    const recognized = result.gestures?.[0]?.[0];
+    const visible = Boolean(result.landmarks?.length);
+    const rawGesture = recognized?.categoryName ?? "None";
+    void sendRobotCommand("gesture_state", {
+      gesture: visible ? rawGesture : "None",
+      gestureScore: visible ? (recognized?.score ?? 0) : 0,
+      handVisible: visible,
+      pointingControlActive: visible && rearmGate.armed && !gripperOrientationFinalized && !pointingFinalizationPending && gripperClosed !== true && pointingControlCandidate(rawGesture, result.landmarks[0], { active: armMotionLocked }),
+    });
+    lastGestureReportAt = timestamp;
+  }
   if (!robotConnected) {
+    disarmHand("backend_disconnected");
     lastFistY = null;
     lastOpenPalmY = null;
     lastPlanarPoint = null;
+    lastPlanarGesture = null;
+    pendingMotionRequest = undefined;
+    return;
+  }
+  if (sceneResetInFlight) {
     pendingMotionRequest = undefined;
     return;
   }
 
-  if (!(result.landmarks?.length ?? 0)) {
-    lastFistY = null;
-    lastOpenPalmY = null;
-    lastPlanarPoint = null;
-    diagonalOpenBlocked = false;
-    pendingMotionRequest = undefined;
-    pushingPlanarGestureStartedAt = Number.NEGATIVE_INFINITY;
-    return;
+  // Reserve 150ms of the 500ms recovery budget for dispatch and simulation.
+  rearmGate.waitMs = 350;
+  const visibleWrist = result.landmarks?.[0]?.[0];
+  const handVisibleForControl = Number.isFinite(visibleWrist?.x) && Number.isFinite(visibleWrist?.y);
+  if (!handVisibleForControl) {
+    // gesture_state(handVisible=false) invalidates the backend token, even
+    // during the entry grace period. Invalidate our acknowledgement as well.
+    // Preserve only the entry clock across a short recognition dropout.
+    const waitingCandidate = !rearmGate.armed ? rearmGate.candidate : null;
+    disarmHand();
+    rearmGate.candidate = waitingCandidate;
+  }
+  const safety = rearmGate.observe(result, timestamp);
+  if (safety.state !== "armed") {
+    if (safety.state === "lost") {
+      disarmHand();
+      robotFeedback.textContent = "手已离开画面：机械臂暂停。";
+    } else {
+      if (handVisibleForControl && !resumePending && !resumeConfirmed && rearmGate.candidate) {
+        const generation = controlGeneration;
+        const candidate = rearmGate.candidate;
+        const nextToken = crypto.randomUUID();
+        resumePending = true;
+        void queueSafetyCommand("resume", { controlToken: nextToken, controlContext: backendContext }).then((accepted) => {
+          if (generation !== controlGeneration) return;
+          if (accepted && rearmGate.candidate === candidate) {
+            resumePending = false;
+            resumeConfirmed = true;
+            pendingResumeToken = nextToken;
+          } else {
+            disarmHand("resume_failed");
+          }
+        });
+      }
+      if (safety.state === "ready" && resumeConfirmed) {
+        controlToken = pendingResumeToken;
+        resumeConfirmed = false;
+        pendingResumeToken = null;
+        rearmGate.arm();
+        // Treat the visible gesture as a fresh gesture after re-entry. The
+        // Entry observation and gesture confirmation run concurrently;
+        // do not impose another open/close cooldown on the same held gesture.
+        lastRobotGesture = "None";
+        const entryGesture = rearmGate.candidate.gesture;
+        const entrySince = rearmGate.candidate.gestureSince;
+        closedFistSince = entryGesture === "Closed_Fist" ? entrySince : Number.NEGATIVE_INFINITY;
+        openPalmSince = null;
+        if (armMotionLocked && entryGesture !== "Pointing_Up" && entryGesture !== "None") {
+          pointingExitGesture = entryGesture;
+          pointingExitSince = entrySince;
+        }
+        lastOpenSentAt = timestamp - GRIPPER_OPEN_RETRY_MS;
+        lastCloseSentAt = timestamp - GRIPPER_CLOSE_RETRY_MS;
+        robotFeedback.textContent = "控制已恢复；保持当前手势即可继续操作。";
+      } else if (safety.state === "ready") {
+        robotFeedback.textContent = "入镜确认完成，正在同步仿真控制…";
+      } else {
+        robotFeedback.textContent = `手已入镜，${(Math.ceil(safety.remainingMs / 100) / 10).toFixed(1)} 秒后恢复控制。`;
+      }
+    }
+    if (!rearmGate.armed) {
+      lastFistY = null;
+      lastOpenPalmY = null;
+      lastPlanarPoint = null;
+      lastPlanarGesture = null;
+      pendingMotionRequest = undefined;
+      pushingPlanarGestureStartedAt = Number.NEGATIVE_INFINITY;
+      return;
+    }
+    // Process the current gesture on the confirmation frame itself.
   }
 
   const topGesture = result.gestures?.[0]?.[0];
-  const gesture = topGesture?.categoryName ?? "None";
+  const rawGesture = topGesture?.categoryName ?? "None";
   const wrist = result.landmarks[0][0];
+  const pointingCandidate = !gripperOrientationFinalized && !pointingFinalizationPending && gripperClosed !== true && pointingControlCandidate(rawGesture, result.landmarks[0], { active: armMotionLocked });
+  const gesture = pointingCandidate ? "Pointing_Up" : rawGesture;
   const gestureChanged = gesture !== lastRobotGesture;
-
+  if (pointingCandidate) {
+    armMotionLocked = true;
+    pointingExitGesture = null;
+  } else if (armMotionLocked && !pointingFinalizationPending && rawGesture !== "None" && rawGesture !== "Pointing_Up") {
+    if (pointingExitGesture !== rawGesture) {
+      pointingExitGesture = rawGesture;
+      pointingExitSince = timestamp;
+    } else if (timestamp - pointingExitSince >= POINTING_EXIT_HOLD_MS) {
+      pointingFinalizationPending = true;
+      pointingExitGesture = null;
+      pendingMotionRequest = undefined;
+      const generation = controlGeneration;
+      void sendRobotCommand("finalize_gripper_yaw", { angle: lastPointingAngle ?? 0 }).then((accepted) => {
+        if (generation !== controlGeneration) return;
+        pointingFinalizationPending = false;
+        if (accepted) {
+          gripperOrientationFinalized = true;
+          armMotionLocked = false;
+          robotFeedback.textContent = "夹爪朝向已确认，本场景保持固定；当前手势可控制机械臂移动。";
+        }
+      });
+    }
+  } else {
+    pointingExitGesture = null;
+  }
   if (isPushingTask()) {
     processPushingControl({ gesture, gestureChanged, wrist, timestamp });
     lastRobotGesture = gesture;
     return;
   }
 
+  if (armMotionLocked && pointingCandidate) {
+    if (lastPointingAngle === null) pendingMotionRequest = undefined;
+    const fingerAngle = pointingUpAngle(result.landmarks?.[0]);
+    const angle = pointingYawFromWrist(fingerAngle);
+    if (angle !== null && (lastPointingAngle === null || Math.abs(angle - lastPointingAngle) >= 0.025 || timestamp - lastPointingSentAt >= 150)) {
+      sendLatestMotionCommand("set_gripper_yaw", { angle });
+      lastPointingAngle = angle;
+      lastPointingSentAt = timestamp;
+      robotFeedback.textContent = `Pointing_Up：夹爪旋转 ${Math.round(angle * 180 / Math.PI)}°；换成任一稳定手势后固定朝向并恢复移动。`;
+    }
+  } else if (!armMotionLocked) {
+    lastPointingAngle = null;
+    lastPointingSentAt = Number.NEGATIVE_INFINITY;
+  }
+
   if (gesture === "ILoveYou") {
     lastDiagonalGestureAt = timestamp;
-    diagonalOpenBlocked = true;
-  } else if (gesture !== "Open_Palm") {
-    // Require a deliberate break between diagonal motion and opening. This
-    // prevents ILoveYou -> Open_Palm misclassification from releasing a cube.
-    diagonalOpenBlocked = false;
+  }
+  const releaseHandClear = handClearForRelease(result.landmarks?.[0], topGesture?.score);
+  if (gesture === "Open_Palm" && releaseHandClear) {
+    if (openPalmSince === null) openPalmSince = timestamp;
+  } else {
+    openPalmSince = null;
   }
   const openPalmControlAllowed =
-    !diagonalOpenBlocked &&
-    timestamp - lastDiagonalGestureAt >= DIAGONAL_OPEN_GUARD_MS;
+    gesture === "Open_Palm" &&
+    openPalmAllowedAfterDiagonal({ now: timestamp, lastDiagonalAt: lastDiagonalGestureAt });
 
-  if (
-    gesture === "Closed_Fist" &&
-    (gestureChanged || timestamp - lastCloseSentAt >= GRIPPER_RETRY_MS)
-  ) {
-    void sendRobotCommand("close");
-    gripperClosed = true;
-    lastCloseSentAt = timestamp;
-    robotFeedback.textContent = "握拳：夹爪闭合；上下移动手可直线升降。";
-  }
-  if (gesture === "Closed_Fist" && gestureChanged) {
+  if (gesture === "Closed_Fist" && !armMotionLocked &&
+      (!Number.isFinite(closedFistSince))) {
+    closedFistSince = timestamp;
     void sendRobotCommand("start_vertical");
   }
-  if (gesture === "Closed_Fist") {
+  if (gesture === "Closed_Fist" && !armMotionLocked) {
     if (lastFistY === null) {
       lastFistY = wrist.y;
     } else {
       const verticalDelta = wrist.y - lastFistY;
-      if (verticalDelta < -VERTICAL_DEAD_ZONE) {
+      if (verticalDelta < -verticalDeadZone()) {
         sendLatestMotionCommand("up");
         lastFistY = wrist.y;
-      } else if (verticalDelta > VERTICAL_DEAD_ZONE) {
+      } else if (verticalDelta > verticalDeadZone()) {
         sendLatestMotionCommand("down");
         lastFistY = wrist.y;
       }
     }
   } else {
     lastFistY = null;
+    closedFistSince = Number.NEGATIVE_INFINITY;
+  }
+
+  // Closing never changes the arm target; position is always operator-controlled.
+  const fistConfirmed = timestamp - closedFistSince >= GRIPPER_FIST_CONFIRM_MS;
+  if (gesture === "Closed_Fist" && gripperClosed !== true) {
+    if (!armMotionLocked && !fistConfirmed) {
+      robotFeedback.textContent = "握拳已识别：保持 50 ms 后尝试抓取。";
+    }
+  }
+  if (
+    !armMotionLocked &&
+    timestamp - lastCloseSentAt >= GRIPPER_CLOSE_RETRY_MS &&
+    shouldCloseGripper({
+      taskMode: robotTaskMode,
+      gesture,
+      gripperClosed,
+      fistConfirmed,
+    })
+  ) {
+    lastCloseSentAt = timestamp;
+    void sendRobotCommand("close").then((accepted) => {
+      if (accepted) {
+        robotFeedback.textContent = "握拳：闭爪指令已发送，等待仿真确认。";
+      }
+    });
   }
 
   if (
     gesture === "Open_Palm" &&
+    !armMotionLocked &&
     openPalmControlAllowed &&
-    (gestureChanged || timestamp - lastOpenSentAt >= GRIPPER_RETRY_MS)
+    gripperClosed !== false && releaseHandClear &&
+    openPalmReadyToRelease({ now: timestamp, openPalmSince }) &&
+    (lastOpenPalmY === null || timestamp - lastOpenSentAt >= GRIPPER_OPEN_RETRY_MS)
   ) {
-    void sendRobotCommand("open");
-    gripperClosed = false;
+    const generation = controlGeneration;
+    void sendRobotCommand("open").then((accepted) => {
+      if (accepted && generation === controlGeneration) gripperClosed = false;
+    });
     lastOpenSentAt = timestamp;
     robotFeedback.textContent = "张开手掌：夹爪松开；上下移动手可直线升降。";
   }
-  if (gesture === "Open_Palm" && openPalmControlAllowed && gestureChanged) {
+  // Releasing the gripper keeps its diagonal-transition debounce, while
+  // vertical motion starts as soon as Open_Palm is recognized. Otherwise the
+  // first movement would otherwise be lost on the gesture switch.
+  if (gesture === "Open_Palm" && lastOpenPalmY === null && !armMotionLocked) {
     void sendRobotCommand("start_vertical");
   }
-  if (gesture === "Open_Palm" && openPalmControlAllowed) {
+  if (gesture === "Open_Palm" && !armMotionLocked) {
     if (lastOpenPalmY === null) {
       lastOpenPalmY = wrist.y;
     } else {
       const verticalDelta = wrist.y - lastOpenPalmY;
-      if (verticalDelta < -VERTICAL_DEAD_ZONE) {
+      if (verticalDelta < -verticalDeadZone()) {
         sendLatestMotionCommand("up");
         lastOpenPalmY = wrist.y;
-      } else if (verticalDelta > VERTICAL_DEAD_ZONE) {
+      } else if (verticalDelta > verticalDeadZone()) {
         sendLatestMotionCommand("down");
         lastOpenPalmY = wrist.y;
       }
@@ -339,31 +630,33 @@ function processRobotControl(result, timestamp) {
   }
 
   // Brief recognition flicker must not switch a diagonal move onto a single
-  // axis. Closed_Fist remains immediate so deliberate gripping is unaffected.
-  const planarGesture =
-    gripperClosed === true &&
-    gesture !== "Closed_Fist" &&
-    timestamp - lastDiagonalGestureAt <= DIAGONAL_GESTURE_HOLD_MS
-      ? "ILoveYou"
-      : gesture;
+  // axis. Explicit palm/fist vertical gestures bypass this label hold;
+  // gripper open/close confirmation is handled independently above.
+  const planarGesture = !armMotionLocked
+    ? planarGestureAfterDiagonal(gesture, timestamp, lastDiagonalGestureAt, DIAGONAL_GESTURE_HOLD_MS)
+    : gesture;
   const isPlanarGesture =
     planarGesture === "Victory" ||
     planarGesture === "Thumb_Up" ||
     planarGesture === "ILoveYou";
   if (isPlanarGesture) {
     const planarPoint = wrist;
+    const planarGestureChanged = planarGesture !== lastPlanarGesture;
+    if (planarGestureChanged) {
+      lastPlanarPoint = { x: planarPoint.x, y: planarPoint.y };
+    }
     if (shouldStartPlanarLock({
       gesture: planarGesture,
-      gestureChanged,
+      gestureChanged: planarGestureChanged,
       carrying: gripperClosed === true,
     })) {
       void sendRobotCommand("start_planar", {
-        lockZ: planarGesture === "ILoveYou",
+        lockZ: planarGesture === "ILoveYou" && gesture === "ILoveYou",
       });
-      robotFeedback.textContent =
-        "平面移动：到运输高度后会自动锁定 Z 并切换俯视视角。";
+      robotFeedback.textContent = "平面移动已接管：移动手控制方向，夹爪保持当前高度。";
     }
 
+    let moved = false;
     if (lastPlanarPoint && timestamp - lastControlSentAt >= CONTROL_INTERVAL_MS) {
       const screenDx = planarPoint.x - lastPlanarPoint.x;
       const screenDy = planarPoint.y - lastPlanarPoint.y;
@@ -371,8 +664,10 @@ function processRobotControl(result, timestamp) {
         gesture: planarGesture,
         screenDx,
         screenDy,
-        sensitivity: PLANAR_SENSITIVITY,
+        sensitivity: planarSensitivity(),
         carrying: gripperClosed === true,
+        reverseVictory: true,
+        allowEmptyDiagonal: true,
       });
 
       const magnitude = Math.hypot(dx, dy);
@@ -380,13 +675,14 @@ function processRobotControl(result, timestamp) {
         dx /= magnitude;
         dy /= magnitude;
       }
-      if (magnitude > PLANAR_DEAD_ZONE) {
+      if (magnitude > planarDeadZone()) {
         sendLatestMotionCommand("move_xy", {
           dx,
           dy,
-          lockZ: planarGesture === "ILoveYou",
+          lockZ: planarGesture === "ILoveYou" && gesture === "ILoveYou",
         });
         lastControlSentAt = timestamp;
+        moved = true;
         const messages = {
           Victory: "Victory：正在左右移动。",
           Thumb_Up: "竖起拇指：正在前后移动。",
@@ -395,9 +691,13 @@ function processRobotControl(result, timestamp) {
         robotFeedback.textContent = messages[planarGesture];
       }
     }
-    lastPlanarPoint = { x: planarPoint.x, y: planarPoint.y };
+    lastPlanarPoint = nextPlanarAnchor(
+      lastPlanarPoint, planarPoint, moved, true,
+    );
+    lastPlanarGesture = planarGesture;
   } else {
     lastPlanarPoint = null;
+    lastPlanarGesture = null;
   }
 
   lastRobotGesture = gesture;
@@ -435,8 +735,9 @@ function processPushingControl({ gesture, gestureChanged, wrist, timestamp }) {
       gesture,
       screenDx,
       screenDy,
-      sensitivity: PLANAR_SENSITIVITY,
+      sensitivity: planarSensitivity(),
       carrying: true,
+      reverseVictory: true,
     });
     const magnitude = Math.hypot(dx, dy);
     if (magnitude > 1) {
@@ -444,7 +745,7 @@ function processPushingControl({ gesture, gestureChanged, wrist, timestamp }) {
       dy /= magnitude;
     }
     const gestureIsStable = timestamp - pushingPlanarGestureStartedAt >= 250;
-    if (gestureIsStable && magnitude > PLANAR_DEAD_ZONE) {
+    if (gestureIsStable && magnitude > planarDeadZone()) {
       if (!robotZLocked) {
         void sendRobotCommand("start_planar", { lockZ: true });
         robotZLocked = true;
@@ -495,7 +796,6 @@ async function createGestureRecognizer() {
     runningMode: "VIDEO",
     numHands: 2,
   });
-
   drawingUtils = new DrawingUtils(canvasContext);
 }
 
@@ -619,6 +919,7 @@ function detectVideoFrame() {
       processRobotControl(result, timestamp);
       lastVideoTime = video.currentTime;
     } catch (error) {
+      disarmHand("recognition_error");
       console.error(error);
       updateStatus("识别过程出现错误", "error");
       showNotice(
@@ -666,6 +967,7 @@ async function startCamera() {
     cameraButton.classList.remove("is-loading");
     cameraButton.disabled = false;
     lastVideoTime = -1;
+    disarmHand("camera_started");
     detectVideoFrame();
   } catch (error) {
     console.error(error);
@@ -699,6 +1001,7 @@ async function startCamera() {
 }
 
 function stopCamera() {
+  disarmHand("camera_stopped");
   if (animationFrameId) cancelAnimationFrame(animationFrameId);
   mediaStream?.getTracks().forEach((track) => track.stop());
   mediaStream = undefined;
@@ -716,6 +1019,7 @@ function stopCamera() {
   lastFistY = null;
   lastOpenPalmY = null;
   lastPlanarPoint = null;
+  lastPlanarGesture = null;
   gripperClosed = null;
   lastRobotGesture = "None";
   pendingMotionRequest = undefined;
@@ -726,22 +1030,66 @@ cameraButton.addEventListener("click", () => {
   else startCamera();
 });
 
+resetSceneButton.addEventListener("click", async () => {
+  if (sceneRecording || sceneResetInFlight || !robotConnected) return;
+  sceneResetInFlight = true;
+  pendingResetContext = backendContext;
+  resetSceneButton.disabled = true;
+  disarmHand("scene_reset");
+  await safetyTransport.catch(() => false);
+  let accepted = false;
+  try {
+    accepted = await sendRobotCommand("reset");
+    if (accepted) {
+      for (let attempt = 0; attempt < 50 && sceneResetInFlight; attempt += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 100));
+        await checkRobotConnection();
+      }
+      robotFeedback.textContent = sceneResetInFlight
+        ? "重置请求已发送，等待仿真确认。"
+        : "场景已重置。保持手在画面中 0.5 秒后可继续练习。";
+    }
+  } finally {
+    if (sceneResetInFlight && (!robotConnected || !accepted)) {
+      sceneResetInFlight = false;
+      pendingResetContext = null;
+    }
+    resetSceneButton.disabled = !robotConnected || sceneRecording;
+  }
+});
+
 recordStartButton.addEventListener("click", async () => {
+  if (sceneResetInFlight) return;
   if (await sendRobotCommand("record_start")) {
+    sceneRecording = true;
+    resetSceneButton.disabled = true;
+    practiceHint.hidden = true;
     robotFeedback.textContent = "正在录制当前 demonstration。";
   }
 });
 
 recordSaveButton.addEventListener("click", async () => {
   if (await sendRobotCommand("record_save")) {
-    robotFeedback.textContent = "已请求保存成功 demonstration，MuJoCo 将自动重置。";
+    disarmHand("scene_reset");
+    sceneResetInFlight = true;
+    pendingResetContext = backendContext;
+    sceneRecording = false;
+    resetSceneButton.disabled = !robotConnected || sceneResetInFlight;
+    practiceHint.hidden = false;
+    robotFeedback.textContent = "已请求保存成功 demonstration，仿真将自动重置。";
   }
 });
 
 recordFailureButton.addEventListener("click", async () => {
   if (await sendRobotCommand("record_failure")) {
+    disarmHand("scene_reset");
+    sceneResetInFlight = true;
+    pendingResetContext = backendContext;
+    sceneRecording = false;
+    resetSceneButton.disabled = !robotConnected || sceneResetInFlight;
+    practiceHint.hidden = false;
     robotFeedback.textContent =
-      "失败 demonstration 已保存到独立失败数据集，MuJoCo 将自动重置。";
+      "失败 demonstration 已保存到独立失败数据集，仿真将自动重置。";
   }
 });
 
@@ -754,7 +1102,7 @@ recordStopButton.addEventListener("click", async () => {
 setRobotConnected(false);
 void checkRobotConnection();
 void pollSidePreview();
-window.setInterval(checkRobotConnection, 2000);
+window.setInterval(checkRobotConnection, 200);
 
 window.addEventListener("pagehide", () => {
   window.clearTimeout(sidePreviewPollTimer);

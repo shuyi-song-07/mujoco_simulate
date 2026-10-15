@@ -303,10 +303,16 @@ h2 {
 
 .aux-preview-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 1px;
   background: #31433a;
 }
+
+.aux-preview-grid[data-backend="MuJoCo"][data-grasp="near"] {
+  grid-template-columns: minmax(0, 0.8fr) repeat(2, minmax(0, 1.4fr));
+}
+
+.aux-preview-grid figure[hidden] { display: none; }
 
 .aux-preview-grid figure { position: relative; margin: 0; background: #101b16; }
 
@@ -330,7 +336,7 @@ h2 {
 }
 
 @media (max-width: 720px) {
-  .aux-preview-grid { grid-template-columns: 1fr; }
+  .aux-preview-grid, .aux-preview-grid[data-backend="MuJoCo"][data-grasp="near"] { grid-template-columns: 1fr; }
 }
 
 .robot-controls {
@@ -339,6 +345,10 @@ h2 {
   gap: 10px;
   margin: 20px 0 14px;
 }
+
+.motion-speed-control { display: flex; align-items: center; gap: 8px; font-weight: 700; }
+.motion-speed-control[hidden] { display: none; }
+.motion-speed-control select { padding: 10px; border: 1px solid rgb(23 37 31 / 16%); border-radius: 10px; background: #fff; font: inherit; }
 
 .robot-controls button {
   padding: 11px 15px;
@@ -357,6 +367,9 @@ h2 {
 #record-save { color: #fff; background: #26834f; }
 #record-failure { color: #8b2f2b; background: #fff0ef; }
 #record-stop { color: #fff; background: #17251f; }
+#reset-scene { color: #fff; background: #386f96; }
+
+.practice-hint { margin: 0 0 12px; color: #4c6559; font-size: 0.9rem; }
 
 .robot-feedback { min-height: 1.5em; margin: 0; font-weight: 700; }
 

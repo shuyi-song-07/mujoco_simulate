@@ -13,6 +13,7 @@ import multiprocessing as mp
 import queue
 import threading
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -43,6 +44,40 @@ PUSH_T_OBJECT_BAR_Y_HALF = 0.050
 PUSH_T_OBJECT_STEM_X = (-0.050, 0.020)
 PUSH_T_OBJECT_STEM_Y_HALF = 0.015
 PUSH_T_TARGET_PADDING = 0.005
+GESTURE_CODES = {
+    "None": 0, "Closed_Fist": 1, "Open_Palm": 2, "Pointing_Up": 3,
+    "Thumb_Down": 4, "Thumb_Up": 5, "Victory": 6, "ILoveYou": 7,
+}
+DISTRACTOR_NAMES = ("distractor_blue", "distractor_green", "distractor_yellow")
+DEFAULT_STACK_PROBABILITY = 0.4
+WEB_CONTROL_COMMANDS = {
+    "open", "close", "left", "right", "forward", "backward", "up", "down",
+    "start_vertical", "start_planar", "move_xy", "set_gripper_yaw", "finalize_gripper_yaw",
+}
+GRIPPER_CUBE_XY_MARGIN = 0.045
+GRIPPER_HAND_ABOVE_CUBE_TOP = 0.075
+GRIPPER_PAD_CENTER_ABOVE_CUBE_CENTER = 0.1034
+GRIPPER_LOWEST_POINT_BELOW_HAND = 0.115
+LAYOUT_APPROACH_CLEARANCE = 0.050
+GRASP_HEIGHT_MARGIN = 0.001
+GRIPPER_CUBE_VIEW_DWELL_S = 0.05
+
+
+def gripper_centered_over_cube(
+    hand_pos: np.ndarray,
+    cube_pos: np.ndarray,
+    cube_half_size: float,
+    *,
+    was_above: bool = False,
+) -> bool:
+    """Use a narrow, stable grasp approach area for the operator camera."""
+    cube_top = float(cube_pos[2] + cube_half_size)
+    xy_radius = min(0.014, cube_half_size * 0.45) + (0.008 if was_above else 0.0)
+    height_gap = float(hand_pos[2] - cube_top)
+    return (
+        float(np.linalg.norm(hand_pos[:2] - cube_pos[:2])) <= xy_radius
+        and 0.025 <= height_gap <= (0.16 if was_above else 0.13)
+    )
 
 
 def make_push_t_sample_points(resolution: int = 81) -> np.ndarray:
@@ -118,7 +153,7 @@ class PreviewRequestHandler(WSGIRequestHandler):
     """Keep frequent side-preview polling from flooding the operator terminal."""
 
     def log_request(self, code: int | str = "-", size: int | str = "-") -> None:
-        if self.path.startswith(("/side-preview", "/front-preview")):
+        if self.path.startswith(("/top-preview", "/side-preview", "/front-preview")):
             return
         super().log_request(code, size)
 
@@ -130,6 +165,7 @@ class GestureServer(threading.Thread):
         self,
         command_queue: queue.Queue[dict],
         port: int,
+        top_preview_provider,
         side_preview_provider,
         front_preview_provider,
         status_provider,
@@ -141,6 +177,19 @@ class GestureServer(threading.Thread):
         @app.post("/control")
         def control():
             payload = request.get_json(silent=True) or {}
+            if payload.get("command") == "set_gripper_yaw":
+                status = status_provider()
+                if status.get("gripper_closed") or status.get("gripper_yaw_finalized"):
+                    return jsonify({"ok": False, "reason": "朝向仅能在初始移动或闭爪前调整"}), 409
+            if payload.get("command") == "reset":
+                status = status_provider()
+                if status["recording"] or status["saving_episode"]:
+                    return jsonify({"ok": False, "reason": "请先保存当前轨迹再重置场景"}), 409
+            if payload.get("command") == "resume":
+                status = status_provider()
+                expected_context = f'{status["session"]}:{status["control_epoch"]}'
+                if payload.get("controlContext") != expected_context:
+                    return jsonify({"ok": False, "reason": "场景已变化，请重新入镜"}), 409
             if payload.get("command"):
                 command_queue.put(payload)
             return jsonify({"ok": True})
@@ -158,6 +207,17 @@ class GestureServer(threading.Thread):
         @app.get("/side-preview")
         def side_preview():
             jpeg = side_preview_provider()
+            if jpeg is None:
+                return Response(status=204)
+            return Response(
+                jpeg,
+                mimetype="image/jpeg",
+                headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+            )
+
+        @app.get("/top-preview")
+        def top_preview():
+            jpeg = top_preview_provider()
             if jpeg is None:
                 return Response(status=204)
             return Response(
@@ -200,6 +260,10 @@ class MujocoPandaRecorder:
         self.command_queue: queue.Queue[dict] = queue.Queue()
         self.server: GestureServer | None = None
         self.stop_requested = False
+        self.session = uuid.uuid4().hex
+        self.control_epoch = -1
+        self.control_paused = True
+        self.control_token: str | None = None
         self.recording = False
         self.saving_episode = False
         self.episode_frames = 0
@@ -210,16 +274,34 @@ class MujocoPandaRecorder:
 
         self.base_id = self._body_id("link0")
         self.hand_id = self._body_id("hand")
+        self.gripper_yaw_joint_id = self._joint_id("gripper_yaw_joint")
+        self.gripper_yaw_qpos_address = int(self.model.jnt_qposadr[self.gripper_yaw_joint_id])
+        self.gripper_yaw_dof_address = int(self.model.jnt_dofadr[self.gripper_yaw_joint_id])
+        self.gripper_yaw_actuator_id = int(self.model.actuator("gripper_yaw_actuator").id)
         self.cube_id = self._body_id("cube")
         self.target_plate_id = self._body_id("target_plate")
         self.cube_joint_id = self.model.body_jntadr[self.cube_id]
         self.cube_qpos_address = self.model.jnt_qposadr[self.cube_joint_id]
+        self.cube_geom_id = self._geom_id("cube") if self._has_geom("cube") else int(self.model.body_geomadr[self.cube_id])
+        self.distractor_ids = [self._body_id(name) for name in DISTRACTOR_NAMES] if args.task_mode == "pick_place" else []
+        self.randomized_geom_ids = [self.cube_geom_id] + [int(self.model.body_geomadr[body]) for body in self.distractor_ids]
         self.initial_cube_z = float(self.model.body_pos[self.cube_id][2])
         self.initial_target_z = float(self.model.body_pos[self.target_plate_id][2])
         self.current_cube_xy = np.zeros(2)
         self.current_target_xy = np.zeros(2)
         self.current_cube_yaw = 0.0
         self.current_target_yaw = 0.0
+        self.current_layout = []
+        self.latest_gesture = "None"
+        self.latest_gesture_score = 0.0
+        self.hand_visible = False
+        self.last_gesture_update_at = float("-inf")
+        self.last_gesture_command_at = float("-inf")
+        self.last_resume_command_at = float("-inf")
+        self.gripper_yaw = 0.0
+        self.gripper_orientation_locked = False
+        self.gripper_orientation_finalized = False
+        self.pointing_arm_qpos: np.ndarray | None = None
         self.push_t_samples = (
             make_push_t_sample_points() if args.task_mode == "push_t" else None
         )
@@ -237,6 +319,7 @@ class MujocoPandaRecorder:
             ]
         )
         self.observation_camera.distance = args.observation_distance
+        # Match the "overview" camera written into each recorded episode.
         self.observation_camera.azimuth = args.observation_azimuth
         self.observation_camera.elevation = args.observation_elevation
         self.topdown_camera = mujoco.MjvCamera()
@@ -259,6 +342,11 @@ class MujocoPandaRecorder:
         self.finger_qpos_addresses = [
             self.model.jnt_qposadr[joint_id] for joint_id in self.finger_joint_ids
         ]
+        self.finger_body_ids = (
+            self._body_id("left_finger"),
+            self._body_id("right_finger"),
+        )
+        self.last_bilateral_cube_contact_at = float("-inf")
 
         self.jacp = np.zeros((3, self.model.nv))
         self.jacr = np.zeros((3, self.model.nv))
@@ -268,13 +356,24 @@ class MujocoPandaRecorder:
         self.z_locked = False
         self.locked_z: float | None = None
         self.cube_over_target = False
+        self.target_view_reached_with_cube = False
+        self.carried_target_since = None
+        self.transport_view_active = False
+        self.gripper_above_cube_view = False
+        self.gripper_above_cube_since: float | None = None
         self.target_entered_sim_time: float | None = None
         self.gripper_closed = False
+        self.grasp_close_started_at = float("-inf")
+        self.grasp_support_z = args.table_top_z
+        self.pending_vertical_steps = 0
+        self.last_deferred_vertical_at = float("-inf")
+        self.motion_limit_reason: str | None = None
         self.z_lock_used_for_current_grasp = False
         self.vertical_anchor_xy: np.ndarray | None = None
         self.last_gripper_command_at = float("-inf")
         self.last_motion_command_at = float("-inf")
         self.side_preview_jpeg: bytes | None = None
+        self.top_preview_jpeg: bytes | None = None
         self.front_preview_jpeg: bytes | None = None
         self.last_aux_preview_request_at = float("-inf")
         self.reset_simulation()
@@ -291,6 +390,12 @@ class MujocoPandaRecorder:
         if joint_id < 0:
             raise ValueError(f"MuJoCo joint not found: {name}")
         return joint_id
+
+    def _has_geom(self, name: str) -> bool:
+        return mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, name) >= 0
+
+    def _geom_id(self, name: str) -> int:
+        return mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, name)
 
     def _start_render_workers(self) -> None:
         context = mp.get_context("spawn")
@@ -346,6 +451,7 @@ class MujocoPandaRecorder:
             "ctrl": self.data.ctrl.copy(),
             "time": float(self.data.time),
             "target_plate_pos": self.model.body_pos[self.target_plate_id].copy(),
+            "randomized_geom_sizes": self.model.geom_size[self.randomized_geom_ids].copy(),
         }
 
     def _submit_auxiliary_snapshot(self) -> None:
@@ -370,10 +476,16 @@ class MujocoPandaRecorder:
                 return
             if camera_name == "side":
                 self.side_preview_jpeg = jpeg
-            else:
+            elif camera_name == "front":
                 self.front_preview_jpeg = jpeg
+            elif camera_name == "top":
+                self.top_preview_jpeg = jpeg
 
     def reset_simulation(self) -> None:
+        self.control_epoch += 1
+        self.support_recovery_bodies = set()
+        self.control_paused = True
+        self.control_token = None
         mujoco.mj_resetData(self.model, self.data)
         self.randomize_object_positions()
         initial_arm_qpos = (
@@ -382,15 +494,22 @@ class MujocoPandaRecorder:
             else INITIAL_ARM_QPOS
         )
         self.data.qpos[:7] = initial_arm_qpos
-        finger_position = 0.0 if self.args.task_mode == "push_t" else 0.04
+        self.data.qpos[self.gripper_yaw_qpos_address] = 0.0
+        finger_position = 0.0 if self.args.task_mode == "push_t" else 0.05
         for address in self.finger_qpos_addresses:
             self.data.qpos[address] = finger_position
         self.data.ctrl[:7] = initial_arm_qpos
         self.data.ctrl[7] = 0.0 if self.args.task_mode == "push_t" else 255.0
+        self.data.ctrl[self.gripper_yaw_actuator_id] = 0.0
         mujoco.mj_forward(self.model, self.data)
         base_rotation = self.data.xmat[self.base_id].reshape(3, 3)
         hand_rotation = self.data.xmat[self.hand_id].reshape(3, 3)
         self.target_hand_rotation_in_base = base_rotation.T @ hand_rotation
+        self.initial_hand_rotation_in_base = self.target_hand_rotation_in_base.copy()
+        self.gripper_yaw = 0.0
+        self.gripper_orientation_locked = False
+        self.gripper_orientation_finalized = False
+        self.pointing_arm_qpos = None
         self.action_rpy_reference = rotation_matrix_to_rpy(
             self.target_hand_rotation_in_base
         )
@@ -402,46 +521,189 @@ class MujocoPandaRecorder:
             else None
         )
         self.cube_over_target = False
+        self.target_view_reached_with_cube = False
+        self.carried_target_since = None
+        self.transport_view_active = False
+        self.gripper_above_cube_view = False
+        self.gripper_above_cube_since = None
         self.target_entered_sim_time = None
         self.gripper_closed = self.args.task_mode == "push_t"
+        self.grasp_close_started_at = float("-inf")
+        self.grasp_support_z = self.args.table_top_z
+        self.pending_vertical_steps = 0
+        self.last_deferred_vertical_at = float("-inf")
+        self.motion_limit_reason = None
+        self.last_bilateral_cube_contact_at = float("-inf")
         self.z_lock_used_for_current_grasp = False
         self.vertical_anchor_xy = None
         self.last_gripper_command_at = float("-inf")
         self.side_preview_jpeg = None
+        self.top_preview_jpeg = None
         self.front_preview_jpeg = None
+        self.latest_gesture = "None"
+        self.latest_gesture_score = 0.0
+        self.hand_visible = False
+        self.last_gesture_update_at = float("-inf")
+        self.last_gesture_command_at = float("-inf")
+        self.last_resume_command_at = float("-inf")
 
-    def randomize_object_positions(self) -> None:
-        """Sample safe, reachable XY starts while keeping both objects upright."""
+    def randomize_object_positions(self, attempt: int = 0) -> None:
+        """Sample reachable tabletop, red-above and red-below rigid stacks."""
         cube_low = np.array([self.args.cube_x_min, self.args.cube_y_min])
         cube_high = np.array([self.args.cube_x_max, self.args.cube_y_max])
         target_low = np.array([self.args.plate_x_min, self.args.plate_y_min])
         target_high = np.array([self.args.plate_x_max, self.args.plate_y_max])
-
-        for _ in range(1_000):
-            cube_xy = self.rng.uniform(cube_low, cube_high)
-            target_xy = self.rng.uniform(target_low, target_high)
-            if np.linalg.norm(cube_xy - target_xy) >= self.args.object_min_separation:
-                break
-        else:
-            raise RuntimeError(
-                "Object randomization ranges cannot satisfy --object-min-separation."
+        if self.args.task_mode == "pick_place":
+            stack_base_name = None
+            stack_top_name = None
+            if self.rng.random() < getattr(self.args, "stack_probability", DEFAULT_STACK_PROBABILITY):
+                partner = str(self.rng.choice(DISTRACTOR_NAMES))
+                if self.rng.random() < 0.5:
+                    stack_base_name = partner
+                else:
+                    stack_top_name = partner
+            # The stacked target stays small enough to sit wholly on its
+            # support while leaving clearance for both open fingers.
+            red_half = float(self.rng.uniform(0.032 if stack_top_name else 0.025, 0.029 if stack_base_name else 0.034))
+            cube_yaw = float(self.rng.uniform(-np.pi, np.pi))
+            stack_base_yaw = (
+                cube_yaw + float(self.rng.uniform(-np.pi / 12, np.pi / 12))
+                if stack_base_name else None
             )
+            self._set_box_half_size(self.cube_id, self.cube_geom_id, red_half)
+            distractor_halves = {}
+            for name, body_id in zip(DISTRACTOR_NAMES, self.distractor_ids):
+                if name == stack_base_name:
+                    half = float(self.rng.uniform(0.043, 0.046))
+                elif name == stack_top_name:
+                    half = float(self.rng.uniform(0.014, 0.016))
+                else:
+                    half = float(self.rng.uniform(0.018, 0.039))
+                self._set_box_half_size(body_id, int(self.model.body_geomadr[body_id]), half)
+                distractor_halves[name] = half
+            base_half = distractor_halves[stack_base_name] if stack_base_name else 0.0
+            red_z = (
+                self.args.table_top_z + 2 * base_half + red_half + 0.003
+                if stack_base_name else self.args.table_top_z + red_half + 0.002
+            )
+            red_grasp_hand_z = max(
+                self.args.table_top_z + 2 * base_half + red_half + GRIPPER_PAD_CENTER_ABOVE_CUBE_CENTER,
+                self.args.table_top_z + 2 * base_half + 2 * red_half + GRIPPER_HAND_ABOVE_CUBE_TOP,
+            ) + GRASP_HEIGHT_MARGIN
+            if stack_top_name:
+                red_grasp_hand_z = max(red_grasp_hand_z,
+                    red_z + red_half + 2 * distractor_halves[stack_top_name]
+                    + GRIPPER_HAND_ABOVE_CUBE_TOP + 0.003)
+            initial_gripper_xy = None
+            if stack_base_name or stack_top_name:
+                initial_pose = mujoco.MjData(self.model)
+                initial_pose.qpos[:7] = INITIAL_ARM_QPOS
+                mujoco.mj_forward(self.model, initial_pose)
+                initial_gripper_xy = initial_pose.xpos[self.hand_id][:2].copy()
+            for _ in range(2_000):
+                cube_xy = self.rng.uniform(cube_low, cube_high)
+                target_xy = self.rng.uniform(target_low, target_high)
+                if not (
+                    self._safe_xy(cube_xy, red_half)
+                    and (not stack_base_name or self._safe_xy(cube_xy, base_half))
+                    and self._safe_xy(target_xy, 0.09)
+                ):
+                    continue
+                if (initial_gripper_xy is not None
+                        and np.linalg.norm(cube_xy - initial_gripper_xy) < 0.10):
+                    # A raised red block can otherwise start inside the
+                    # open gripper before the operator makes any gesture.
+                    continue
+                cluster_radius = max(red_half, base_half) * np.sqrt(2)
+                minimum_target_distance = max(
+                    self.args.object_min_separation,
+                    cluster_radius + 0.09 + 0.025,
+                )
+                if np.linalg.norm(cube_xy - target_xy) < minimum_target_distance:
+                    continue
+                if not (
+                    self._pose_reachable(cube_xy, red_grasp_hand_z)
+                    and (red_grasp_hand_z is None or self._pose_reachable(
+                        cube_xy, red_grasp_hand_z + LAYOUT_APPROACH_CLEARANCE
+                    ))
+                    and (red_grasp_hand_z is None or self._stack_approach_stable(
+                        cube_xy, red_grasp_hand_z + 0.08
+                    ))
+                    and self._pose_reachable(target_xy)
+                ):
+                    continue
+                placements = [(cube_xy, cluster_radius), (target_xy, 0.09)]
+                distractor_poses = {}
+                if stack_base_name:
+                    distractor_poses[stack_base_name] = (
+                        cube_xy.copy(), base_half, stack_base_yaw
+                    )
+                if stack_top_name:
+                    distractor_poses[stack_top_name] = (
+                        cube_xy.copy(), distractor_halves[stack_top_name],
+                        cube_yaw,  # Red below: both boxes share one random heading.
+                    )
+                for name in DISTRACTOR_NAMES:
+                    if name in (stack_base_name, stack_top_name):
+                        continue
+                    half = distractor_halves[name]
+                    for _ in range(250):
+                        xy = self.rng.uniform(cube_low, cube_high)
+                        radius = half * np.sqrt(2)
+                        if self._safe_xy(xy, half) and all(np.linalg.norm(xy - other) > radius + other_radius + 0.025 for other, other_radius in placements):
+                            placements.append((xy, radius))
+                            distractor_poses[name] = (xy, half, float(self.rng.uniform(-np.pi, np.pi)))
+                            break
+                    else:
+                        break
+                if len(distractor_poses) == len(self.distractor_ids):
+                    break
+            else:
+                raise RuntimeError("Safe workspace cannot fit the randomized objects and target.")
+            if stack_base_name:
+                local_offset = self.rng.uniform(-0.001, 0.001, size=2)
+                cos_yaw, sin_yaw = np.cos(stack_base_yaw), np.sin(stack_base_yaw)
+                red_xy = cube_xy + np.array([
+                    cos_yaw * local_offset[0] - sin_yaw * local_offset[1],
+                    sin_yaw * local_offset[0] + cos_yaw * local_offset[1],
+                ])
+                if self._safe_xy(red_xy, red_half):
+                    cube_xy = red_xy
+            self.current_layout = [{
+                "name": "cube", "xy_m": cube_xy.tolist(),
+                "z_m": red_z, "half_size_m": red_half, "yaw_rad": cube_yaw,
+                "stacked_on": stack_base_name,
+            }]
+            for name in DISTRACTOR_NAMES:
+                xy, half, yaw = distractor_poses[name]
+                body_id = self._body_id(name)
+                address = int(self.model.jnt_qposadr[self.model.body_jntadr[body_id]])
+                z = (red_z + red_half + half + 0.001 if name == stack_top_name
+                     else self.args.table_top_z + half + 0.002)
+                self.data.qpos[address:address + 3] = [xy[0], xy[1], z]
+                self.data.qpos[address + 3:address + 7] = [np.cos(yaw / 2), 0, 0, np.sin(yaw / 2)]
+                self.current_layout.append({
+                    "name": name, "xy_m": xy.tolist(), "z_m": z,
+                    "half_size_m": half, "yaw_rad": yaw, "stacked_on": "cube" if name == stack_top_name else None,
+                })
+        else:
+            for _ in range(1_000):
+                cube_xy = self.rng.uniform(cube_low, cube_high)
+                target_xy = self.rng.uniform(target_low, target_high)
+                if np.linalg.norm(cube_xy - target_xy) >= self.args.object_min_separation:
+                    break
+            else:
+                raise RuntimeError("Object randomization ranges cannot satisfy --object-min-separation.")
+            cube_yaw = float(np.deg2rad(self.rng.uniform(self.args.cube_yaw_min_deg, self.args.cube_yaw_max_deg)))
+            self.current_layout = []
 
         # The cube has a free joint, so its pose lives in qpos. The plate is a
         # fixed MuJoCo body, so its position lives in model.body_pos.
         self.data.qpos[self.cube_qpos_address : self.cube_qpos_address + 3] = [
             cube_xy[0],
             cube_xy[1],
-            self.initial_cube_z,
+            red_z if self.args.task_mode == "pick_place" else self.args.table_top_z + self.args.cube_half_size + 0.002,
         ]
-        cube_yaw = 0.0
-        if self.args.task_mode == "push_t":
-            cube_yaw = np.deg2rad(
-                self.rng.uniform(
-                    self.args.cube_yaw_min_deg,
-                    self.args.cube_yaw_max_deg,
-                )
-            )
         self.data.qpos[self.cube_qpos_address + 3 : self.cube_qpos_address + 7] = [
             np.cos(cube_yaw / 2.0),
             0.0,
@@ -458,14 +720,235 @@ class MujocoPandaRecorder:
         self.current_cube_yaw = float(cube_yaw)
         self.current_target_yaw = 0.0
         self.current_push_t_coverage = 0.0
+        if self.args.task_mode == "pick_place":
+            mujoco.mj_forward(self.model, self.data)
+            checks = [
+                np.array([*cube_xy, red_grasp_hand_z + height])
+                for height in (0.08, 0.04, 0.0)
+            ]
+            checks.append(np.array([*target_xy, self.args.target_top_z + 0.15]))
+            if not all(self._layout_pose_clear(position) for position in checks):
+                if attempt >= 24:
+                    raise RuntimeError("Could not sample a collision-free reachable grasp layout after 25 attempts.")
+                self.randomize_object_positions(attempt + 1)
+                return
+            self.layout_reachability = {
+                "checked": True, "mode": "red_above" if stack_base_name else "red_below" if stack_top_name else "table",
+                "grasp_hand_z_m": red_grasp_hand_z,
+                "checked_poses": [position.tolist() for position in checks],
+                "position_tolerance_m": 0.002, "joint_margin_rad": 0.08,
+            }
+
+    def _layout_pose_clear(self, target: np.ndarray) -> bool:
+        """IK plus open-gripper collision checks in this exact sampled scene."""
+        trial = mujoco.MjData(self.model)
+        trial.qpos[:] = self.data.qpos
+        trial.qpos[:7] = INITIAL_ARM_QPOS
+        for name in ("finger_joint1", "finger_joint2"):
+            trial.qpos[self.model.jnt_qposadr[self._joint_id(name)]] = 0.05
+        mujoco.mj_forward(self.model, trial)
+        desired = trial.xmat[self.hand_id].reshape(3, 3).copy()
+        jacp = np.zeros((3, self.model.nv)); jacr = np.zeros_like(jacp)
+        limits = self.model.jnt_range[:7]
+        for _ in range(240):
+            mujoco.mj_forward(self.model, trial)
+            error = target - trial.xpos[self.hand_id]
+            rotation = trial.xmat[self.hand_id].reshape(3, 3)
+            angular = 0.5 * sum(np.cross(rotation[:, i], desired[:, i]) for i in range(3))
+            if np.linalg.norm(error) < 0.002 and np.linalg.norm(angular) < 0.02:
+                robot_ids = {self._body_id(name) for name in (
+                    "link0", "link1", "link2", "link3", "link4", "link5", "link6", "link7",
+                    "hand", "left_finger", "right_finger")}
+                for contact in trial.contact:
+                    a, b = (int(self.model.geom_bodyid[g]) for g in (contact.geom1, contact.geom2))
+                    if (a in robot_ids or b in robot_ids) and contact.dist < -0.0005:
+                        return False
+                return True
+            mujoco.mj_jacBody(self.model, trial, jacp, jacr, self.hand_id)
+            jac = np.vstack((jacp[:, :7], jacr[:, :7]))
+            dq = jac.T @ np.linalg.solve(jac @ jac.T + 0.002 * np.eye(6), np.r_[error, angular])
+            trial.qpos[:7] = np.clip(trial.qpos[:7] + np.clip(dq, -0.06, 0.06), limits[:, 0] + 0.08, limits[:, 1] - 0.08)
+        return False
+
+    def _set_box_half_size(self, body_id: int, geom_id: int, half: float) -> None:
+        self.model.geom_size[geom_id] = [half, half, half]
+        # MuJoCo keeps both per-geom bounds and a separate BVH leaf. Updating
+        # only geom_aabb still lets the BVH cull fingertip contacts on a box
+        # enlarged beyond the XML size (notably the 68 mm cube).
+        self.model.geom_aabb[geom_id] = [0.0, 0.0, 0.0, half, half, half]
+        self.model.geom_rbound[geom_id] = np.sqrt(3.0) * half
+        bvh_start = int(self.model.body_bvhadr[body_id])
+        bvh_stop = bvh_start + int(self.model.body_bvhnum[body_id])
+        for node in range(bvh_start, bvh_stop):
+            if int(self.model.bvh_nodeid[node]) == geom_id:
+                self.model.bvh_aabb[node] = self.model.geom_aabb[geom_id]
+        mass = 0.1 * (half / 0.03) ** 3
+        self.model.body_mass[body_id] = mass
+        self.model.body_inertia[body_id] = [2 * mass * half * half / 3] * 3
+
+    def enforce_layout_support(self) -> None:
+        """Keep every free rigid layout box above its supporting hard surface."""
+        if self.args.task_mode != "pick_place":
+            return
+        plate_center = self.data.xpos[self.target_plate_id][:2]
+        plate_geom_id = int(self.model.body_geomadr[self.target_plate_id])
+        plate_radius = float(self.model.geom_size[plate_geom_id][0])
+        corrected = False
+        for body_id, geom_id in zip([self.cube_id, *self.distractor_ids], self.randomized_geom_ids):
+            joint_id = int(self.model.body_jntadr[body_id])
+            qpos_address = int(self.model.jnt_qposadr[joint_id])
+            qvel_address = int(self.model.jnt_dofadr[joint_id])
+            half_sizes = self.model.geom_size[geom_id]
+            rotation = self.data.xmat[body_id].reshape(3, 3)
+            vertical_extent = float(np.abs(rotation[2]) @ half_sizes)
+            horizontal_extent = float(np.linalg.norm(half_sizes[:2]))
+            fully_on_plate = body_id == self.cube_id and (
+                np.linalg.norm(self.data.xpos[body_id][:2] - plate_center)
+                + horizontal_extent <= plate_radius
+            )
+            support_z = self.args.target_top_z if fully_on_plate else self.args.table_top_z
+            bottom_z = float(self.data.xpos[body_id][2]) - vertical_extent
+            recovering = getattr(self, "support_recovery_bodies", set())
+            self.support_recovery_bodies = recovering
+            if bottom_z < support_z - 0.005:
+                recovering.add(body_id)
+            if bottom_z >= support_z - 0.001:
+                recovering.discard(body_id)
+            if body_id in recovering:
+                # Emergency recovery only after >5mm penetration; finish to
+                # 1mm, at most 1mm per tick. Ordinary support is all contact.
+                self.data.qpos[qpos_address + 2] += min(0.001, support_z - bottom_z)
+                self.data.qvel[qvel_address + 2] = max(0.0, self.data.qvel[qvel_address + 2])
+                corrected = True
+        if corrected:
+            mujoco.mj_forward(self.model, self.data)
+
+    def _safe_xy(self, xy: np.ndarray, margin: float) -> bool:
+        x, y = xy
+        radius = float(np.hypot(x, y))
+        return (0.34 <= radius <= self.args.safe_reach_radius
+                and 0.1 + margin <= x <= 0.9 - margin
+                and abs(y) <= 0.5 - margin)
+
+    def _pose_reachable(self, xy: np.ndarray, hand_z: float | None = None) -> bool:
+        """Verify an above-object grasp pose using the actual Panda Jacobian and joint limits."""
+        trial = mujoco.MjData(self.model)
+        trial.qpos[:7] = INITIAL_ARM_QPOS
+        target = np.array([
+            xy[0], xy[1],
+            self.args.table_top_z + 0.15 if hand_z is None else hand_z,
+        ])
+        mujoco.mj_forward(self.model, trial)
+        desired_rotation = trial.xmat[self.hand_id].reshape(3, 3).copy()
+        jacp = np.zeros((3, self.model.nv))
+        jacr = np.zeros_like(jacp)
+        limits = self.model.jnt_range[:7]
+        for _ in range(100):
+            mujoco.mj_forward(self.model, trial)
+            position_error = target - trial.xpos[self.hand_id]
+            rotation = trial.xmat[self.hand_id].reshape(3, 3)
+            orientation_error = 0.5 * sum(np.cross(rotation[:, i], desired_rotation[:, i]) for i in range(3))
+            if np.linalg.norm(position_error) < 0.018 and np.linalg.norm(orientation_error) < 0.12:
+                return True
+            mujoco.mj_jacBody(self.model, trial, jacp, jacr, self.hand_id)
+            jacobian = np.vstack((jacp[:, :7], jacr[:, :7]))
+            delta = np.concatenate((position_error, orientation_error))
+            dq = jacobian.T @ np.linalg.solve(jacobian @ jacobian.T + 0.0025 * np.eye(6), delta)
+            trial.qpos[:7] = np.clip(trial.qpos[:7] + np.clip(dq, -0.08, 0.08), limits[:, 0] + 0.08, limits[:, 1] - 0.08)
+        return False
+
+    def _stack_approach_stable(self, xy: np.ndarray, hand_z: float) -> bool:
+        """Reject high approaches that put an arm link into the table."""
+        trial = mujoco.MjData(self.model)
+        q = INITIAL_ARM_QPOS.copy()
+        trial.qpos[:7] = q
+        mujoco.mj_forward(self.model, trial)
+        desired_rotation = trial.xmat[self.hand_id].reshape(3, 3).copy()
+        target = np.array([xy[0], xy[1], hand_z])
+        jacp = np.zeros((3, self.model.nv))
+        jacr = np.zeros_like(jacp)
+        limits = self.model.jnt_range[:7]
+        solved = False
+        for _ in range(220):
+            trial.qpos[:7] = q
+            mujoco.mj_forward(self.model, trial)
+            position_error = target - trial.xpos[self.hand_id]
+            rotation = trial.xmat[self.hand_id].reshape(3, 3)
+            rotation_error = 0.5 * sum(
+                np.cross(rotation[:, axis], desired_rotation[:, axis])
+                for axis in range(3)
+            )
+            if (np.linalg.norm(position_error) < 0.0003
+                    and np.linalg.norm(rotation_error) < 0.004):
+                solved = True
+                break
+            mujoco.mj_jacBody(self.model, trial, jacp, jacr, self.hand_id)
+            jacobian = np.vstack((jacp[:, :7], jacr[:, :7]))
+            delta = jacobian.T @ np.linalg.solve(
+                jacobian @ jacobian.T + 0.002 * np.eye(6),
+                np.r_[position_error, rotation_error],
+            )
+            q = np.clip(
+                q + np.clip(delta, -0.06, 0.06),
+                limits[:, 0] + 0.03, limits[:, 1] - 0.03,
+            )
+        if not solved:
+            return False
+
+        table_geom = self._geom_id("table_surface")
+        robot_bodies = {
+            self._body_id(name) for name in (
+                "link0", "link1", "link2", "link3", "link4", "link5",
+                "link6", "link7", "hand", "left_finger", "right_finger",
+            )
+        }
+        for contact in trial.contact:
+            if table_geom == contact.geom1:
+                other = contact.geom2
+            elif table_geom == contact.geom2:
+                other = contact.geom1
+            else:
+                continue
+            if (int(self.model.geom_bodyid[other]) in robot_bodies
+                    and contact.dist < -0.0005):
+                return False
+
+        trial.ctrl[:7] = q
+        trial.ctrl[7] = 255.0
+        for name in ("finger_joint1", "finger_joint2"):
+            joint_id = self._joint_id(name)
+            trial.qpos[self.model.jnt_qposadr[joint_id]] = 0.05
+        mujoco.mj_forward(self.model, trial)
+        for _ in range(150):
+            mujoco.mj_step(self.model, trial)
+            for contact in trial.contact:
+                if table_geom == contact.geom1:
+                    other = contact.geom2
+                elif table_geom == contact.geom2:
+                    other = contact.geom1
+                else:
+                    continue
+                if (int(self.model.geom_bodyid[other]) in robot_bodies
+                        and contact.dist < -0.0005):
+                    return False
+        return bool(
+            np.all(np.isfinite(trial.qpos))
+            and np.linalg.norm(trial.xpos[self.hand_id] - target) < 0.025
+        )
 
     def move_hand(self, dx: float, dy: float, dz: float) -> None:
+        # Pointing_Up owns the dedicated gripper-yaw target. Cartesian moves
+        # may change the seven arm joints, but must never rewrite or relax it.
+        self.data.ctrl[self.gripper_yaw_actuator_id] = self.gripper_yaw
+        if abs(dx) + abs(dy) + abs(dz) > 1e-9:
+            self.motion_limit_reason = None
         # Build the next Cartesian step from the commanded joint target, not
         # from the lagging physical arm. Otherwise the same orientation error
         # is added repeatedly while the servos catch up, which makes a stream
         # of diagonal commands twist the redundant 7-DoF arm.
         self.action_data.qpos[:] = self.data.qpos
         self.action_data.qpos[:7] = self.data.ctrl[:7]
+        self.action_data.qpos[self.gripper_yaw_qpos_address] = self.data.ctrl[self.gripper_yaw_actuator_id]
         self.action_data.qvel[:] = 0.0
         mujoco.mj_forward(self.model, self.action_data)
         target_pos = self.action_data.xpos[self.hand_id].copy()
@@ -478,20 +961,61 @@ class MujocoPandaRecorder:
             dz = float(self.locked_z - target_pos[2])
         elif (
             self.args.task_mode == "pick_place"
-            and self.gripper_closed
+            and self.is_holding_cube()
             and dz < 0
         ):
             cube_z = float(self.data.xpos[self.cube_id][2])
-            support_z = self.args.target_top_z if self.cube_over_target else self.args.table_top_z
-            minimum_cube_z = support_z + self.args.cube_half_size + 0.002
-            if cube_z <= minimum_cube_z:
-                dz = 0.0
+            support_z = self._cube_support_height(self.data.xpos[self.cube_id][:2])
+            minimum_cube_z = support_z + float(self.model.geom_size[self.cube_geom_id][2]) + 0.002
+            bounded_dz = max(dz, min(0.0, minimum_cube_z - cube_z))
+            if bounded_dz > dz + 1e-9:
+                surface = "底座" if support_z > self.args.table_top_z + 0.03 else "桌面"
+                self.motion_limit_reason = f"已到{surface}下降限位"
+            dz = bounded_dz
 
         # Gesture translation is defined in the robot-base frame.  In the
         # current scene link0 is aligned with world, but this conversion keeps
         # the control definition correct if the robot is moved later.
         base_rotation = self.action_data.xmat[self.base_id].reshape(3, 3)
         world_delta = base_rotation @ np.array([dx, dy, dz], dtype=float)
+        if self.args.task_mode == "pick_place":
+            proposed = target_pos + world_delta
+            proposed[0] = np.clip(proposed[0], 0.32, 0.74)
+            proposed[1] = np.clip(proposed[1], -0.32, 0.32)
+            # Bounds may stop a requested vertical step, but zero and planar
+            # commands must not raise or lower the hand on their own.
+            if dz < 0:
+                support_z, support_name = self._hand_descent_support(proposed[:2])
+                minimum_z = support_z + GRIPPER_LOWEST_POINT_BELOW_HAND
+                bounded_z = max(proposed[2], min(minimum_z, target_pos[2]))
+                if bounded_z > proposed[2] + 1e-9:
+                    self.motion_limit_reason = f"已到{support_name}下降限位"
+                proposed[2] = bounded_z
+            elif dz > 0:
+                proposed[2] = min(proposed[2], max(0.82, target_pos[2]))
+            cube_xy = self.data.xpos[self.cube_id][:2]
+            cube_half_height = float(self.model.geom_size[self.cube_geom_id][2])
+            support_z = self._cube_support_height(cube_xy)
+            approach_radius = float(self.model.geom_size[self.cube_geom_id][0]) + GRIPPER_CUBE_XY_MARGIN
+            xy_error = float(np.linalg.norm(proposed[:2] - cube_xy))
+            if not self.is_holding_cube() and xy_error <= approach_radius and dz < 0:
+                # Use the nominal support plane instead of the current cube
+                # Z: soft contact can be slightly penetrated already.
+                supported_cube_top = support_z + 2.0 * cube_half_height + 0.001
+                min_hand_z = max(
+                    supported_cube_top + GRIPPER_HAND_ABOVE_CUBE_TOP,
+                    self._red_stack_top_height() + GRIPPER_HAND_ABOVE_CUBE_TOP,
+                    support_z + cube_half_height + GRIPPER_PAD_CENTER_ABOVE_CUBE_CENTER,
+                )
+                bounded_z = max(proposed[2], min(min_hand_z, target_pos[2]))
+                if bounded_z > proposed[2] + 1e-9:
+                    surface = "底座" if support_z > self.args.table_top_z + 0.03 else "桌面"
+                    self.motion_limit_reason = f"已到{surface}上红块的安全下降高度"
+                proposed[2] = bounded_z
+            planar_radius = np.linalg.norm(proposed[:2])
+            if planar_radius > self.args.safe_reach_radius + 0.04:
+                proposed[:2] *= (self.args.safe_reach_radius + 0.04) / planar_radius
+            world_delta = proposed - target_pos
 
         target_hand_rotation_world = (
             base_rotation @ self.target_hand_rotation_in_base
@@ -512,17 +1036,29 @@ class MujocoPandaRecorder:
             self.jacr,
             self.hand_id,
         )
-        task_jacobian = np.vstack((self.jacp[:, :7], self.jacr[:, :7]))
-        task_delta = np.concatenate((world_delta, orientation_error))
-        # Damped least squares keeps the solution continuous and avoids large
-        # joint rotations when two Cartesian axes move together.
-        damping = 0.03
-        task_inverse = np.linalg.solve(
-            task_jacobian @ task_jacobian.T
-            + (damping * damping) * np.eye(task_jacobian.shape[0]),
-            task_delta,
+        position_jacobian = self.jacp[:, :7]
+        rotation_jacobian = self.jacr[:, :7]
+
+        # Preserve the Pointing_Up orientation as the primary task. Planar
+        # translation is solved only in the rotational nullspace, so a stream
+        # of diagonal commands cannot slowly rotate the gripper.
+        orientation_damping = 0.006
+        rotation_inverse = rotation_jacobian.T @ np.linalg.solve(
+            rotation_jacobian @ rotation_jacobian.T
+            + (orientation_damping * orientation_damping) * np.eye(3),
+            np.eye(3),
         )
-        dq = task_jacobian.T @ task_inverse
+        orientation_step = rotation_inverse @ orientation_error
+        rotation_nullspace = np.eye(7) - rotation_inverse @ rotation_jacobian
+        projected_position_jacobian = position_jacobian @ rotation_nullspace
+        remaining_position = world_delta - position_jacobian @ orientation_step
+        position_damping = 0.03
+        position_step = rotation_nullspace @ projected_position_jacobian.T @ np.linalg.solve(
+            projected_position_jacobian @ projected_position_jacobian.T
+            + (position_damping * position_damping) * np.eye(3),
+            remaining_position,
+        )
+        dq = orientation_step + position_step
         dq = np.clip(dq, -self.args.max_joint_step, self.args.max_joint_step)
         next_joint_target = self.data.ctrl[:7] + dq
         # Never let a command stream run far ahead of the physical arm. This
@@ -536,16 +1072,21 @@ class MujocoPandaRecorder:
         for index in range(7):
             low, high = self.model.actuator_ctrlrange[index]
             self.data.ctrl[index] = np.clip(self.data.ctrl[index], low, high)
+            joint_low, joint_high = self.model.jnt_range[index]
+            self.data.ctrl[index] = np.clip(self.data.ctrl[index], joint_low + 0.06, joint_high - 0.06)
 
     def set_z_lock(self, locked: bool, reason: str | None = None) -> None:
         was_locked = self.z_locked
         self.z_locked = locked
         if locked and not was_locked:
+            if self.args.task_mode == "pick_place" and self.is_holding_cube():
+                self.transport_view_active = True
             # Capture the commanded height once. Repeated ILoveYou commands
             # must never overwrite it with the slightly sagging physical
             # height, otherwise the horizontal plane ratchets downward.
             self.action_data.qpos[:] = self.data.qpos
             self.action_data.qpos[:7] = self.data.ctrl[:7]
+            self.action_data.qpos[self.gripper_yaw_qpos_address] = self.data.ctrl[self.gripper_yaw_actuator_id]
             self.action_data.qvel[:] = 0.0
             mujoco.mj_forward(self.model, self.action_data)
             self.locked_z = float(self.action_data.xpos[self.hand_id][2])
@@ -557,20 +1098,56 @@ class MujocoPandaRecorder:
                 print("[视角] 方块移出圆盘：重新锁定 Z 并切换到俯视视角。")
             else:
                 print(
-                    f"[视角] 方块已到运输高度 {cube_z:.3f} m："
+                    f"[视角] 当前夹持物体高度 {cube_z:.3f} m："
                     "锁定 Z 并切换到俯视视角。"
                 )
         elif was_locked and not locked:
             self.side_preview_jpeg = None
             if reason == "target":
+                self.transport_view_active = False
                 print("[视角] 已进入圆盘区域：解除 Z 并恢复斜视角。")
+            elif reason == "vertical":
+                print("[控制] 已解除运输高度锁定，恢复升降控制。")
             else:
                 print("[视角] 已解除 Z 并恢复斜视角。")
 
     def maintain_locked_plane(self) -> None:
         """Continuously keep the commanded end effector on the locked Z plane."""
-        if self.z_locked and self.locked_z is not None:
+        if (self.z_locked and self.locked_z is not None
+                and self.pointing_arm_qpos is None):
             self.move_hand(0.0, 0.0, 0.0)
+
+    def maintain_gripper_orientation(self) -> None:
+        """Continuously hold the last Pointing_Up orientation during motion."""
+        if (
+            self.gripper_orientation_locked
+            and self.pointing_arm_qpos is None
+            and not self.z_locked
+        ):
+            self.move_hand(0.0, 0.0, 0.0)
+
+    def hard_lock_gripper_yaw(self) -> None:
+        """Prevent the dedicated yaw joint from drifting after Pointing_Up."""
+        if not self.gripper_orientation_locked:
+            return
+        self.data.ctrl[self.gripper_yaw_actuator_id] = self.gripper_yaw
+        if self.pointing_arm_qpos is not None and not self.gripper_orientation_finalized:
+            # During the initial adjustment, let the yaw actuator rotate the
+            # empty gripper. Teleporting qpos to each hand angle creates an
+            # impulse that can force the fingers apart on contact.
+            return
+        self.data.qpos[self.gripper_yaw_qpos_address] = self.gripper_yaw
+        self.data.qvel[self.gripper_yaw_dof_address] = 0.0
+        mujoco.mj_forward(self.model, self.data)
+
+    def hold_pointing_arm(self) -> None:
+        """Keep all seven arm joints fixed while the gripper yaw joint moves."""
+        if self.pointing_arm_qpos is None:
+            return
+        self.data.qpos[:7] = self.pointing_arm_qpos
+        self.data.qvel[:7] = 0.0
+        self.data.ctrl[:7] = self.pointing_arm_qpos
+        mujoco.mj_forward(self.model, self.data)
 
     def is_holding_cube(self) -> bool:
         finger_width = float(
@@ -581,31 +1158,185 @@ class MujocoPandaRecorder:
                 self.data.xpos[self.hand_id] - self.data.xpos[self.cube_id]
             )
         )
-        return (
+        if not (
             self.gripper_closed
             and self.args.grasped_min_width
             <= finger_width
             <= self.args.grasped_max_width
             and hand_cube_distance <= self.args.grasped_max_distance
+        ):
+            return False
+
+        contacting_fingers = set()
+        force = np.zeros(6)
+        for contact_index in range(self.data.ncon):
+            contact = self.data.contact[contact_index]
+            if contact.geom1 == self.cube_geom_id:
+                other_geom = contact.geom2
+            elif contact.geom2 == self.cube_geom_id:
+                other_geom = contact.geom1
+            else:
+                continue
+            finger_body = int(self.model.geom_bodyid[other_geom])
+            if finger_body not in self.finger_body_ids:
+                continue
+            mujoco.mj_contactForce(self.model, self.data, contact_index, force)
+            if force[0] > 0.01:
+                contacting_fingers.add(finger_body)
+                if len(contacting_fingers) == 2:
+                    self.last_bilateral_cube_contact_at = float(self.data.time)
+                    return True
+        # Brief contact dropouts must not flicker the camera or transport lock.
+        return float(self.data.time) - self.last_bilateral_cube_contact_at <= 0.05
+
+    def gripper_ready_to_grasp(self) -> bool:
+        """Closing is an explicit manual action at any position."""
+        return True
+
+    def _cube_support_height(self, cube_xy: np.ndarray) -> float:
+        """Read the current surface under the red box, including a movable base."""
+        target_xy = self.data.xpos[self.target_plate_id][:2]
+        support_z = (
+            self.args.target_top_z
+            if np.linalg.norm(cube_xy - target_xy) <= self.args.target_radius
+            else self.args.table_top_z
+        )
+        if self.args.task_mode != "pick_place":
+            return support_z
+
+        cube_half = float(self.model.geom_size[self.cube_geom_id][0])
+        for body_id in self.distractor_ids:
+            geom_id = int(self.model.body_geomadr[body_id])
+            half_size = self.model.geom_size[geom_id]
+            if self.data.xpos[body_id][2] > self.data.xpos[self.cube_id][2]:
+                continue
+            rotation = self.data.xmat[body_id].reshape(3, 3)
+            local_xy = rotation[:2, :2].T @ (
+                cube_xy - self.data.xpos[body_id][:2]
+            )
+            # Include a small margin so the box cannot be lowered through a
+            # base while an edge still overlaps it during lateral motion.
+            if np.all(np.abs(local_xy) <= half_size[:2] + cube_half + 0.003):
+                top_z = float(
+                    self.data.xpos[body_id][2]
+                    + np.abs(rotation[2]) @ half_size
+                )
+                support_z = max(support_z, top_z)
+        return support_z
+
+    def _hand_descent_support(self, hand_xy: np.ndarray) -> tuple[float, str]:
+        """Highest surface under the fingers during a requested descent."""
+        support_z = self.args.table_top_z
+        support_name = "桌面"
+        plate_id = int(self.model.body_geomadr[self.target_plate_id])
+        plate_radius = float(self.model.geom_size[plate_id][0])
+        if np.linalg.norm(hand_xy - self.data.xpos[self.target_plate_id][:2]) <= plate_radius + 0.05:
+            support_z = self.args.target_top_z
+            support_name = "圆盘"
+        for body_id in self.distractor_ids:
+            geom_id = int(self.model.body_geomadr[body_id])
+            half_size = self.model.geom_size[geom_id]
+            red_half = float(self.model.geom_size[self.cube_geom_id][0])
+            if (self.data.xpos[body_id][2] > self.data.xpos[self.cube_id][2]
+                    and np.linalg.norm(self.data.xpos[body_id][:2] - self.data.xpos[self.cube_id][:2])
+                    + np.linalg.norm(half_size[:2]) < red_half - 0.003):
+                continue
+            rotation = self.data.xmat[body_id].reshape(3, 3)
+            local_xy = rotation[:2, :2].T @ (
+                hand_xy - self.data.xpos[body_id][:2]
+            )
+            if np.all(np.abs(local_xy) <= half_size[:2] + 0.05):
+                top_z = float(self.data.xpos[body_id][2] + np.abs(rotation[2]) @ half_size)
+                if top_z > support_z:
+                    support_z = top_z
+                    support_name = "底座"
+        return support_z, support_name
+
+    def _red_stack_top_height(self) -> float:
+        """Highest central obstruction above the red box, for palm clearance."""
+        red_pos = self.data.xpos[self.cube_id]
+        half = float(self.model.geom_size[self.cube_geom_id][0])
+        top = float(red_pos[2] + half)
+        for body_id in self.distractor_ids:
+            geom_id = int(self.model.body_geomadr[body_id])
+            size = self.model.geom_size[geom_id]
+            if (self.data.xpos[body_id][2] > red_pos[2]
+                    and np.linalg.norm(self.data.xpos[body_id][:2] - red_pos[:2]) < half):
+                top = max(top, float(self.data.xpos[body_id][2] + np.abs(self.data.xmat[body_id].reshape(3, 3)[2]) @ size))
+        return top
+
+    def _grasp_target_hand_z(self) -> float:
+        half = float(self.model.geom_size[self.cube_geom_id][2])
+        cube_xy = self.data.xpos[self.cube_id][:2]
+        support_z = self._cube_support_height(cube_xy)
+        cube_top = support_z + 2 * half + 0.001
+        return max(
+            cube_top + GRIPPER_HAND_ABOVE_CUBE_TOP,
+            self._red_stack_top_height() + GRIPPER_HAND_ABOVE_CUBE_TOP,
+            support_z + half + GRIPPER_PAD_CENTER_ABOVE_CUBE_CENTER,
+        ) + GRASP_HEIGHT_MARGIN
+
+
+    def _commanded_hand_position(self) -> np.ndarray:
+        """Read the arm's commanded pose without changing the live simulation."""
+        self.action_data.qpos[:] = self.data.qpos
+        self.action_data.qpos[:7] = self.data.ctrl[:7]
+        self.action_data.qpos[self.gripper_yaw_qpos_address] = self.gripper_yaw
+        self.action_data.qvel[:] = 0.0
+        mujoco.mj_forward(self.model, self.action_data)
+        return self.action_data.xpos[self.hand_id].copy()
+
+
+    def gripper_approaching_cube(self) -> bool:
+        """Expand web side/front views before the precise camera switch."""
+        if self.args.task_mode != "pick_place" or self.is_holding_cube():
+            return False
+        cube_pos = self.data.xpos[self.cube_id]
+        hand_pos = self.data.xpos[self.hand_id]
+        cube_top = float(cube_pos[2] + self.model.geom_size[self.cube_geom_id][2])
+        return (
+            float(np.linalg.norm(hand_pos[:2] - cube_pos[:2])) <= 0.07
+            and 0.02 <= float(hand_pos[2] - cube_top) <= 0.22
         )
 
     def update_transport_state(self) -> None:
-        """Enter the top-down XY transport phase at a fixed absolute height."""
+        """Retain transport state once a held object has actually been lifted."""
         if self.args.task_mode == "push_t":
             return
         cube_z = float(self.data.xpos[self.cube_id][2])
         if (
             self.gripper_closed
+            and self.is_holding_cube()
             and not self.z_locked
             and not self.z_lock_used_for_current_grasp
             and not self.cube_over_target
-            and cube_z >= self.args.transport_cube_z
+            and cube_z >= self._transport_cube_height()
         ):
             self.set_z_lock(True)
             self.z_lock_used_for_current_grasp = True
 
+    def _transport_cube_height(self) -> float:
+        """Require a real lift before transport when the red box starts stacked."""
+        half = float(self.model.geom_size[self.cube_geom_id][2])
+        return max(self.args.transport_cube_z, self.grasp_support_z + half + 0.05)
+
+    def operator_uses_topdown(self) -> bool:
+        # ILoveYou uses the top view even when the gripper is empty. A carried
+        # cube keeps the existing top view through the locked transport phase.
+        if (self.args.task_mode == "pick_place" and self.target_view_reached_with_cube
+                and self.is_holding_cube()):
+            return False
+        if self.args.task_mode == "pick_place" and self.gripper_above_cube_view:
+            return False
+        return self.z_locked or self.transport_view_active or (
+            self.args.task_mode == "pick_place"
+            and self.latest_gesture == "ILoveYou"
+            and self.hand_visible
+            and time.perf_counter() - self.last_gesture_update_at < 0.5
+        )
+
     def update_viewer_camera(self, viewer) -> None:
-        if self.z_locked:
+        if self.operator_uses_topdown():
             viewer.cam.type = mujoco.mjtCamera.mjCAMERA_FREE
             viewer.cam.lookat[:] = self.topdown_camera.lookat
             viewer.cam.distance = self.topdown_camera.distance
@@ -619,10 +1350,21 @@ class MujocoPandaRecorder:
             viewer.cam.elevation = self.observation_camera.elevation
 
     def get_runtime_status(self) -> dict:
+        cube_half_size = float(self.model.geom_size[self.cube_geom_id][2])
+        grasp_xy_error = float(np.linalg.norm(
+            self.data.xpos[self.hand_id][:2] - self.data.xpos[self.cube_id][:2]
+        ))
+        grasp_xy_tolerance = min(0.07, cube_half_size + GRIPPER_CUBE_XY_MARGIN)
+        grasp_vertical_velocity = float(self.data.cvel[self.hand_id][5])
         return {
             "task_mode": self.args.task_mode,
+            "session": self.session,
+            "control_epoch": self.control_epoch,
+            "paused": self.control_paused,
+            "control_token": self.control_token,
+            "layout_reachability": getattr(self, "layout_reachability", None),
             "z_locked": self.z_locked,
-            "operator_view": "topdown" if self.z_locked else "overview",
+            "operator_view": "topdown" if self.operator_uses_topdown() else "overview",
             "visual_observation": [
                 "overview_145deg",
                 "camera_2_025deg",
@@ -634,10 +1376,22 @@ class MujocoPandaRecorder:
             "recording": self.recording,
             "saving_episode": self.saving_episode,
             "holding_cube": self.is_holding_cube(),
+            "gripper_yaw_finalized": self.gripper_orientation_finalized,
+            "gripper_yaw_rad": self.gripper_yaw,
+            "gripper_yaw_locked": self.gripper_orientation_locked,
+            "pointing_arm_locked": self.pointing_arm_qpos is not None,
+            "grasp_close_elapsed_s": max(0.0, float(self.data.time) - self.grasp_close_started_at) if self.gripper_closed else 0.0,
+            "grasp_ready": self.gripper_ready_to_grasp(),
+            "grasp_xy_error_m": round(grasp_xy_error, 4),
+            "grasp_xy_tolerance_m": round(grasp_xy_tolerance, 4),
+            "grasp_vertical_speed_m_s": round(abs(grasp_vertical_velocity), 4),
+            "grasp_vertical_velocity_m_s": round(grasp_vertical_velocity, 4),
+            "motion_limit_reason": self.motion_limit_reason,
+            "gripper_approaching_cube": self.gripper_approaching_cube(),
             "cube_z_m": round(float(self.data.xpos[self.cube_id][2]), 4),
             "hand_z_m": round(float(self.data.xpos[self.hand_id][2]), 4),
             "locked_z_m": None if self.locked_z is None else round(self.locked_z, 4),
-            "transport_cube_z_m": self.args.transport_cube_z,
+            "transport_cube_z_m": round(self._transport_cube_height(), 4),
             "push_t_coverage": (
                 round(self.current_push_t_coverage, 4)
                 if self.args.task_mode == "push_t"
@@ -649,6 +1403,10 @@ class MujocoPandaRecorder:
         self.last_aux_preview_request_at = time.perf_counter()
         return self.side_preview_jpeg
 
+    def get_top_preview(self) -> bytes | None:
+        self.last_aux_preview_request_at = time.perf_counter()
+        return self.top_preview_jpeg
+
     def get_front_preview(self) -> bytes | None:
         self.last_aux_preview_request_at = time.perf_counter()
         return self.front_preview_jpeg
@@ -657,36 +1415,28 @@ class MujocoPandaRecorder:
         """Avoid rendering operator views while no browser is watching them."""
         return time.perf_counter() - self.last_aux_preview_request_at <= 1.0
 
-    def open_gripper_immediately(self) -> None:
-        self.data.ctrl[7] = 255.0
-        for joint_id in self.finger_joint_ids:
-            qpos_address = self.model.jnt_qposadr[joint_id]
-            dof_address = self.model.jnt_dofadr[joint_id]
-            self.data.qpos[qpos_address] = 0.04
-            self.data.qvel[dof_address] = 0.0
-        mujoco.mj_forward(self.model, self.data)
-
-    def stabilize_cube_on_target(self) -> None:
-        if not self.cube_over_target:
-            return
-        resting_z = self.args.target_top_z + self.args.cube_half_size + 0.002
-        cube_joint_id = self.model.body_jntadr[self.cube_id]
-        cube_qpos_address = self.model.jnt_qposadr[cube_joint_id]
-        cube_dof_address = self.model.jnt_dofadr[cube_joint_id]
-        if self.data.xpos[self.cube_id][2] <= resting_z + 0.03:
-            self.data.qpos[cube_qpos_address + 2] = max(
-                self.data.qpos[cube_qpos_address + 2], resting_z
-            )
-            self.data.qvel[cube_dof_address : cube_dof_address + 6] = 0.0
-            mujoco.mj_forward(self.model, self.data)
 
     def update_target_state(self) -> None:
         if self.args.task_mode == "push_t":
             self.update_push_t_target_state()
             return
+        self.update_gripper_approach_view()
         distance = np.linalg.norm(
             self.data.xpos[self.cube_id][:2] - self.data.xpos[self.target_plate_id][:2]
         )
+        holding = self.is_holding_cube()
+        if distance > self.args.target_radius + self.args.target_exit_margin:
+            self.target_view_reached_with_cube = False
+        if distance <= self.args.target_radius and holding:
+            if getattr(self, "carried_target_since", None) is None:
+                self.carried_target_since = float(self.data.time)
+            if float(self.data.time) - self.carried_target_since >= self.args.target_dwell_s:
+                self.target_view_reached_with_cube = True
+                self.transport_view_active = False
+                if self.z_locked:
+                    self.set_z_lock(False, reason="target")
+        else:
+            self.carried_target_since = None
         if not self.cube_over_target:
             if distance <= self.args.target_radius:
                 if self.target_entered_sim_time is None:
@@ -694,8 +1444,6 @@ class MujocoPandaRecorder:
                 stable_time = float(self.data.time) - self.target_entered_sim_time
                 if stable_time >= self.args.target_dwell_s:
                     self.cube_over_target = True
-                    if self.args.task_mode != "push_t" and self.z_locked:
-                        self.set_z_lock(False, reason="target")
             else:
                 self.target_entered_sim_time = None
             return
@@ -713,6 +1461,28 @@ class MujocoPandaRecorder:
             if self.is_holding_cube() and cube_high_enough and not self.z_locked:
                 self.set_z_lock(True, reason="left_target")
                 self.z_lock_used_for_current_grasp = True
+
+    def update_gripper_approach_view(self) -> None:
+        cube_pos = self.data.xpos[self.cube_id]
+        hand_pos = self.data.xpos[self.hand_id]
+        if self.is_holding_cube():
+            self.gripper_above_cube_view = False
+            self.gripper_above_cube_since = None
+            return
+        centered = gripper_centered_over_cube(
+            hand_pos,
+            cube_pos,
+            float(self.model.geom_size[self.cube_geom_id][2]),
+            was_above=self.gripper_above_cube_view,
+        )
+        if not centered:
+            self.gripper_above_cube_view = False
+            self.gripper_above_cube_since = None
+            return
+        if self.gripper_above_cube_since is None:
+            self.gripper_above_cube_since = float(self.data.time)
+        if float(self.data.time) - self.gripper_above_cube_since >= GRIPPER_CUBE_VIEW_DWELL_S:
+            self.gripper_above_cube_view = True
 
     def update_push_t_target_state(self) -> None:
         """Track Push-T success using 2D object/goal footprint coverage."""
@@ -745,6 +1515,58 @@ class MujocoPandaRecorder:
 
     def handle_gesture(self, payload: dict) -> None:
         command = payload.get("command")
+        if command == "pause":
+            self.control_paused = True
+            self.control_token = None
+            self.pointing_arm_qpos = None
+            self.pending_vertical_steps = 0
+            return
+        if command == "resume":
+            token = payload.get("controlToken")
+            if (isinstance(token, str) and token
+                    and payload.get("controlContext") == f"{self.session}:{self.control_epoch}"):
+                self.control_token = token
+                self.control_paused = False
+                self.last_resume_command_at = float(payload.get("sentAt", 0.0))
+                self.last_gesture_update_at = time.perf_counter()
+            return
+        if command == "reset":
+            if not self.recording and not self.saving_episode:
+                self.reset_simulation()
+            return
+        if command in WEB_CONTROL_COMMANDS and (
+            self.control_paused or payload.get("controlToken") != self.control_token
+        ):
+            return
+        if command == "gesture_state":
+            sent_at = float(payload.get("sentAt", 0.0))
+            if sent_at < self.last_gesture_command_at:
+                return
+            self.last_gesture_command_at = sent_at
+            gesture = payload.get("gesture", "None")
+            self.latest_gesture = gesture if gesture in GESTURE_CODES else "None"
+            self.latest_gesture_score = float(np.clip(payload.get("gestureScore", 0.0), 0, 1))
+            self.hand_visible = bool(payload.get("handVisible", False))
+            pointing_control = payload.get(
+                "pointingControlActive", self.latest_gesture == "Pointing_Up"
+            ) is True
+            if (pointing_control and self.hand_visible and not self.gripper_closed
+                    and not self.gripper_orientation_finalized
+                    and (self.latest_gesture == "Pointing_Up" or self.gripper_orientation_locked)
+                    and self.pointing_arm_qpos is None):
+                # Stop any pending Cartesian trajectory. Pointing_Up controls
+                # only the gripper's dedicated yaw actuator. Raw None may
+                # resume an existing adjustment after hand re-entry, but may
+                # not start an adjustment from the default pose.
+                self.data.ctrl[:7] = self.data.qpos[:7]
+                self.pointing_arm_qpos = self.data.qpos[:7].copy()
+            elif self.gripper_closed or self.gripper_orientation_finalized or not self.hand_visible:
+                self.pointing_arm_qpos = None
+            self.last_gesture_update_at = time.perf_counter()
+            if not self.hand_visible and sent_at >= self.last_resume_command_at:
+                self.control_paused = True
+                self.control_token = None
+            return
         if command == "record_start":
             self.start_episode()
             return
@@ -762,6 +1584,41 @@ class MujocoPandaRecorder:
             self.handle_pushing_gesture(payload)
             return
 
+        if self.pointing_arm_qpos is not None and command in {
+            "left", "right", "forward", "backward", "up", "down",
+            "move_xy", "start_vertical", "start_planar", "open", "close",
+        }:
+            return
+
+        if command in {
+            "left", "right", "forward", "backward", "up", "down",
+            "move_xy", "start_vertical", "start_planar", "open", "close",
+        } and not self.gripper_orientation_finalized:
+            # Pointing_Up is an initial, one-time adjustment. The first arm or
+            # gripper command freezes even the default zero-yaw orientation.
+            self.gripper_orientation_finalized = True
+            self.gripper_orientation_locked = True
+            self.hard_lock_gripper_yaw()
+
+        if command in {"set_gripper_yaw", "finalize_gripper_yaw"}:
+            if self.gripper_closed or self.gripper_orientation_finalized:
+                return
+            if command == "set_gripper_yaw" and self.pointing_arm_qpos is None:
+                return
+            angle = float(payload.get("angle", self.gripper_yaw))
+            if np.isfinite(angle):
+                self.gripper_yaw = float(np.clip(angle, -np.pi / 2, np.pi / 2))
+                c, s = np.cos(self.gripper_yaw), np.sin(self.gripper_yaw)
+                local_yaw_rotation = np.array([[c, s, 0], [-s, c, 0], [0, 0, 1]])
+                self.target_hand_rotation_in_base = self.initial_hand_rotation_in_base @ local_yaw_rotation
+                self.data.ctrl[self.gripper_yaw_actuator_id] = self.gripper_yaw
+                self.gripper_orientation_locked = True
+                self.hard_lock_gripper_yaw()
+                if command == "finalize_gripper_yaw":
+                    self.gripper_orientation_finalized = True
+                    self.pointing_arm_qpos = None
+            return
+
         if command in {"close", "open"}:
             sent_at = float(payload.get("sentAt", 0.0))
             if sent_at < self.last_gripper_command_at:
@@ -769,19 +1626,28 @@ class MujocoPandaRecorder:
             self.last_gripper_command_at = sent_at
 
         if command == "close":
-            if not self.gripper_closed:
-                self.z_lock_used_for_current_grasp = False
+            if self.gripper_closed:
+                return
+            if not self.gripper_ready_to_grasp():
+                return
+            self.z_lock_used_for_current_grasp = False
+            self.pending_vertical_steps = 0
+            self.grasp_support_z = self._cube_support_height(
+                self.data.xpos[self.cube_id][:2]
+            )
+            self.last_bilateral_cube_contact_at = float("-inf")
             self.data.ctrl[7] = 0.0
             self.gripper_closed = True
+            self.grasp_close_started_at = float(self.data.time)
         elif command == "open":
-            self.open_gripper_immediately()
+            self.pending_vertical_steps = 0
+            self.last_deferred_vertical_at = float("-inf")
+            self.data.ctrl[7] = 255.0
             self.gripper_closed = False
-            # Transport Z/top-down may only be released by update_target_state
-            # after the cube has entered the target area. Opening elsewhere
-            # must not bypass that task rule.
-            if self.cube_over_target:
-                self.set_z_lock(False)
-            self.stabilize_cube_on_target()
+            self.grasp_close_started_at = float("-inf")
+            self.last_bilateral_cube_contact_at = float("-inf")
+            self.transport_view_active = False
+            self.set_z_lock(False, reason="open")
         elif command == "left":
             self.move_hand(0.0, self.args.step, 0.0)
         elif command == "right":
@@ -791,32 +1657,36 @@ class MujocoPandaRecorder:
         elif command == "backward":
             self.move_hand(-self.args.step, 0.0, 0.0)
         elif command == "up":
+            if self.z_locked:
+                self.set_z_lock(False, reason="vertical")
             self.move_hand(0.0, 0.0, self.args.vertical_step)
         elif command == "down":
+            if self.z_locked:
+                self.set_z_lock(False, reason="vertical")
             self.move_hand(0.0, 0.0, -self.args.vertical_step)
         elif command == "start_vertical":
-            self.vertical_anchor_xy = self.data.xpos[self.hand_id][:2].copy()
+            self.action_data.qpos[:] = self.data.qpos
+            self.action_data.qpos[:7] = self.data.ctrl[:7]
+            self.action_data.qpos[self.gripper_yaw_qpos_address] = self.data.ctrl[self.gripper_yaw_actuator_id]
+            self.action_data.qvel[:] = 0.0
+            mujoco.mj_forward(self.model, self.action_data)
+            self.vertical_anchor_xy = self.action_data.xpos[self.hand_id][:2].copy()
+            if self.z_locked:
+                self.set_z_lock(False, reason="vertical")
         elif command == "start_planar":
             self.vertical_anchor_xy = None
-            # Planar transport is always performed at the current absolute
-            # height. Only update_target_state may release this lock after the
-            # cube has remained inside the target radius for the dwell time.
-            force_diagonal_lock = bool(payload.get("lockZ", False))
-            if (
-                (force_diagonal_lock or self.is_holding_cube())
-                and not self.cube_over_target
-            ):
+            # An explicit planar gesture owns the current height even before
+            # the automatic transport-height threshold has been reached.
+            if self.is_holding_cube() and not self.cube_over_target:
                 self.set_z_lock(True, reason="planar")
                 self.z_lock_used_for_current_grasp = True
         elif command == "move_xy":
             self.vertical_anchor_xy = None
-            if bool(payload.get("lockZ", False)) and not self.cube_over_target:
+            # Contact can become bilateral after start_planar was received.
+            # Acquire the plane here too rather than silently dropping motion.
+            if self.is_holding_cube() and not self.cube_over_target:
                 self.set_z_lock(True, reason="planar")
                 self.z_lock_used_for_current_grasp = True
-            # Once the cube is grasped, planar motion is accepted only while Z
-            # is locked (or after the target region has deliberately unlocked it).
-            if self.is_holding_cube() and not self.z_locked and not self.cube_over_target:
-                return
             dx = np.clip(float(payload.get("dx", 0.0)), -1.0, 1.0)
             dy = np.clip(float(payload.get("dy", 0.0)), -1.0, 1.0)
             self.move_hand(
@@ -898,11 +1768,13 @@ class MujocoPandaRecorder:
         elif keycode in {ord("K"), ord("k")}:
             self.move_hand(0.0, 0.0, -self.args.vertical_step)
         elif keycode in {ord("J"), ord("j")}:
-            self.open_gripper_immediately()
+            self.data.ctrl[7] = 255.0
             self.gripper_closed = False
+            self.last_bilateral_cube_contact_at = float("-inf")
         elif keycode in {ord("L"), ord("l")}:
             self.data.ctrl[7] = 0.0
             self.gripper_closed = True
+            self.last_bilateral_cube_contact_at = float("-inf")
         elif keycode in {ord("S"), ord("s")}:
             self.start_episode()
         elif keycode in {ord("N"), ord("n")}:
@@ -923,6 +1795,7 @@ class MujocoPandaRecorder:
             "up",
             "down",
             "move_xy",
+            "set_gripper_yaw",
         }
         while not self.command_queue.empty():
             payload = self.command_queue.get_nowait()
@@ -940,6 +1813,13 @@ class MujocoPandaRecorder:
                 ):
                     latest_motion = {**payload, "sentAt": sent_at}
             else:
+                if (payload.get("command") == "close" and latest_motion is not None
+                        and latest_motion["command"] != "down"):
+                    # A fist explicitly requests descent and closure together.
+                    # Preserve that descent; other earlier motion keeps its
+                    # existing cancellation rule on the closing transition.
+                    if float(latest_motion["sentAt"]) <= float(payload.get("sentAt", 0.0)):
+                        latest_motion = None
                 self.handle_gesture(payload)
         if latest_motion is not None:
             sent_at = float(latest_motion["sentAt"])
@@ -960,6 +1840,8 @@ class MujocoPandaRecorder:
                 "target_plate_xy_m": self.current_target_xy.tolist(),
                 "cube_yaw_rad": self.current_cube_yaw,
                 "target_yaw_rad": self.current_target_yaw,
+                "layout": self.current_layout,
+                "layout_reachability": getattr(self, "layout_reachability", None),
             }
         )
         self._wait_training_reply("started")
@@ -1043,16 +1925,19 @@ class MujocoPandaRecorder:
         self.reset_simulation()
 
     def record_frame(self) -> None:
+        gesture_fresh = time.perf_counter() - self.last_gesture_update_at < 0.5
+        gesture = self.latest_gesture if gesture_fresh else "None"
         finger_width = float(
             sum(self.data.qpos[address] for address in self.finger_qpos_addresses)
         )
         state = np.concatenate(
-            [self.data.qpos[:7], np.array([finger_width])]
+            [self.data.qpos[:7], np.array([self.data.qpos[self.gripper_yaw_qpos_address], finger_width])]
         ).astype(np.float32)
         # Convert the commanded seven-joint target to a full Cartesian pose in
         # the robot-base frame: XYZ (metres), RPY (radians), and gripper target.
         self.action_data.qpos[:] = self.data.qpos
         self.action_data.qpos[:7] = self.data.ctrl[:7]
+        self.action_data.qpos[self.gripper_yaw_qpos_address] = self.data.ctrl[self.gripper_yaw_actuator_id]
         mujoco.mj_forward(self.model, self.action_data)
         base_position = self.action_data.xpos[self.base_id]
         base_rotation = self.action_data.xmat[self.base_id].reshape(3, 3)
@@ -1074,6 +1959,9 @@ class MujocoPandaRecorder:
                 "snapshot": self._render_snapshot(),
                 "state": state,
                 "action": action,
+                "gesture": np.array([GESTURE_CODES[gesture]], dtype=np.int64),
+                "gesture_score": np.array([self.latest_gesture_score if gesture_fresh else 0.0], dtype=np.float32),
+                "hand_visible": np.array([int(self.hand_visible and gesture_fresh)], dtype=np.int64),
             }
         )
         self.episode_frames += 1
@@ -1107,6 +1995,7 @@ class MujocoPandaRecorder:
         self.server = GestureServer(
             self.command_queue,
             self.args.port,
+            self.get_top_preview,
             self.get_side_preview,
             self.get_front_preview,
             self.get_runtime_status,
@@ -1125,9 +2014,9 @@ class MujocoPandaRecorder:
         substeps = max(1, round(1.0 / ui_hz / self.model.opt.timestep))
         record_interval = 1.0 / self.args.fps
         next_record_time = time.perf_counter()
-        # Alternate cameras so each stays at side_preview_fps without blocking
-        # one simulation tick with two consecutive renders.
-        side_preview_interval = 1.0 / (2.0 * self.args.side_preview_fps)
+        # Alternate three auxiliary cameras without blocking a simulation tick
+        # on multiple renders.
+        side_preview_interval = 1.0 / (3.0 * self.args.side_preview_fps)
         next_side_preview_time = time.perf_counter()
 
         with mujoco.viewer.launch_passive(
@@ -1140,8 +2029,12 @@ class MujocoPandaRecorder:
                 tick_started = time.perf_counter()
                 self.process_queued_commands()
                 self.maintain_locked_plane()
+                self.maintain_gripper_orientation()
                 for _ in range(substeps):
                     mujoco.mj_step(self.model, self.data)
+                self.hold_pointing_arm()
+                self.hard_lock_gripper_yaw()
+                self.enforce_layout_support()
                 self.update_target_state()
                 self.update_transport_state()
                 self.update_viewer_camera(viewer)
@@ -1220,14 +2113,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-planar-step", type=float, default=0.015)
     parser.add_argument("--max-joint-step", type=float, default=0.08)
     parser.add_argument("--max-joint-target-lead", type=float, default=0.12)
-    parser.add_argument("--max-motion-command-age-ms", type=float, default=250.0)
+    parser.add_argument("--max-motion-command-age-ms", type=float, default=150.0)
     parser.add_argument("--target-radius", type=float, default=0.05)
-    parser.add_argument("--target-dwell-s", type=float, default=0.25)
+    parser.add_argument("--target-dwell-s", type=float, default=0.15)
     parser.add_argument("--target-exit-margin", type=float, default=0.02)
     parser.add_argument("--relock-height-margin", type=float, default=0.02)
     parser.add_argument("--transport-cube-z", type=float, default=0.50)
     parser.add_argument("--grasped-min-width", type=float, default=0.02)
-    parser.add_argument("--grasped-max-width", type=float, default=0.075)
+    parser.add_argument("--grasped-max-width", type=float, default=0.11)
     parser.add_argument("--grasped-max-distance", type=float, default=0.18)
     parser.add_argument("--observation-lookat-x", type=float, default=0.48)
     parser.add_argument("--observation-lookat-y", type=float, default=0.0)
@@ -1262,15 +2155,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--table-top-z", type=float, default=0.4)
     parser.add_argument("--target-top-z", type=float, default=0.416)
     parser.add_argument("--cube-half-size", type=float, default=0.030)
-    parser.add_argument("--cube-x-min", type=float, default=0.44)
-    parser.add_argument("--cube-x-max", type=float, default=0.51)
-    parser.add_argument("--cube-y-min", type=float, default=-0.07)
-    parser.add_argument("--cube-y-max", type=float, default=0.07)
-    parser.add_argument("--plate-x-min", type=float, default=0.54)
-    parser.add_argument("--plate-x-max", type=float, default=0.62)
-    parser.add_argument("--plate-y-min", type=float, default=-0.13)
-    parser.add_argument("--plate-y-max", type=float, default=0.09)
+    parser.add_argument("--cube-x-min", type=float, default=0.37)
+    parser.add_argument("--cube-x-max", type=float, default=0.68)
+    parser.add_argument("--cube-y-min", type=float, default=-0.24)
+    parser.add_argument("--cube-y-max", type=float, default=0.24)
+    parser.add_argument("--plate-x-min", type=float, default=0.37)
+    parser.add_argument("--plate-x-max", type=float, default=0.68)
+    parser.add_argument("--plate-y-min", type=float, default=-0.24)
+    parser.add_argument("--plate-y-max", type=float, default=0.24)
+    parser.add_argument("--safe-reach-radius", type=float, default=0.72)
     parser.add_argument("--object-min-separation", type=float, default=0.16)
+    parser.add_argument("--stack-probability", type=float, default=DEFAULT_STACK_PROBABILITY,
+                        help="Fraction of pick/place resets with the red target above or below another rigid box.")
     parser.add_argument("--cube-yaw-min-deg", type=float, default=0.0)
     parser.add_argument("--cube-yaw-max-deg", type=float, default=0.0)
     parser.add_argument("--push-t-success-coverage", type=float, default=0.90)
@@ -1323,6 +2219,8 @@ def parse_args() -> argparse.Namespace:
             parser.error(f"--{name}-y-min must be less than --{name}-y-max.")
     if args.object_min_separation <= 0:
         parser.error("--object-min-separation must be greater than zero.")
+    if not 0 <= args.stack_probability <= 1:
+        parser.error("--stack-probability must be between 0 and 1.")
     if args.cube_yaw_min_deg > args.cube_yaw_max_deg:
         parser.error("--cube-yaw-min-deg must not exceed --cube-yaw-max-deg.")
     if not 0 < args.push_t_exit_coverage < args.push_t_success_coverage <= 1:
