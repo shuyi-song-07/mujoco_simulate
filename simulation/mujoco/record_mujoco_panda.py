@@ -372,6 +372,21 @@ class MujocoPandaRecorder:
         self.vertical_anchor_xy: np.ndarray | None = None
         self.last_gripper_command_at = float("-inf")
         self.last_motion_command_at = float("-inf")
+        self.hand_motion_token: str | None = None
+        self.hand_motion_segment = -1
+        self.hand_motion_anchor: np.ndarray | None = None
+        self.hand_motion_last_sent_at = float("-inf")
+        self.hand_motion_pending = np.zeros(2, dtype=np.float64)
+        self.hand_motion_pending_samples = 0
+        self.filtered_wrist_uv = np.zeros(2, dtype=np.float64)
+        self.filtered_wrist_timestamp_ms = -1.0
+        self.filtered_wrist_valid = False
+        self.hand_trajectory_samples: list[dict] = []
+        self.raw_wrist_uv = np.zeros(2, dtype=np.float64)
+        self.raw_wrist_timestamp_ms = -1.0
+        self.raw_wrist_valid = False
+        self.mapped_control_pending = np.zeros(3, dtype=np.float64)
+        self.mapped_control_pending_commands = 0
         self.side_preview_jpeg: bytes | None = None
         self.top_preview_jpeg: bytes | None = None
         self.front_preview_jpeg: bytes | None = None
@@ -405,7 +420,8 @@ class MujocoPandaRecorder:
             target=training_render_process,
             args=(self.args, self.training_queue, self.training_reply_queue),
             name="panda-training-renderer",
-            daemon=True,
+            # LeRobot's non-streaming video writer starts encoder subprocesses.
+            daemon=False,
         )
         self.training_process.start()
         self._wait_training_reply("ready", timeout=120)
@@ -486,6 +502,7 @@ class MujocoPandaRecorder:
         self.support_recovery_bodies = set()
         self.control_paused = True
         self.control_token = None
+        self.reset_hand_motion()
         mujoco.mj_resetData(self.model, self.data)
         self.randomize_object_positions()
         initial_arm_qpos = (
@@ -546,6 +563,12 @@ class MujocoPandaRecorder:
         self.last_gesture_update_at = float("-inf")
         self.last_gesture_command_at = float("-inf")
         self.last_resume_command_at = float("-inf")
+        self.hand_trajectory_samples = []
+        self.raw_wrist_uv = np.zeros(2, dtype=np.float64)
+        self.raw_wrist_timestamp_ms = -1.0
+        self.raw_wrist_valid = False
+        self.mapped_control_pending = np.zeros(3, dtype=np.float64)
+        self.mapped_control_pending_commands = 0
 
     def randomize_object_positions(self, attempt: int = 0) -> None:
         """Sample reachable tabletop, red-above and red-below rigid stacks."""
@@ -603,6 +626,17 @@ class MujocoPandaRecorder:
             for _ in range(2_000):
                 cube_xy = self.rng.uniform(cube_low, cube_high)
                 target_xy = self.rng.uniform(target_low, target_high)
+                if self.args.task_mode == "pick_place" and getattr(self.args, "layout_sides", "any") == "split":
+                    azimuth = np.deg2rad(self.args.observation_azimuth)
+                    right = np.array([np.sin(azimuth), -np.cos(azimuth)])
+                    lookat_xy = np.array([self.args.observation_lookat_x,
+                                          self.args.observation_lookat_y])
+                    # Signed horizontal offset in the fixed overview camera.
+                    # Keep both objects away from the centre line while x/y
+                    # still vary within their reachable random ranges.
+                    if (np.dot(cube_xy - lookat_xy, right) >= -0.05
+                            or np.dot(target_xy - lookat_xy, right) <= 0.05):
+                        continue
                 if not (
                     self._safe_xy(cube_xy, red_half)
                     and (not stack_base_name or self._safe_xy(cube_xy, base_half))
@@ -1513,6 +1547,113 @@ class MujocoPandaRecorder:
             self.cube_over_target = False
             self.target_entered_sim_time = None
 
+    def reset_hand_motion(self) -> None:
+        """Do not carry wrist displacement across a pause or re-entry."""
+        self.hand_motion_token = None
+        self.hand_motion_segment = -1
+        self.hand_motion_anchor = None
+        self.hand_motion_last_sent_at = float("-inf")
+        self.hand_motion_pending = np.zeros(2, dtype=np.float64)
+        self.hand_motion_pending_samples = 0
+        self.filtered_wrist_uv = np.zeros(2, dtype=np.float64)
+        self.filtered_wrist_timestamp_ms = -1.0
+        self.filtered_wrist_valid = False
+
+    def update_raw_wrist(self, payload: dict) -> None:
+        """Keep the original MediaPipe wrist sample and capture time intact."""
+        point = payload.get("wristUv")
+        try:
+            timestamp = float(payload.get("wristCapturedAt", -1.0))
+            wrist = np.asarray(point, dtype=np.float64)
+        except (TypeError, ValueError):
+            wrist = np.empty(0)
+            timestamp = -1.0
+        self.raw_wrist_valid = bool(
+            payload.get("handVisible") and wrist.shape == (2,)
+            and np.all(np.isfinite(wrist)) and np.isfinite(timestamp) and timestamp > 0
+        )
+        if self.raw_wrist_valid:
+            self.raw_wrist_uv = wrist.copy()
+            self.raw_wrist_timestamp_ms = timestamp
+        else:
+            self.raw_wrist_uv = np.zeros(2, dtype=np.float64)
+            self.raw_wrist_timestamp_ms = -1.0
+
+    def apply_web_motion(self, dx: float, dy: float, dz: float) -> None:
+        """Record a control request accepted by the backend in robot-base metres."""
+        self.move_hand(dx, dy, dz)
+        if not hasattr(self, "mapped_control_pending"):
+            self.mapped_control_pending = np.zeros(3, dtype=np.float64)
+            self.mapped_control_pending_commands = 0
+        self.mapped_control_pending += np.array([dx, dy, dz], dtype=np.float64)
+        self.mapped_control_pending_commands += 1
+
+    def update_hand_motion(self, payload: dict) -> None:
+        """Build a continuous filtered wrist path within each armed segment."""
+        wrist = payload.get("wristUv")
+        token = payload.get("handMotionToken")
+        if (not payload.get("handMotionReady") or not self.hand_visible
+                or self.control_paused or not isinstance(token, str)
+                or token != self.control_token or not isinstance(wrist, list)
+                or len(wrist) != 2):
+            self.reset_hand_motion()
+            return
+        try:
+            point = np.asarray(wrist, dtype=np.float64)
+            segment = int(payload.get("handMotionSegment"))
+            sent_at = float(payload.get("sentAt"))
+        except (TypeError, ValueError):
+            self.reset_hand_motion()
+            return
+        if (not np.all(np.isfinite(point)) or not np.isfinite(sent_at)
+                or segment < 0 or np.any(point < -0.05) or np.any(point > 1.05)):
+            self.reset_hand_motion()
+            return
+        if (self.hand_motion_token != token or self.hand_motion_segment != segment
+                or sent_at - self.hand_motion_last_sent_at > 150.0):
+            self.reset_hand_motion()
+            self.hand_motion_token = token
+            self.hand_motion_segment = segment
+            self.hand_motion_anchor = point
+            self.hand_motion_last_sent_at = sent_at
+            self.filtered_wrist_uv = point.copy()
+            self.filtered_wrist_timestamp_ms = getattr(self, "raw_wrist_timestamp_ms", sent_at)
+            self.filtered_wrist_valid = True
+            return
+        if sent_at <= self.hand_motion_last_sent_at:
+            return
+        self.hand_motion_last_sent_at = sent_at
+        self.filtered_wrist_timestamp_ms = getattr(self, "raw_wrist_timestamp_ms", sent_at)
+        delta = point - self.hand_motion_anchor
+        distance = float(np.linalg.norm(delta))
+        if distance > 0.10:
+            # A tracking jump starts a new local reference, never a label.
+            self.hand_motion_anchor = point
+            self.hand_motion_pending.fill(0.0)
+            self.hand_motion_pending_samples = 0
+            return
+        if distance >= 0.0015:
+            self.hand_motion_pending += delta
+            self.filtered_wrist_uv += delta
+            self.hand_motion_anchor = point
+        self.hand_motion_pending_samples += 1
+
+    def append_hand_trajectory_sample(self, payload: dict) -> None:
+        """Preserve every received sample, including gaps, at camera report rate."""
+        if not getattr(self, "recording", False):
+            return
+        self.hand_trajectory_samples.append({
+            "sample_index": len(self.hand_trajectory_samples),
+            "frame_index_at_receive": self.episode_frames,
+            "raw_wrist_uv": self.raw_wrist_uv.tolist() if self.raw_wrist_valid else None,
+            "raw_timestamp_ms": self.raw_wrist_timestamp_ms,
+            "filtered_wrist_uv": (self.filtered_wrist_uv.tolist()
+                                  if self.filtered_wrist_valid else None),
+            "filtered_timestamp_ms": self.filtered_wrist_timestamp_ms,
+            "hand_motion_segment": self.hand_motion_segment if self.filtered_wrist_valid else -1,
+            "sent_at_ms": float(payload.get("sentAt", -1.0)),
+        })
+
     def handle_gesture(self, payload: dict) -> None:
         command = payload.get("command")
         if command == "pause":
@@ -1520,6 +1661,9 @@ class MujocoPandaRecorder:
             self.control_token = None
             self.pointing_arm_qpos = None
             self.pending_vertical_steps = 0
+            self.reset_hand_motion()
+            self.mapped_control_pending.fill(0.0)
+            self.mapped_control_pending_commands = 0
             return
         if command == "resume":
             token = payload.get("controlToken")
@@ -1547,6 +1691,9 @@ class MujocoPandaRecorder:
             self.latest_gesture = gesture if gesture in GESTURE_CODES else "None"
             self.latest_gesture_score = float(np.clip(payload.get("gestureScore", 0.0), 0, 1))
             self.hand_visible = bool(payload.get("handVisible", False))
+            self.update_raw_wrist(payload)
+            self.update_hand_motion(payload)
+            self.append_hand_trajectory_sample(payload)
             pointing_control = payload.get(
                 "pointingControlActive", self.latest_gesture == "Pointing_Up"
             ) is True
@@ -1566,6 +1713,7 @@ class MujocoPandaRecorder:
             if not self.hand_visible and sent_at >= self.last_resume_command_at:
                 self.control_paused = True
                 self.control_token = None
+                self.reset_hand_motion()
             return
         if command == "record_start":
             self.start_episode()
@@ -1649,21 +1797,21 @@ class MujocoPandaRecorder:
             self.transport_view_active = False
             self.set_z_lock(False, reason="open")
         elif command == "left":
-            self.move_hand(0.0, self.args.step, 0.0)
+            self.apply_web_motion(0.0, self.args.step, 0.0)
         elif command == "right":
-            self.move_hand(0.0, -self.args.step, 0.0)
+            self.apply_web_motion(0.0, -self.args.step, 0.0)
         elif command == "forward":
-            self.move_hand(self.args.step, 0.0, 0.0)
+            self.apply_web_motion(self.args.step, 0.0, 0.0)
         elif command == "backward":
-            self.move_hand(-self.args.step, 0.0, 0.0)
+            self.apply_web_motion(-self.args.step, 0.0, 0.0)
         elif command == "up":
             if self.z_locked:
                 self.set_z_lock(False, reason="vertical")
-            self.move_hand(0.0, 0.0, self.args.vertical_step)
+            self.apply_web_motion(0.0, 0.0, self.args.vertical_step)
         elif command == "down":
             if self.z_locked:
                 self.set_z_lock(False, reason="vertical")
-            self.move_hand(0.0, 0.0, -self.args.vertical_step)
+            self.apply_web_motion(0.0, 0.0, -self.args.vertical_step)
         elif command == "start_vertical":
             self.action_data.qpos[:] = self.data.qpos
             self.action_data.qpos[:7] = self.data.ctrl[:7]
@@ -1689,7 +1837,7 @@ class MujocoPandaRecorder:
                 self.z_lock_used_for_current_grasp = True
             dx = np.clip(float(payload.get("dx", 0.0)), -1.0, 1.0)
             dy = np.clip(float(payload.get("dy", 0.0)), -1.0, 1.0)
-            self.move_hand(
+            self.apply_web_motion(
                 dx * self.args.max_planar_step,
                 dy * self.args.max_planar_step,
                 0.0,
@@ -1716,7 +1864,7 @@ class MujocoPandaRecorder:
                 self.set_z_lock(True, reason="pushing")
             dx = np.clip(float(payload.get("dx", 0.0)), -1.0, 1.0)
             dy = np.clip(float(payload.get("dy", 0.0)), -1.0, 1.0)
-            self.move_hand(
+            self.apply_web_motion(
                 dx * self.args.max_planar_step,
                 dy * self.args.max_planar_step,
                 0.0,
@@ -1732,7 +1880,7 @@ class MujocoPandaRecorder:
         if command in planar_deltas:
             if not self.z_locked:
                 self.set_z_lock(True, reason="pushing")
-            self.move_hand(*planar_deltas[command])
+            self.apply_web_motion(*planar_deltas[command])
 
     def handle_key(self, keycode: int) -> None:
         if self.args.task_mode == "push_t":
@@ -1841,10 +1989,15 @@ class MujocoPandaRecorder:
                 "cube_yaw_rad": self.current_cube_yaw,
                 "target_yaw_rad": self.current_target_yaw,
                 "layout": self.current_layout,
+                "layout_sides": self.args.layout_sides,
                 "layout_reachability": getattr(self, "layout_reachability", None),
             }
         )
         self._wait_training_reply("started")
+        self.reset_hand_motion()
+        self.hand_trajectory_samples = []
+        self.mapped_control_pending.fill(0.0)
+        self.mapped_control_pending_commands = 0
         self.recording = True
         self.episode_frames = 0
         self.attempted_episodes += 1
@@ -1868,6 +2021,7 @@ class MujocoPandaRecorder:
                     "type": "save",
                     "episode_index": self.saved_episodes,
                     "frames": episode_frames,
+                    "hand_trajectory_samples": self.hand_trajectory_samples,
                 }
             )
             result = self._wait_training_reply("saved")
@@ -1902,6 +2056,7 @@ class MujocoPandaRecorder:
                     "type": "save_failure",
                     "episode_index": self.failed_episodes,
                     "frames": episode_frames,
+                    "hand_trajectory_samples": self.hand_trajectory_samples,
                 }
             )
             result = self._wait_training_reply("failure_saved")
@@ -1927,6 +2082,26 @@ class MujocoPandaRecorder:
     def record_frame(self) -> None:
         gesture_fresh = time.perf_counter() - self.last_gesture_update_at < 0.5
         gesture = self.latest_gesture if gesture_fresh else "None"
+        raw_wrist_valid = bool(self.raw_wrist_valid and gesture_fresh)
+        raw_wrist_uv = (self.raw_wrist_uv.astype(np.float32).copy() if raw_wrist_valid
+                        else np.zeros(2, dtype=np.float32))
+        raw_wrist_timestamp_ms = self.raw_wrist_timestamp_ms if raw_wrist_valid else -1.0
+        filtered_wrist_valid = bool(self.filtered_wrist_valid and gesture_fresh)
+        filtered_wrist_uv = (self.filtered_wrist_uv.astype(np.float32).copy()
+                             if filtered_wrist_valid else np.zeros(2, dtype=np.float32))
+        filtered_wrist_timestamp_ms = (self.filtered_wrist_timestamp_ms
+                                       if filtered_wrist_valid else -1.0)
+        hand_delta_valid = bool(self.hand_motion_pending_samples and not self.control_paused
+                                and time.time() * 1000.0 - self.hand_motion_last_sent_at <= 150.0)
+        hand_delta_uv = self.hand_motion_pending.astype(np.float32).copy() if hand_delta_valid else np.zeros(2, dtype=np.float32)
+        hand_motion_segment = self.hand_motion_segment if hand_delta_valid else -1
+        self.hand_motion_pending.fill(0.0)
+        self.hand_motion_pending_samples = 0
+        mapped_control_valid = bool(self.mapped_control_pending_commands)
+        mapped_control_delta = self.mapped_control_pending.astype(np.float32).copy()
+        mapped_control_commands = self.mapped_control_pending_commands
+        self.mapped_control_pending.fill(0.0)
+        self.mapped_control_pending_commands = 0
         finger_width = float(
             sum(self.data.qpos[address] for address in self.finger_qpos_addresses)
         )
@@ -1962,6 +2137,18 @@ class MujocoPandaRecorder:
                 "gesture": np.array([GESTURE_CODES[gesture]], dtype=np.int64),
                 "gesture_score": np.array([self.latest_gesture_score if gesture_fresh else 0.0], dtype=np.float32),
                 "hand_visible": np.array([int(self.hand_visible and gesture_fresh)], dtype=np.int64),
+                "hand_delta_uv": hand_delta_uv,
+                "hand_delta_valid": np.array([int(hand_delta_valid)], dtype=np.int64),
+                "hand_motion_segment": np.array([hand_motion_segment], dtype=np.int64),
+                "raw_wrist_uv": raw_wrist_uv,
+                "raw_wrist_timestamp_ms": np.array([raw_wrist_timestamp_ms], dtype=np.float64),
+                "raw_wrist_valid": np.array([int(raw_wrist_valid)], dtype=np.int64),
+                "filtered_wrist_uv": filtered_wrist_uv,
+                "filtered_wrist_timestamp_ms": np.array([filtered_wrist_timestamp_ms], dtype=np.float64),
+                "filtered_wrist_valid": np.array([int(filtered_wrist_valid)], dtype=np.int64),
+                "mapped_control_delta_xyz_m": mapped_control_delta,
+                "mapped_control_valid": np.array([int(mapped_control_valid)], dtype=np.int64),
+                "mapped_control_commands": np.array([mapped_control_commands], dtype=np.int64),
             }
         )
         self.episode_frames += 1
@@ -2077,7 +2264,7 @@ class MujocoPandaRecorder:
         print(f"[LeRobot] 失败数据集：{self.args.failure_dataset_root}")
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     parser = argparse.ArgumentParser(
         description="Record MuJoCo Panda demonstrations in LeRobot format."
@@ -2163,6 +2350,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--plate-x-max", type=float, default=0.68)
     parser.add_argument("--plate-y-min", type=float, default=-0.24)
     parser.add_argument("--plate-y-max", type=float, default=0.24)
+    parser.add_argument("--layout-sides", choices=("split", "any"), default="split",
+                        help="Keep the cube left and target plate right in the overview camera.")
     parser.add_argument("--safe-reach-radius", type=float, default=0.72)
     parser.add_argument("--object-min-separation", type=float, default=0.16)
     parser.add_argument("--stack-probability", type=float, default=DEFAULT_STACK_PROBABILITY,
@@ -2182,7 +2371,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--test-episodes", type=int, default=1)
     parser.add_argument("--test-motion", action="store_true")
     parser.add_argument("--test-failure", action="store_true")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     args.model_path = args.model_path.expanduser().resolve()
     args.dataset_root = args.dataset_root.expanduser().resolve()
     args.failure_dataset_root = args.failure_dataset_root.expanduser().resolve()

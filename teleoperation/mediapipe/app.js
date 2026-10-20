@@ -4,7 +4,7 @@ import {
   GestureRecognizer,
 } from "./node_modules/@mediapipe/tasks-vision/vision_bundle.mjs";
 
-import { mapPlanarMotion, pointingUpAngle, pointingControlCandidate, pointingYawFromWrist, shouldStartPlanarLock, nextPlanarAnchor, planarGestureAfterDiagonal, SingleHandRearmGate, openPalmAllowedAfterDiagonal, openPalmReadyToRelease, handClearForRelease, shouldCloseGripper } from "./interaction-state.js?v=release-score-05-4";
+import { mapPlanarMotion, pointingUpAngle, pointingControlCandidate, pointingYawFromWrist, shouldStartPlanarLock, nextPlanarAnchor, planarGestureAfterDiagonal, SingleHandRearmGate, openPalmAllowedAfterDiagonal, openPalmReadyToRelease, handClearForRelease, shouldCloseGripper } from "./interaction-state.js?v=hand-motion-01";
 
 const video = document.querySelector("#webcam");
 const canvas = document.querySelector("#output-canvas");
@@ -86,7 +86,7 @@ let lastDiagonalGestureAt = Number.NEGATIVE_INFINITY;
 let openPalmSince = null;
 let motionRequestInFlight = false;
 let pendingMotionRequest;
-const rearmGate = new SingleHandRearmGate();
+const rearmGate = new SingleHandRearmGate({ waitMs: 350, stableMs: 250, stableRadius: 0.012 });
 let safetyTransport = Promise.resolve();
 let resumePending = false;
 let resumeConfirmed = false;
@@ -384,10 +384,20 @@ function processRobotControl(result, timestamp) {
     const recognized = result.gestures?.[0]?.[0];
     const visible = Boolean(result.landmarks?.length);
     const rawGesture = recognized?.categoryName ?? "None";
+    const wrist = result.landmarks?.[0]?.[0];
+    const motionGesture = isPushingTask()
+      ? ["Victory", "Thumb_Up", "ILoveYou"].includes(rawGesture)
+      : ["Closed_Fist", "Open_Palm", "Victory", "Thumb_Up", "ILoveYou"].includes(rawGesture);
     void sendRobotCommand("gesture_state", {
       gesture: visible ? rawGesture : "None",
       gestureScore: visible ? (recognized?.score ?? 0) : 0,
       handVisible: visible,
+      wristUv: Number.isFinite(wrist?.x) && Number.isFinite(wrist?.y)
+        ? [wrist.x, wrist.y] : null,
+      wristCapturedAt: performance.timeOrigin + timestamp,
+      handMotionReady: Boolean(rearmGate.armed && controlToken && !armMotionLocked && motionGesture),
+      handMotionSegment: controlGeneration,
+      handMotionToken: controlToken,
       pointingControlActive: visible && rearmGate.armed && !gripperOrientationFinalized && !pointingFinalizationPending && gripperClosed !== true && pointingControlCandidate(rawGesture, result.landmarks[0], { active: armMotionLocked }),
     });
     lastGestureReportAt = timestamp;
@@ -406,8 +416,7 @@ function processRobotControl(result, timestamp) {
     return;
   }
 
-  // Reserve 150ms of the 500ms recovery budget for dispatch and simulation.
-  rearmGate.waitMs = 350;
+  // Re-entry also requires a stable wrist and gesture before robot motion.
   const visibleWrist = result.landmarks?.[0]?.[0];
   const handVisibleForControl = Number.isFinite(visibleWrist?.x) && Number.isFinite(visibleWrist?.y);
   if (!handVisibleForControl) {

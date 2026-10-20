@@ -123,8 +123,8 @@ export function shouldCloseGripper({
 }
 
 export class SingleHandRearmGate {
-  constructor({ waitMs = 500, lossGraceMs = 250 } = {}) {
-    Object.assign(this, { waitMs, lossGraceMs });
+  constructor({ waitMs = 500, lossGraceMs = 250, stableMs = 0, stableRadius = 0.012 } = {}) {
+    Object.assign(this, { waitMs, lossGraceMs, stableMs, stableRadius });
     this.reset();
   }
 
@@ -138,6 +138,8 @@ export class SingleHandRearmGate {
     const wrist = result.landmarks?.[0]?.[0];
     if (!Number.isFinite(wrist?.x) || !Number.isFinite(wrist?.y)) {
       if (!this.armed && this.candidate && now - this.candidate.lastSeenAt <= this.lossGraceMs) {
+        this.candidate.stableSince = null;
+        this.candidate.stableAnchor = null;
         return { state: "waiting", remainingMs: Math.max(0, this.waitMs - (now - this.candidate.since)) };
       }
       this.reset();
@@ -145,13 +147,23 @@ export class SingleHandRearmGate {
     }
     if (this.armed) return { state: "armed" };
     if (!this.candidate || now < this.candidate.since) {
-      this.candidate = { since: now, lastSeenAt: now, gestureSince: now, gesture: top?.categoryName ?? "None" };
+      this.candidate = { since: now, lastSeenAt: now, gestureSince: now,
+        gesture: top?.categoryName ?? "None", stableSince: now,
+        stableAnchor: { x: wrist.x, y: wrist.y } };
     }
     this.candidate.lastSeenAt = now;
+    if (!this.candidate.stableAnchor ||
+        Math.hypot(wrist.x - this.candidate.stableAnchor.x,
+                   wrist.y - this.candidate.stableAnchor.y) > this.stableRadius) {
+      this.candidate.stableSince = now;
+      this.candidate.stableAnchor = { x: wrist.x, y: wrist.y };
+    }
     const gesture = top?.categoryName ?? "None";
     if (gesture !== this.candidate.gesture) this.candidate.gestureSince = now;
     this.candidate.gesture = gesture;
-    const remainingMs = Math.max(0, this.waitMs - (now - this.candidate.since));
+    const remainingMs = Math.max(0, this.waitMs - (now - this.candidate.since),
+      this.stableMs - (now - this.candidate.stableSince),
+      this.stableMs - (now - this.candidate.gestureSince));
     return remainingMs === 0 ? { state: "ready" } : { state: "waiting", remainingMs };
   }
 

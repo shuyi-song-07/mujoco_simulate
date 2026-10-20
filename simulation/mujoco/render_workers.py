@@ -162,6 +162,16 @@ class EpisodeVideoRecorder:
         self.outputs.clear()
 
 
+def _save_hand_trajectory(root: Path, episode_index: int, samples: list[dict]) -> None:
+    """Save every received wrist sample alongside the per-frame LeRobot data."""
+    directory = root / "hand_trajectories"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"episode-{episode_index:06d}.jsonl"
+    with path.open("w", encoding="utf-8") as output:
+        for sample in samples:
+            output.write(json.dumps(sample, ensure_ascii=False, allow_nan=False) + "\n")
+
+
 def _dataset_features(args) -> dict:
     return {
         "observation.state": {
@@ -207,6 +217,18 @@ def _dataset_features(args) -> dict:
         "observation.gesture": {"dtype": "int64", "shape": (1,), "names": ["mediapipe_gesture_code"]},
         "observation.gesture_score": {"dtype": "float32", "shape": (1,), "names": ["confidence_0_1"]},
         "observation.hand_visible": {"dtype": "int64", "shape": (1,), "names": ["visible_0_1"]},
+        "observation.hand_delta_uv": {"dtype": "float32", "shape": (2,), "names": ["webcam_wrist_delta_u", "webcam_wrist_delta_v"]},
+        "observation.hand_delta_valid": {"dtype": "int64", "shape": (1,), "names": ["valid_0_1"]},
+        "observation.hand_motion_segment": {"dtype": "int64", "shape": (1,), "names": ["reentry_segment_id"]},
+        "observation.raw_wrist_uv": {"dtype": "float32", "shape": (2,), "names": ["mediapipe_raw_wrist_u", "mediapipe_raw_wrist_v"]},
+        "observation.raw_wrist_timestamp_ms": {"dtype": "float64", "shape": (1,), "names": ["browser_capture_epoch_ms"]},
+        "observation.raw_wrist_valid": {"dtype": "int64", "shape": (1,), "names": ["valid_0_1"]},
+        "observation.filtered_wrist_uv": {"dtype": "float32", "shape": (2,), "names": ["filtered_wrist_u", "filtered_wrist_v"]},
+        "observation.filtered_wrist_timestamp_ms": {"dtype": "float64", "shape": (1,), "names": ["filtered_browser_capture_epoch_ms"]},
+        "observation.filtered_wrist_valid": {"dtype": "int64", "shape": (1,), "names": ["valid_0_1"]},
+        "observation.mapped_control_delta_xyz_m": {"dtype": "float32", "shape": (3,), "names": ["requested_robot_base_dx_m", "requested_robot_base_dy_m", "requested_robot_base_dz_m"]},
+        "observation.mapped_control_valid": {"dtype": "int64", "shape": (1,), "names": ["valid_0_1"]},
+        "observation.mapped_control_commands": {"dtype": "int64", "shape": (1,), "names": ["accepted_web_motion_command_count"]},
     }
 
 
@@ -290,6 +312,18 @@ def training_render_worker(args, command_queue, reply_queue) -> None:
                         "observation.gesture": command["gesture"],
                         "observation.gesture_score": command["gesture_score"],
                         "observation.hand_visible": command["hand_visible"],
+                        "observation.hand_delta_uv": command["hand_delta_uv"],
+                        "observation.hand_delta_valid": command["hand_delta_valid"],
+                        "observation.hand_motion_segment": command["hand_motion_segment"],
+                        "observation.raw_wrist_uv": command["raw_wrist_uv"],
+                        "observation.raw_wrist_timestamp_ms": command["raw_wrist_timestamp_ms"],
+                        "observation.raw_wrist_valid": command["raw_wrist_valid"],
+                        "observation.filtered_wrist_uv": command["filtered_wrist_uv"],
+                        "observation.filtered_wrist_timestamp_ms": command["filtered_wrist_timestamp_ms"],
+                        "observation.filtered_wrist_valid": command["filtered_wrist_valid"],
+                        "observation.mapped_control_delta_xyz_m": command["mapped_control_delta_xyz_m"],
+                        "observation.mapped_control_valid": command["mapped_control_valid"],
+                        "observation.mapped_control_commands": command["mapped_control_commands"],
                         "task": args.task,
                     }
                 )
@@ -303,11 +337,25 @@ def training_render_worker(args, command_queue, reply_queue) -> None:
                         "observation.gesture": command["gesture"],
                         "observation.gesture_score": command["gesture_score"],
                         "observation.hand_visible": command["hand_visible"],
+                        "observation.hand_delta_uv": command["hand_delta_uv"],
+                        "observation.hand_delta_valid": command["hand_delta_valid"],
+                        "observation.hand_motion_segment": command["hand_motion_segment"],
+                        "observation.raw_wrist_uv": command["raw_wrist_uv"],
+                        "observation.raw_wrist_timestamp_ms": command["raw_wrist_timestamp_ms"],
+                        "observation.raw_wrist_valid": command["raw_wrist_valid"],
+                        "observation.filtered_wrist_uv": command["filtered_wrist_uv"],
+                        "observation.filtered_wrist_timestamp_ms": command["filtered_wrist_timestamp_ms"],
+                        "observation.filtered_wrist_valid": command["filtered_wrist_valid"],
+                        "observation.mapped_control_delta_xyz_m": command["mapped_control_delta_xyz_m"],
+                        "observation.mapped_control_valid": command["mapped_control_valid"],
+                        "observation.mapped_control_commands": command["mapped_control_commands"],
                         "task": args.task,
                     }
                 )
             elif kind == "save":
                 dataset.save_episode()
+                _save_hand_trajectory(args.dataset_root, command["episode_index"],
+                                      command.get("hand_trajectory_samples", []))
                 if failure_dataset.has_pending_frames():
                     failure_dataset.clear_episode_buffer()
                 inspection_error = None
@@ -344,6 +392,8 @@ def training_render_worker(args, command_queue, reply_queue) -> None:
                 reply_queue.put({"type": "saved", "inspection_error": inspection_error})
             elif kind == "save_failure":
                 failure_dataset.save_episode()
+                _save_hand_trajectory(args.failure_dataset_root, command["episode_index"],
+                                      command.get("hand_trajectory_samples", []))
                 if dataset.has_pending_frames():
                     dataset.clear_episode_buffer()
                 inspection_error = None
