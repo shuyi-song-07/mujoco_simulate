@@ -92,7 +92,7 @@
       <freejoint/>
       <geom name="distractor_green_geom" type="box" size="0.035 0.035 0.035" mass="0.12" friction="4 0.12 0.02" condim="4" solref="0.002 1" solimp="0.99 0.999 0.0002 0.5 2" rgba="0.08 0.78 0.2 1"/>
     </body>
-    <body name="distractor_yellow" pos="0.62 -0.2 0.422">
+    <body name="distractor_yellow" pos="0.42 -0.18 0.422">
       <freejoint/>
       <geom name="distractor_yellow_geom" type="box" size="0.02 0.02 0.02" mass="0.06" friction="4 0.12 0.02" condim="4" solref="0.002 1" solimp="0.99 0.999 0.0002 0.5 2" rgba="0.98 0.8 0.08 1"/>
     </body>

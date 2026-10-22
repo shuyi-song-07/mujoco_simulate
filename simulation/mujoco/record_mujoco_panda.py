@@ -49,7 +49,6 @@ GESTURE_CODES = {
     "Thumb_Down": 4, "Thumb_Up": 5, "Victory": 6, "ILoveYou": 7,
 }
 DISTRACTOR_NAMES = ("distractor_blue", "distractor_green", "distractor_yellow")
-DEFAULT_STACK_PROBABILITY = 0.4
 WEB_CONTROL_COMMANDS = {
     "open", "close", "left", "right", "forward", "backward", "up", "down",
     "start_vertical", "start_planar", "move_xy", "set_gripper_yaw", "finalize_gripper_yaw",
@@ -571,58 +570,25 @@ class MujocoPandaRecorder:
         self.mapped_control_pending_commands = 0
 
     def randomize_object_positions(self, attempt: int = 0) -> None:
-        """Sample reachable tabletop, red-above and red-below rigid stacks."""
+        """Sample separated, reachable tabletop objects and an empty goal."""
         cube_low = np.array([self.args.cube_x_min, self.args.cube_y_min])
         cube_high = np.array([self.args.cube_x_max, self.args.cube_y_max])
         target_low = np.array([self.args.plate_x_min, self.args.plate_y_min])
         target_high = np.array([self.args.plate_x_max, self.args.plate_y_max])
         if self.args.task_mode == "pick_place":
-            stack_base_name = None
-            stack_top_name = None
-            if self.rng.random() < getattr(self.args, "stack_probability", DEFAULT_STACK_PROBABILITY):
-                partner = str(self.rng.choice(DISTRACTOR_NAMES))
-                if self.rng.random() < 0.5:
-                    stack_base_name = partner
-                else:
-                    stack_top_name = partner
-            # The stacked target stays small enough to sit wholly on its
-            # support while leaving clearance for both open fingers.
-            red_half = float(self.rng.uniform(0.032 if stack_top_name else 0.025, 0.029 if stack_base_name else 0.034))
+            red_half = float(self.rng.uniform(0.025, 0.034))
             cube_yaw = float(self.rng.uniform(-np.pi, np.pi))
-            stack_base_yaw = (
-                cube_yaw + float(self.rng.uniform(-np.pi / 12, np.pi / 12))
-                if stack_base_name else None
-            )
             self._set_box_half_size(self.cube_id, self.cube_geom_id, red_half)
             distractor_halves = {}
             for name, body_id in zip(DISTRACTOR_NAMES, self.distractor_ids):
-                if name == stack_base_name:
-                    half = float(self.rng.uniform(0.043, 0.046))
-                elif name == stack_top_name:
-                    half = float(self.rng.uniform(0.014, 0.016))
-                else:
-                    half = float(self.rng.uniform(0.018, 0.039))
+                half = float(self.rng.uniform(0.018, 0.039))
                 self._set_box_half_size(body_id, int(self.model.body_geomadr[body_id]), half)
                 distractor_halves[name] = half
-            base_half = distractor_halves[stack_base_name] if stack_base_name else 0.0
-            red_z = (
-                self.args.table_top_z + 2 * base_half + red_half + 0.003
-                if stack_base_name else self.args.table_top_z + red_half + 0.002
-            )
+            red_z = self.args.table_top_z + red_half + 0.002
             red_grasp_hand_z = max(
-                self.args.table_top_z + 2 * base_half + red_half + GRIPPER_PAD_CENTER_ABOVE_CUBE_CENTER,
-                self.args.table_top_z + 2 * base_half + 2 * red_half + GRIPPER_HAND_ABOVE_CUBE_TOP,
+                self.args.table_top_z + red_half + GRIPPER_PAD_CENTER_ABOVE_CUBE_CENTER,
+                self.args.table_top_z + 2 * red_half + GRIPPER_HAND_ABOVE_CUBE_TOP,
             ) + GRASP_HEIGHT_MARGIN
-            if stack_top_name:
-                red_grasp_hand_z = max(red_grasp_hand_z,
-                    red_z + red_half + 2 * distractor_halves[stack_top_name]
-                    + GRIPPER_HAND_ABOVE_CUBE_TOP + 0.003)
-            initial_gripper_xy = None
-            if stack_base_name or stack_top_name:
-                initial_pose = mujoco.MjData(self.model)
-                initial_pose.qpos[:7] = INITIAL_ARM_QPOS
-                mujoco.mj_forward(self.model, initial_pose)
-                initial_gripper_xy = initial_pose.xpos[self.hand_id][:2].copy()
             for _ in range(2_000):
                 cube_xy = self.rng.uniform(cube_low, cube_high)
                 target_xy = self.rng.uniform(target_low, target_high)
@@ -639,16 +605,10 @@ class MujocoPandaRecorder:
                         continue
                 if not (
                     self._safe_xy(cube_xy, red_half)
-                    and (not stack_base_name or self._safe_xy(cube_xy, base_half))
                     and self._safe_xy(target_xy, 0.09)
                 ):
                     continue
-                if (initial_gripper_xy is not None
-                        and np.linalg.norm(cube_xy - initial_gripper_xy) < 0.10):
-                    # A raised red block can otherwise start inside the
-                    # open gripper before the operator makes any gesture.
-                    continue
-                cluster_radius = max(red_half, base_half) * np.sqrt(2)
+                cluster_radius = red_half * np.sqrt(2)
                 minimum_target_distance = max(
                     self.args.object_min_separation,
                     cluster_radius + 0.09 + 0.025,
@@ -668,18 +628,7 @@ class MujocoPandaRecorder:
                     continue
                 placements = [(cube_xy, cluster_radius), (target_xy, 0.09)]
                 distractor_poses = {}
-                if stack_base_name:
-                    distractor_poses[stack_base_name] = (
-                        cube_xy.copy(), base_half, stack_base_yaw
-                    )
-                if stack_top_name:
-                    distractor_poses[stack_top_name] = (
-                        cube_xy.copy(), distractor_halves[stack_top_name],
-                        cube_yaw,  # Red below: both boxes share one random heading.
-                    )
                 for name in DISTRACTOR_NAMES:
-                    if name in (stack_base_name, stack_top_name):
-                        continue
                     half = distractor_halves[name]
                     for _ in range(250):
                         xy = self.rng.uniform(cube_low, cube_high)
@@ -694,31 +643,21 @@ class MujocoPandaRecorder:
                     break
             else:
                 raise RuntimeError("Safe workspace cannot fit the randomized objects and target.")
-            if stack_base_name:
-                local_offset = self.rng.uniform(-0.001, 0.001, size=2)
-                cos_yaw, sin_yaw = np.cos(stack_base_yaw), np.sin(stack_base_yaw)
-                red_xy = cube_xy + np.array([
-                    cos_yaw * local_offset[0] - sin_yaw * local_offset[1],
-                    sin_yaw * local_offset[0] + cos_yaw * local_offset[1],
-                ])
-                if self._safe_xy(red_xy, red_half):
-                    cube_xy = red_xy
             self.current_layout = [{
                 "name": "cube", "xy_m": cube_xy.tolist(),
                 "z_m": red_z, "half_size_m": red_half, "yaw_rad": cube_yaw,
-                "stacked_on": stack_base_name,
+                "stacked_on": None,
             }]
             for name in DISTRACTOR_NAMES:
                 xy, half, yaw = distractor_poses[name]
                 body_id = self._body_id(name)
                 address = int(self.model.jnt_qposadr[self.model.body_jntadr[body_id]])
-                z = (red_z + red_half + half + 0.001 if name == stack_top_name
-                     else self.args.table_top_z + half + 0.002)
+                z = self.args.table_top_z + half + 0.002
                 self.data.qpos[address:address + 3] = [xy[0], xy[1], z]
                 self.data.qpos[address + 3:address + 7] = [np.cos(yaw / 2), 0, 0, np.sin(yaw / 2)]
                 self.current_layout.append({
                     "name": name, "xy_m": xy.tolist(), "z_m": z,
-                    "half_size_m": half, "yaw_rad": yaw, "stacked_on": "cube" if name == stack_top_name else None,
+                    "half_size_m": half, "yaw_rad": yaw, "stacked_on": None,
                 })
         else:
             for _ in range(1_000):
@@ -767,7 +706,7 @@ class MujocoPandaRecorder:
                 self.randomize_object_positions(attempt + 1)
                 return
             self.layout_reachability = {
-                "checked": True, "mode": "red_above" if stack_base_name else "red_below" if stack_top_name else "table",
+                "checked": True, "mode": "table",
                 "grasp_hand_z_m": red_grasp_hand_z,
                 "checked_poses": [position.tolist() for position in checks],
                 "position_tolerance_m": 0.002, "joint_margin_rad": 0.08,
@@ -2312,33 +2251,34 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--observation-lookat-x", type=float, default=0.48)
     parser.add_argument("--observation-lookat-y", type=float, default=0.0)
     parser.add_argument("--observation-lookat-z", type=float, default=0.48)
-    parser.add_argument("--observation-distance", type=float, default=1.45)
+    # Shared by the operator overview and all three recorded RGB cameras.
+    parser.add_argument("--observation-distance", type=float, default=1.0)
     parser.add_argument("--observation-azimuth", type=float, default=145.0)
     parser.add_argument("--observation-camera-2-azimuth", type=float, default=25.0)
     parser.add_argument("--observation-camera-3-azimuth", type=float, default=265.0)
-    parser.add_argument("--observation-elevation", type=float, default=-15.0)
+    parser.add_argument("--observation-elevation", type=float, default=-25.0)
     parser.add_argument("--topdown-lookat-x", type=float, default=0.5)
     parser.add_argument("--topdown-lookat-y", type=float, default=0.0)
     parser.add_argument("--topdown-lookat-z", type=float, default=0.4)
-    parser.add_argument("--topdown-distance", type=float, default=1.2)
+    parser.add_argument("--topdown-distance", type=float, default=0.95)
     # Azimuth 0 displays the previous top-down image rotated 90 degrees
     # counterclockwise.  This changes only the operator view, not robot axes.
     parser.add_argument("--topdown-azimuth", type=float, default=0.0)
     parser.add_argument("--side-lookat-x", type=float, default=0.5)
     parser.add_argument("--side-lookat-y", type=float, default=0.0)
     parser.add_argument("--side-lookat-z", type=float, default=0.5)
-    parser.add_argument("--side-distance", type=float, default=0.78)
+    parser.add_argument("--side-distance", type=float, default=0.65)
     parser.add_argument("--side-azimuth", type=float, default=90.0)
-    parser.add_argument("--side-elevation", type=float, default=-12.0)
+    parser.add_argument("--side-elevation", type=float, default=-20.0)
     parser.add_argument("--side-preview-fps", type=float, default=8.0)
     parser.add_argument("--aux-width", type=int, default=320)
     parser.add_argument("--aux-height", type=int, default=240)
     parser.add_argument("--front-lookat-x", type=float, default=0.50)
     parser.add_argument("--front-lookat-y", type=float, default=0.0)
     parser.add_argument("--front-lookat-z", type=float, default=0.48)
-    parser.add_argument("--front-distance", type=float, default=0.78)
+    parser.add_argument("--front-distance", type=float, default=0.65)
     parser.add_argument("--front-azimuth", type=float, default=180.0)
-    parser.add_argument("--front-elevation", type=float, default=-12.0)
+    parser.add_argument("--front-elevation", type=float, default=-20.0)
     parser.add_argument("--table-top-z", type=float, default=0.4)
     parser.add_argument("--target-top-z", type=float, default=0.416)
     parser.add_argument("--cube-half-size", type=float, default=0.030)
@@ -2354,8 +2294,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="Keep the cube left and target plate right in the overview camera.")
     parser.add_argument("--safe-reach-radius", type=float, default=0.72)
     parser.add_argument("--object-min-separation", type=float, default=0.16)
-    parser.add_argument("--stack-probability", type=float, default=DEFAULT_STACK_PROBABILITY,
-                        help="Fraction of pick/place resets with the red target above or below another rigid box.")
     parser.add_argument("--cube-yaw-min-deg", type=float, default=0.0)
     parser.add_argument("--cube-yaw-max-deg", type=float, default=0.0)
     parser.add_argument("--push-t-success-coverage", type=float, default=0.90)
@@ -2408,8 +2346,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             parser.error(f"--{name}-y-min must be less than --{name}-y-max.")
     if args.object_min_separation <= 0:
         parser.error("--object-min-separation must be greater than zero.")
-    if not 0 <= args.stack_probability <= 1:
-        parser.error("--stack-probability must be between 0 and 1.")
     if args.cube_yaw_min_deg > args.cube_yaw_max_deg:
         parser.error("--cube-yaw-min-deg must not exceed --cube-yaw-max-deg.")
     if not 0 < args.push_t_exit_coverage < args.push_t_success_coverage <= 1:
