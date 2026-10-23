@@ -41,14 +41,13 @@ env -u ALL_PROXY /home/dex/miniconda3/envs/mujoco/bin/python \
 
 如果已下载源数据，可加 `--skip-download`。默认输出到 `datasets/pickandplace_variation_lerobot/`，包含 `data/`、`meta/`、`videos/`，以及用于追溯每条示范布局的 `provenance/episodes.jsonl`。总计 50 条成功示范、42,561 帧、30 FPS，9 维状态、7 维动作、3 路 RGB 视频。原始示范编号与合并后编号的映射也在该 JSONL 文件中。脚本需要 LeRobot 0.6.1。
 
-CUDA ACT 训练：
+CUDA ACT baseline 训练：
 
 ```bash
-DATASET_ROOT="$PWD/datasets/pickandplace_variation_lerobot" \
-DATASET_REPO_ID=local/pickandplace_variation_lerobot \
-OUTPUT_DIR="$PWD/outputs/act_pickandplace_variation_cuda" \
-PYTHON_BIN=/home/dex/miniconda3/envs/mujoco/bin \
-env -u ALL_PROXY bash training/ACT/train_act_baseline_cuda.sh
+/home/dex/miniconda3/envs/mujoco/bin/python \
+  training/ACT/train_act_variation_baseline.py \
+  --dataset-root "$PWD/datasets/pickandplace_variation_lerobot" \
+  --output-dir "$PWD/outputs/act_pickandplace_variation_cuda"
 ```
 
-可用 `STEPS`、`BATCH_SIZE` 和 `OUTPUT_DIR` 环境变量调整训练。此处只整理成功示范；布局元数据不是训练帧特征。
+训练入口不再绑定固定数据目录；更换 `--dataset-root` 即可选择其他兼容的 LeRobot 数据集，省略 `--repo-id` 时自动使用 `local/<数据集目录名>`。可用 `--steps`、`--batch-size` 和 `--output-dir` 调整训练。加入手势辅助监督时改用 `training/ACT/train_act_variation_gesture.py`；再传 `--hand-delta-weight 0.1` 即启用手部位移监督。此处只整理成功示范；布局元数据不是训练帧特征。

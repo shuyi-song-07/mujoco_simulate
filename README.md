@@ -181,26 +181,17 @@ python evaluation/validate_multicam_dataset.py \
 
 ### 当前提供：LeRobot ACT baseline
 
-以下命令使用已有脚本启动 ACT。请把数据和输出目录替换为实际绝对路径。
-
-Apple Silicon：
+以下命令使用统一入口启动 ACT。数据集路径必须显式传入，可按机器选择 `cuda`、`mps` 或 `cpu`：
 
 ```bash
-DATASET_ROOT=/absolute/path/to/dataset \
-OUTPUT_DIR=/absolute/path/to/outputs/act_run \
-bash training/ACT/train_act_baseline_mps.sh
+/home/dex/miniconda3/envs/mujoco/bin/python \
+  training/ACT/train_act_variation_baseline.py \
+  --dataset-root /absolute/path/to/dataset \
+  --output-dir /absolute/path/to/outputs/act_run \
+  --device cuda --steps 100000 --batch-size 8
 ```
 
-NVIDIA CUDA：
-
-```bash
-DATASET_ROOT=/absolute/path/to/dataset \
-OUTPUT_DIR=/absolute/path/to/outputs/act_run \
-STEPS=100000 \
-bash training/ACT/train_act_baseline_cuda.sh
-```
-
-当前 MPS 脚本使用固定训练步数；CUDA 脚本可通过 `STEPS` 和 `BATCH_SIZE` 覆盖默认值。训练前请根据使用的 LeRobot 版本检查参数兼容性。
+加入手势监督时使用 `training/ACT/train_act_variation_gesture.py`；再传入 `--hand-delta-weight 0.1` 可同时启用手部位移监督。`--repo-id` 可选，省略时自动使用 `local/<数据集目录名>`。
 
 ### 新增其他 policy
 

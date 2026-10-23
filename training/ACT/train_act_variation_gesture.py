@@ -170,4 +170,8 @@ def install_auxiliary(train_module, gesture_weight: float,
 
 
 if __name__ == "__main__":
-    run(make_parser(auxiliary=True).parse_args(), auxiliary=True, install_auxiliary=install_auxiliary)
+    run(
+        make_parser(auxiliary=True, motion=True).parse_args(),
+        auxiliary=True,
+        install_auxiliary=install_auxiliary,
+    )

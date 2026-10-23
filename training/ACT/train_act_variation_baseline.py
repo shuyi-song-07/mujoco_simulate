@@ -18,20 +18,23 @@ import sys
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_DATASET = PROJECT_ROOT / "datasets/pickandplace_variation_lerobot"
 GESTURE_KEY = "observation.gesture"
 HAND_DELTA_KEY = "observation.hand_delta_uv"
 HAND_VALID_KEY = "observation.hand_delta_valid"
 IMAGE_KEY = "observation.images.overview"
 
 
-def check_dataset(root: Path) -> dict:
+def check_dataset(root: Path, *, auxiliary: bool = False, motion: bool = False) -> dict:
     info_path = root / "meta/info.json"
     if not info_path.is_file():
         raise ValueError(f"Missing LeRobot metadata: {info_path}")
     info = json.loads(info_path.read_text(encoding="utf-8"))
     features = info.get("features", {})
-    required = {"observation.state", "action", GESTURE_KEY}
+    required = {"observation.state", "action"}
+    if auxiliary:
+        required.add(GESTURE_KEY)
+    if motion:
+        required.update({HAND_DELTA_KEY, HAND_VALID_KEY})
     if not required.issubset(features):
         raise ValueError(f"Missing dataset features: {sorted(required - features.keys())}")
     if IMAGE_KEY not in features:
@@ -106,8 +109,14 @@ def install_training_only_stats(train_module) -> None:
 
 def make_parser(auxiliary: bool = False, motion: bool = False) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset-root", type=Path, default=DEFAULT_DATASET)
-    parser.add_argument("--repo-id", default="local/pickandplace_variation_lerobot")
+    parser.add_argument(
+        "--dataset-root", type=Path, required=True,
+        help="LeRobot dataset directory containing meta/ and data/",
+    )
+    parser.add_argument(
+        "--repo-id",
+        help="Dataset repository identifier; defaults to local/<dataset-directory-name>",
+    )
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--device", choices=("cuda", "cpu", "mps"), default="cuda")
     parser.add_argument("--steps", type=int, default=100_000)
@@ -125,7 +134,10 @@ def make_parser(auxiliary: bool = False, motion: bool = False) -> argparse.Argum
     if auxiliary:
         parser.add_argument("--gesture-weight", type=float, default=0.1)
     if motion:
-        parser.add_argument("--hand-delta-weight", type=float, default=0.1)
+        parser.add_argument(
+            "--hand-delta-weight", type=float, default=0.0,
+            help="Auxiliary wrist-displacement loss weight; 0 disables it",
+        )
         parser.add_argument(
             "--hand-delta-scale", type=float, default=0.03,
             help="Webcam-normalized wrist displacement mapped to one regression unit",
@@ -135,8 +147,11 @@ def make_parser(auxiliary: bool = False, motion: bool = False) -> argparse.Argum
 
 def build_cli(args, *, auxiliary: bool) -> list[str]:
     root = args.dataset_root.expanduser().resolve()
-    output = (args.output_dir or PROJECT_ROOT / "outputs" /
-              ("act_variation_gesture" if auxiliary else "act_variation_baseline")).expanduser().resolve()
+    repo_id = args.repo_id or f"local/{root.name}"
+    name = ("act_variation_gesture_hand_delta" if auxiliary and
+            getattr(args, "hand_delta_weight", 0.0) > 0 else
+            "act_variation_gesture" if auxiliary else "act_variation_baseline")
+    output = (args.output_dir or PROJECT_ROOT / "outputs" / name).expanduser().resolve()
     steps = 1 if args.smoke_test else args.steps
     batch_size = 1 if args.smoke_test else args.batch_size
     chunk_size = 8 if args.smoke_test else args.chunk_size
@@ -146,7 +161,7 @@ def build_cli(args, *, auxiliary: bool) -> list[str]:
     if output.exists() and not args.print_command:
         raise ValueError(f"Output already exists: {output}")
     return [
-        f"--dataset.repo_id={args.repo_id}", f"--dataset.root={root}",
+        f"--dataset.repo_id={repo_id}", f"--dataset.root={root}",
         "--dataset.video_backend=pyav", "--dataset.use_imagenet_stats=true",
         f"--dataset.eval_split={args.eval_split}", "--policy.type=act",
         f"--policy.device={args.device}", "--policy.vision_backbone=resnet18",
@@ -169,26 +184,23 @@ def build_cli(args, *, auxiliary: bool) -> list[str]:
         f"--save_freq={1 if args.smoke_test else args.save_freq}",
         f"--log_freq={1 if args.smoke_test else 100}", "--env_eval_freq=0",
         f"--output_dir={output}",
-        f"--job_name={'act_variation_gesture' if auxiliary else 'act_variation_baseline'}",
+        f"--job_name={name}",
         "--wandb.enable=false",
     ]
 
 
 def run(args, *, auxiliary: bool = False, install_auxiliary=None) -> None:
     root = args.dataset_root.expanduser().resolve()
-    info = check_dataset(root)
-    if auxiliary and (not 0 < args.gesture_weight or not args.gesture_weight < float("inf")):
-        raise ValueError("--gesture-weight must be finite and positive")
     hand_delta_weight = getattr(args, "hand_delta_weight", 0.0)
     hand_delta_scale = getattr(args, "hand_delta_scale", 0.03)
+    info = check_dataset(
+        root, auxiliary=auxiliary, motion=auxiliary and hand_delta_weight > 0
+    )
+    if auxiliary and (not 0 < args.gesture_weight or not args.gesture_weight < float("inf")):
+        raise ValueError("--gesture-weight must be finite and positive")
     if auxiliary and (not 0 <= hand_delta_weight < float("inf")
                       or not 0 < hand_delta_scale < float("inf")):
         raise ValueError("Hand-delta weight must be nonnegative and scale must be positive")
-    if auxiliary and hand_delta_weight > 0:
-        required_motion = {HAND_DELTA_KEY, HAND_VALID_KEY}
-        missing = required_motion - set(info["features"])
-        if missing:
-            raise ValueError(f"Hand-delta supervision needs these dataset features: {sorted(missing)}")
     cli = build_cli(args, auxiliary=auxiliary)
     print(json.dumps({"dataset": str(root), "episodes": info["total_episodes"],
                       "frames": info["total_frames"], "lerobot_arguments": cli,

@@ -32,9 +32,9 @@ from evaluation.act_variation_rollout import (  # noqa: E402
     DEFAULT_MAX_YAW_STEP_RAD,
     DEFAULT_SCENE,
     FPS,
-    OBSERVATION_CAMERAS,
     RolloutPanda,
     ViewerClosed,
+    checkpoint_camera_names,
     run_episode,
 )
 from simulation.mujoco.record_mujoco_panda import parse_args as recorder_args  # noqa: E402
@@ -51,9 +51,10 @@ def load_policy(checkpoint: Path, device: str, action_steps: int | None = None):
     config = DiffusionConfig.from_pretrained(str(checkpoint), local_files_only=True)
     config.device = device
     config.pretrained_backbone_weights = None
+    camera_names = checkpoint_camera_names(config)
     expected = {
         "observation.state": (9,),
-        **{f"observation.images.{name}": (3, 480, 640) for name in OBSERVATION_CAMERAS},
+        **{f"observation.images.{name}": (3, 480, 640) for name in camera_names},
     }
     if set(config.input_features) != set(expected) or any(
         tuple(config.input_features[key].shape) != shape for key, shape in expected.items()
@@ -81,7 +82,7 @@ def load_policy(checkpoint: Path, device: str, action_steps: int | None = None):
             "unnormalizer_processor": {"device": device},
         },
     )
-    return policy, pre, post, config
+    return policy, pre, post, config, camera_names
 
 
 def main() -> None:
@@ -124,11 +125,14 @@ def main() -> None:
     if output.exists():
         parser.error(f"Output already exists: {output}")
 
-    policy, pre, post, config = load_policy(checkpoint, args.device, args.action_steps)
+    policy, pre, post, config, camera_names = load_policy(
+        checkpoint, args.device, args.action_steps
+    )
     rec_args = recorder_args(["--model-path", str(scene), "--random-seed", str(args.seed_base)])
     env = RolloutPanda(rec_args)
     renderer = mujoco.Renderer(env.model, height=480, width=640)
-    cameras = {"overview": _training_cameras(rec_args)["overview"]}
+    training_cameras = _training_cameras(rec_args)
+    cameras = {name: training_cameras[name] for name in camera_names}
     viewer = None
     if args.viewer:
         from mujoco import viewer as mujoco_viewer
@@ -159,6 +163,7 @@ def main() -> None:
         "horizon": config.horizon,
         "n_obs_steps": config.n_obs_steps,
         "n_action_steps": config.n_action_steps,
+        "observation_cameras": list(camera_names),
         "resize_shape": config.resize_shape,
         "max_xyz_step_m": args.max_xyz_step_m,
         "max_joint_step_rad": args.max_joint_step_rad,
