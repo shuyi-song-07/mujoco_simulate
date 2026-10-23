@@ -122,6 +122,12 @@ source .venv/bin/activate
 mjpython simulation/mujoco/record_mujoco_panda.py
 ```
 
+单臂 Pick-and-place 每轮重采样红色目标方块、蓝/绿/黄干扰方块的尺寸、XY 位置与朝向，以及白色目标圆盘位置。采样会检查桌面间距、机械臂关节限位与抓取高度的可达性；操作时也限制末端工作空间和关节目标。Pointing_Up 以食指竖直向上为零角，使用手腕到食指尖的方向控制夹爪顺/逆时针旋转；机械臂关节锁定到识别出 ILoveYou。原有抓起后 ILoveYou 平移及俯视切换保持不变。
+
+MuJoCo 的 Victory 左右映射已反转；ILoveYou 允许空夹爪斜向移动且不会误锁高度。辅助画面加入与窗口俯视切换使用相同相机参数的俯视图。指尖与方块的碰撞面使用较高摩擦，便于稳定夹取与搬运。
+
+LeRobot 帧字段新增 `observation.gesture`、`observation.gesture_score`、`observation.hand_visible`。`observation.state` 包含七个机械臂关节、独立夹爪旋转角和夹爪开度，共 9 维。手势编码：`None=0`、`Closed_Fist=1`、`Open_Palm=2`、`Pointing_Up=3`、`Thumb_Down=4`、`Thumb_Up=5`、`Victory=6`、`ILoveYou=7`。摄像头断流超过 0.5 秒时写 `None`。每集 `episode_videos/initial_positions.jsonl` 同时记录随机 layout（每个方块的中心、半尺寸和 yaw）。
+
 ### Single-arm Push-T
 
 ```bash

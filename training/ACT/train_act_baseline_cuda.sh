@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DATASET_ROOT="${DATASET_ROOT:-$PROJECT_ROOT/datasets/act_50eps}"
+DATASET_REPO_ID="${DATASET_REPO_ID:-shuyisong07/act_50eps}"
 OUTPUT_DIR="${OUTPUT_DIR:-$PROJECT_ROOT/outputs/act_panda_baseline_cuda}"
 PYTHON_BIN="${PYTHON_BIN:-$PROJECT_ROOT/.venv/bin}"
 STEPS="${STEPS:-100000}"
@@ -17,7 +18,7 @@ fi
 
 HF_HOME="$PROJECT_ROOT/.cache/huggingface" \
 exec "$PYTHON_BIN/lerobot-train" \
-  --dataset.repo_id=shuyisong07/act_50eps \
+  --dataset.repo_id="$DATASET_REPO_ID" \
   --dataset.root="$DATASET_ROOT" \
   --dataset.video_backend=pyav \
   --dataset.eval_split=0.1 \

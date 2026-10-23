@@ -7,3 +7,4 @@ flask-cors>=5,<7
 av>=15,<17
 Pillow>=10,<13
 pyarrow>=18,<23
+matplotlib>=3.8,<4

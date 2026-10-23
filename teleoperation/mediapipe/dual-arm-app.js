@@ -7,7 +7,7 @@ const gestures = { ILoveYou: "I Love You", Victory: "剪刀手", Closed_Fist: "�
 const modes = { XY: "XY 平移", Z: "Z 升降", PAUSE: "暂停", IDLE: "等待", GRASP_CONFIRM: "闭合确认", RELEASE_CONFIRM: "打开确认" };
 const tasks = { PREGRASP: "对准待抓", GRASP_VERIFY: "验证双侧抓取", DUAL_GRASPED: "协同搬运", PLACEMENT: "放置微调", RELEASE_VERIFY: "验证放置", DONE: "成功完成", FAIL: "失败" };
 const failureLabels = { timeout: "超过正式任务时限", grasp_failure: "双侧抓取未建立", contact_loss: "搬运中失去接触", object_drop: "物体跌落", relative_pose_violation: "两臂相对位置超限", robot_robot_collision: "两臂发生碰撞", workspace_violation: "工作空间越界", joint_or_ik_failure: "关节或逆解异常" };
-const viewLabels = { top: "正上方 · XY 对准（↑ −X，→ +Y）", side: "斜侧方 · 两侧接触辅助", front: "内侧近景 · 对准与高度" };
+const viewLabels = { top: "正上方 · XY 对准（↑ +Y，→ +X）", side: "斜侧方 · 两侧接触辅助", front: "内侧近景 · 对准与高度" };
 const reasons = {
   calibration_required: "双手张掌稳定 2 秒后直接绑定，无需确认。",
   binding_complete: "左右手已绑定；持续张掌保持暂停及夹爪状态。换成操作手势后开始控制。",
@@ -204,8 +204,9 @@ async function checkHealth() {
   } catch { setConnected(false); }
   finally { healthTimer = setTimeout(checkHealth, 350); }
 }
-function assignImage(id, placeholder, url) {
+function assignImage(id, placeholder, url, view) {
   const image = $(id);
+  image.dataset.view = view;
   if (url) { if (image.src !== url) image.src = url; image.hidden = false; $(placeholder).hidden = true; }
   else { image.hidden = true; image.removeAttribute("src"); $(placeholder).hidden = false; }
 }
@@ -217,10 +218,10 @@ function renderViews() {
   }
   $("main-view-title").textContent = viewLabels[mainView];
   const visible = (view) => performance.now() - previewsUpdatedAt[view] <= PREVIEW_GRACE_MS ? previews[view] : null;
-  assignImage("main-preview", "main-placeholder", visible(mainView));
+  assignImage("main-preview", "main-placeholder", visible(mainView), mainView);
   const auxiliary = ["top", "side", "front"].filter((view) => view !== mainView);
-  assignImage("side-preview", "side-placeholder", visible(auxiliary[0]));
-  assignImage("front-preview", "front-placeholder", visible(auxiliary[1]));
+  assignImage("side-preview", "side-placeholder", visible(auxiliary[0]), auxiliary[0]);
+  assignImage("front-preview", "front-placeholder", visible(auxiliary[1]), auxiliary[1]);
   $("auxiliary-view-one").textContent = viewLabels[auxiliary[0]];
   $("auxiliary-view-two").textContent = viewLabels[auxiliary[1]];
 }

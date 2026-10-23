@@ -18,6 +18,32 @@
 
 去掉 `--print-command` 即开始训练。先用 `--smoke-test --output-dir /tmp/<unique-name>` 检查一个训练步。现有的 `datasets/pickandplace_variation_lerobot` 没有手腕位移字段，可用于前两组；第三组需要用更新后的采集程序录制新数据。三组比较时，应使用同一份包含手腕字段的新数据集、相同随机种子和相同训练参数。
 
+策略图像输入固定为 `observation.images.overview`，并与 9 维机器人状态共同使用；数据集中的其他相机视频保留用于检查，不参与训练。
+
+## 2026-10-22 Panda Pick-and-place 数据集
+
+将 10-22 采集的四份兼容数据合并为独立训练集（原始目录不修改）。合并前会校验 feature schema、episode 元数据、每集三路检查视频和 `hand_trajectories`；输出同时保留重新编号后的手轨迹与布局清单。
+
+```bash
+/home/dex/miniconda3/envs/mujoco/bin/python dataset/demonstrations/merge_mujoco_panda_pick_for_diffusion.py --dry-run
+/home/dex/miniconda3/envs/mujoco/bin/python dataset/demonstrations/merge_mujoco_panda_pick_for_diffusion.py
+```
+
+合并结果默认写到 `datasets/mujoco_panda_pick_diffusion_20261022`，包括 50 个 episode。专用训练入口默认读取该目录；三种模式共用同一 schema：
+
+```bash
+# Diffusion Policy baseline
+/home/dex/miniconda3/envs/mujoco/bin/python training/Diffusion/train_diffusion_mujoco_panda_pick.py --print-command
+
+# 动作 + 手势分类辅助损失
+/home/dex/miniconda3/envs/mujoco/bin/python training/Diffusion/train_diffusion_mujoco_panda_pick.py --mode gesture --print-command
+
+# 动作 + 手势分类 + 手腕位移辅助损失
+/home/dex/miniconda3/envs/mujoco/bin/python training/Diffusion/train_diffusion_mujoco_panda_pick.py --mode gesture_hand_delta --print-command
+```
+
+去掉 `--print-command` 即开始完整训练；首次训练建议先加 `--smoke-test --output-dir /tmp/panda-diffusion-smoke` 验证环境。可通过 `--device`, `--steps`, `--batch-size` 和 `--output-dir` 覆盖训练配置。不同采集轮次的手势控制增益有变化，因此基线动作策略可直接混训；若使用手腕位移辅助监督，需注意位移到机械臂动作的映射可能跨轮次略有不同。
+
 新数据集每帧记录三类人手及控制信息：
 
 1. `observation.raw_wrist_uv`、`observation.raw_wrist_timestamp_ms`、`observation.raw_wrist_valid`：MediaPipe 原始归一化手腕坐标、浏览器捕获时间（Unix 毫秒）、可见有效标记。无效帧用零坐标与 `-1` 时间占位。

@@ -110,6 +110,22 @@ test("re-entering hand uses 500 ms of wall time without restarting on movement o
   assert.equal(gate.observe({ landmarks: [], gestures: [] }, 820).state, "lost");
 });
 
+test("stable re-entry holds robot until the wrist and gesture settle", () => {
+  const gate = new SingleHandRearmGate({ waitMs: 350, stableMs: 250, stableRadius: 0.012 });
+  const frame = (x, gesture = "Victory") => ({
+    gestures: [[{ categoryName: gesture, score: 0.9 }]],
+    landmarks: [[{ x, y: 0.5 }]],
+  });
+  assert.equal(gate.observe(frame(0.5), 0).state, "waiting");
+  assert.equal(gate.observe(frame(0.55), 200).state, "waiting");
+  assert.equal(gate.observe(frame(0.55), 350).state, "waiting");
+  assert.equal(gate.observe(frame(0.55), 450).state, "ready");
+  gate.arm();
+  assert.equal(gate.observe({ gestures: [], landmarks: [] }, 500).state, "lost");
+  assert.equal(gate.observe(frame(0.2), 600).state, "waiting");
+  assert.equal(gate.observe(frame(0.2), 950).state, "ready");
+});
+
 test("mirrored upper-right ILoveYou motion points toward +X/-Y", () => {
   assert.deepEqual(
     mapPlanarMotion({

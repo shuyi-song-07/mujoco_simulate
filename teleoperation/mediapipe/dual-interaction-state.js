@@ -582,9 +582,10 @@ export class DualInteractionState {
         const span = Math.max(0.001, this.config.rate_motion_range - deadZone);
         return Math.abs(x) <= deadZone ? 0 : Math.sign(x) * clamp((Math.abs(x) - deadZone) / span, 0, 1);
       };
-      // Match the fixed top camera: screen up is task -X, screen right +Y.
-      // Hand webcam is mirrored (raw du is opposite display horizontal delta).
-      let delta = candidate === "XY" ? { dx: zeroed(dv), dy: -zeroed(du), dz: 0 } : { dx: 0, dy: 0, dz: -zeroed(dv) };
+      // The browser top preview is rotated 90 degrees counterclockwise:
+      // screen up is task +Y and screen right is task +X.
+      // The webcam is mirrored, so raw du opposes displayed hand movement.
+      let delta = candidate === "XY" ? { dx: -zeroed(du), dy: -zeroed(dv), dz: 0 } : { dx: 0, dy: 0, dz: -zeroed(dv) };
       const norm = Math.hypot(delta.dx, delta.dy, delta.dz);
       if (norm > 1) delta = Object.fromEntries(Object.entries(delta).map(([key, value]) => [key, value / norm]));
       const speed = clamp(this.config.motion_speed_scale, 0, 1);

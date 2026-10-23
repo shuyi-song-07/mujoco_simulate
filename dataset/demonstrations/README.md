@@ -29,3 +29,26 @@ datasets/act_50eps/
 ├── videos/            # ACT 训练必需
 └── episode_videos/    # 每个 episode 的三视角独立视频，人工检查用
 ```
+
+## Pick and place variation（LeRobot v3）
+
+[源数据集](https://huggingface.co/datasets/shuyisong07/pickandplace_variation/tree/main)包含 6 个单独录制的 LeRobot v3 数据目录。运行以下命令可下载并合并为一个可训练的数据集：
+
+```bash
+env -u ALL_PROXY /home/dex/miniconda3/envs/mujoco/bin/python \
+  dataset/demonstrations/merge_pickandplace_variation.py
+```
+
+如果已下载源数据，可加 `--skip-download`。默认输出到 `datasets/pickandplace_variation_lerobot/`，包含 `data/`、`meta/`、`videos/`，以及用于追溯每条示范布局的 `provenance/episodes.jsonl`。总计 50 条成功示范、42,561 帧、30 FPS，9 维状态、7 维动作、3 路 RGB 视频。原始示范编号与合并后编号的映射也在该 JSONL 文件中。脚本需要 LeRobot 0.6.1。
+
+CUDA ACT 训练：
+
+```bash
+DATASET_ROOT="$PWD/datasets/pickandplace_variation_lerobot" \
+DATASET_REPO_ID=local/pickandplace_variation_lerobot \
+OUTPUT_DIR="$PWD/outputs/act_pickandplace_variation_cuda" \
+PYTHON_BIN=/home/dex/miniconda3/envs/mujoco/bin \
+env -u ALL_PROXY bash training/ACT/train_act_baseline_cuda.sh
+```
+
+可用 `STEPS`、`BATCH_SIZE` 和 `OUTPUT_DIR` 环境变量调整训练。此处只整理成功示范；布局元数据不是训练帧特征。
