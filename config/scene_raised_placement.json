@@ -1,0 +1,24 @@
+{
+  "_help": {
+    "height_m": "放置台高于原桌面的高度，米；默认0.05=5厘米。目标中心高度自动加上托盘半高。",
+    "extra_size_xy_m": "台面相对托盘主体的总增量[X,Y]，米；各0.01表示每边多5毫米，不包含抓柄。",
+    "containment_tolerance_m": "成功检查的主体边界容差，米；不能用较宽的目标圆代替真实落台。",
+    "object_position": "初始中心；S3移到台面左侧，避免重置即穿入放置台。Z由原桌面和托盘半高计算。",
+    "randomization": "S3专用初态半范围；扩大前必须检查台面相交、工作区及IK。原S1不变。"
+  },
+  "scene": {
+    "placement_platform": {
+      "height_m": 0.05,
+      "extra_size_xy_m": [0.01, 0.01],
+      "containment_tolerance_m": 0.001
+    },
+    "object_position": [-0.16, 0.0, 0.372],
+    "target_position": [0.15, 0.0, 0.422],
+    "target_yaw_rad": 0.12,
+    "randomization": {
+      "object_xy_range_m": [0.01, 0.03],
+      "target_xy_range_m": [0.0, 0.0],
+      "object_yaw_range_rad": 0.08
+    }
+  }
+}

@@ -1,0 +1,11 @@
+# Preserve imported model bytes and keep mesh/binary asset reviews compact.
+* -text
+# Provenance uses file SHA: preserve exact working bytes across Git checkout.
+*.obj -text -diff
+*.stl -text -diff
+*.task binary
+*.png binary
+*.pdf binary
+*.docx binary
+*.pth binary
+*.wasm binary

@@ -1,0 +1,103 @@
+{
+  "version": "task3-papera-gesture-level-v2",
+  "recording": {
+    "schema_version": "task3-papera-v2",
+    "sampling_policy": "raw_fixed_phase_v2",
+    "skip_confirmation_idle_frames": false,
+    "cameras": ["top", "front", "oblique"]
+  },
+  "training_camera": {
+    "version": "papera-oblique-config-v1",
+    "name": "oblique",
+    "projection": "free_perspective",
+    "distance": 1.2,
+    "azimuth": 150.0,
+    "elevation": -35.0,
+    "lookat": [-0.1, -0.1, 0.5],
+    "width": 640,
+    "height": 480,
+    "fps": 30
+  },
+  "evaluation": {
+    "max_episode_seconds": 180,
+    "target_orientation_tolerance_rad": 0.06
+  },
+  "gripper_control": {
+    "mode": "continuous_independent",
+    "max_width_speed_mps": 0.08
+  },
+  "rigid_control": {
+    "max_yaw_rad": 0.2617993877991494,
+    "max_yaw_step_rad": 0.004,
+    "axial_conflict_m": 0.0015,
+    "ik_position_tolerance_m": 0.001,
+    "ik_angle_tolerance_rad": 0.015
+  },
+  "scene": {
+    "randomization": {
+      "object_xy_range_m": [
+        0.15,
+        0.15
+      ],
+      "target_xy_range_m": [
+        0.0,
+        0.0
+      ],
+      "object_yaw_range_rad": 0.08
+    },
+    "blockers_follow_initial_pose": true,
+    "target_position": [0.15, 0.0, 0.372],
+    "target_yaw_rad": 0.12,
+    "cameras": {
+      "front": {
+        "projection": "orthographic",
+        "position": [
+          0.65,
+          0,
+          0.55
+        ],
+        "target": [
+          0.075,
+          0,
+          0.47
+        ],
+        "fovy": 0.52
+      },
+      "side": {
+        "projection": "orthographic",
+        "position": [
+          0.75,
+          -0.8,
+          0.85
+        ],
+        "target": [
+          0.065,
+          0,
+          0.43
+        ],
+        "fovy": 0.64
+      }
+    }
+  },
+  "contact_control": {
+    "enabled": true,
+    "control_protocol": "gesture-rate-gripper-v3",
+    "release_confirm_seconds": 0.0,
+    "release_input_max_gap_seconds": 0.25,
+    "release_stationary_target_tolerance_m": 0.0015,
+    "release_stationary_rotation_tolerance_rad": 0.002,
+    "support_weight_fraction": 0.1,
+    "support_height_tolerance_m": 0.003,
+    "support_penetration_tolerance_m": 0.005,
+    "support_stable_seconds": 0.12,
+    "release_width_epsilon_m": 0.0002,
+    "max_tilt_rad": 0.15
+  },
+  "gesture_control": {
+    "gripper_trigger_policy": "palm_fist_level_v2",
+    "mode_confirm_ms": 100,
+    "open_score_min": 0.55,
+    "close_score_min": 0.8,
+    "motion_score_min": 0.75
+  }
+}

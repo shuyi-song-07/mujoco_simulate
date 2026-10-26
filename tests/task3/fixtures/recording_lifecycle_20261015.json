@@ -1,0 +1,48 @@
+{
+  "session": "20261015_223400_808752",
+  "scope": "Real recording/task lifecycle only; full health/config supplied by browser harness. Saving=false is a controlled test assumption, not a field present in diagnostic state rows.",
+  "samples": [
+    {
+      "label": "recorded_done",
+      "source_file": "logs/task3/sessions/20261015_223400_808752/events-002.jsonl",
+      "wall_time_ms": 1792074919734.717,
+      "recording": true,
+      "task_state": "DONE",
+      "frames": 872,
+      "capture_status": {
+        "state": "raw_timeline",
+        "training_eligible": true,
+        "last_frame_recorded": true,
+        "frames": 872
+      }
+    },
+    {
+      "label": "next_scene_not_recording",
+      "source_file": "logs/task3/sessions/20261015_223400_808752/events-006.jsonl",
+      "wall_time_ms": 1792075072409.1133,
+      "recording": false,
+      "task_state": "PREGRASP",
+      "frames": 894,
+      "capture_status": {
+        "state": "not_recording",
+        "training_eligible": false,
+        "last_frame_recorded": false,
+        "frames": 894
+      }
+    },
+    {
+      "label": "practice_done",
+      "source_file": "logs/task3/sessions/20261015_223400_808752/events-008.jsonl",
+      "wall_time_ms": 1792075140386.0957,
+      "recording": false,
+      "task_state": "DONE",
+      "frames": 894,
+      "capture_status": {
+        "state": "not_recording",
+        "training_eligible": false,
+        "last_frame_recorded": false,
+        "frames": 894
+      }
+    }
+  ]
+}

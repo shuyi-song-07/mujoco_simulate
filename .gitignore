@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.local/
+.cache/
+logs/
+datasets/*
+!datasets/.gitkeep
+outputs/**
+!outputs/.gitkeep
+# The selected pinned MediaPipe/WASM and ResNet18 runtime assets are versioned.
+*.log

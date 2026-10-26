@@ -1,0 +1,20 @@
+# Windows dependency specification; current interpreters are configured in
+# config/environments.json. See docs/RUN_PIPELINE.md before creating another env.
+name: paperA_train
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12.15
+  - pip
+  - pip:
+      - --extra-index-url https://download.pytorch.org/whl/cu130
+      - torch==2.11.0+cu130
+      - torchvision==0.26.0+cu130
+      - numpy==2.2.6
+      - av==15.1.0
+      - pyarrow==22.0.0
+      - pillow==12.3.0
+      - tqdm==4.70.1
+      - tensorboard==2.20.0
+      - psutil==7.2.2
+      - packaging==25.0

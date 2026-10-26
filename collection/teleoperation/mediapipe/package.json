@@ -1,0 +1,16 @@
+{
+  "name": "papera-task3",
+  "version": "1.0.0",
+  "description": "Paper A Task3 browser teleoperation",
+  "scripts": {
+    "test": "node --check server.js && node --check dual-arm-app.js && node --check dual-gesture-worker.js && node --check hand-measurement.js && node --check continuous-interaction-state.js && node --check rate-interaction-state.js && node --test measurement-journal.test.js server.test.js dual-interaction-state.test.js dual-arm-app.test.js hand-measurement.test.js continuous-interaction-state.test.js gesture-hand-measurement.test.js gesture-interaction-state.test.js rate-interaction-state.test.js",
+    "start": "node server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@mediapipe/tasks-vision": "^1.0.1"
+  },
+  "type": "module"
+}

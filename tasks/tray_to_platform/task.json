@@ -1,0 +1,37 @@
+{
+  "task_id": "tray_to_platform",
+  "display_name": "高侧壁托盘放置至10厘米高台",
+  "status": "ready",
+  "version": "1.2.1",
+  "scene_id": "HIGHWALL_PLATFORM",
+  "scene_config": "tasks/tray_to_platform/scene.json",
+  "model_xml": "simulation/mujoco/assets/dual_arm/dual_arm_scene.xml",
+  "mesh_directory": "simulation/mujoco/assets/franka_emika_panda/assets",
+  "controller": "dual_panda_v1",
+  "schema": {
+    "state": "dual_panda_q7_width_m_s16",
+    "action": "dual_xyz_rpy_width_m_a14",
+    "observation": "oblique_rgb",
+    "state_dim": 16,
+    "action_dim": 14
+  },
+  "hooks": {
+    "configure_xml": "tasks.tray_to_platform.scene:configure_xml",
+    "reset": "tasks.tray_to_platform.scene:reset",
+    "collection_success": "tasks.tray_to_platform.scene:collection_success",
+    "rollout_monitor": "tasks.tray_to_platform.scene:rollout_monitor",
+    "dataset_adapter": "tasks.tray_to_platform.scene:dataset_adapter",
+    "initial_state": "tasks.tray_to_platform.scene:initial_state",
+    "preflight": "tasks.tray_to_platform.scene:preflight"
+  },
+  "source_files": [
+    "tasks/tray_to_platform/scene.py",
+    "tasks/tray_to_platform/success.py",
+    "tasks/tray_to_platform/evaluation.json",
+    "tasks/adapters/tray.py",
+    "simulation/mujoco/dual_arm/task_scenes.py"
+  ],
+  "initialization": "Task-local bounded XY/yaw sampling; target center computed from bottom offset and platform top.",
+  "cameras": "current views top/front/oblique; policy input oblique only",
+  "evaluation_config": "tasks/tray_to_platform/evaluation.json"
+}

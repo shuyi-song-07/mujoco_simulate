@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Paper A · 示范人工审核</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#edf1f6;color:#152a40;font:15px/1.5 system-ui,"Microsoft YaHei",sans-serif}header{padding:17px 24px;background:#fff;border-bottom:1px solid #d5dfeb}h1{font-size:24px;margin:0}h2{font-size:20px;margin:0 0 10px}h3{font-size:17px;margin:0}p{margin:8px 0}.muted{color:#566b80}.small{font-size:13px}.layout{display:grid;grid-template-columns:225px minmax(0,1fr);gap:16px;padding:16px;align-items:start}aside,section{background:#fff;border:1px solid #d4dfeb;border-radius:10px;padding:16px}aside{position:sticky;top:12px;max-height:calc(100vh - 24px);overflow:auto}main{min-width:0}main>section+section{margin-top:16px}button,select,input,textarea{font:inherit;border:1px solid #b5c5d7;border-radius:6px;padding:6px 9px}button{cursor:pointer;background:#edf3ff;color:#163d76}button:hover{border-color:#316dc0}button.primary{background:#215bcc;color:white}button:disabled{opacity:.5;cursor:default}.episode{display:block;width:100%;text-align:left;margin:6px 0;font-size:13px;overflow-wrap:anywhere}.active{background:#dce9ff;border-color:#215bcc}.videos{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.videos figure{margin:0}.videos video{display:block;width:100%;aspect-ratio:4/3;background:#132236;object-fit:contain;max-height:40vh}.videos figcaption{font-weight:600;margin-bottom:4px}.row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:10px 0}.row.between{justify-content:space-between}.wide{flex:1;min-width:160px}input[type=range]{width:100%;padding:0;accent-color:#265fae}canvas{display:block;width:100%;height:54px;cursor:pointer;border:1px solid #c5d1df;border-radius:4px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.hand-card{border:1px solid #d5dfeb;border-radius:9px;padding:14px;background:#fbfcfe;min-width:0}.gesture-head{display:flex;gap:10px;align-items:baseline;justify-content:space-between;flex-wrap:wrap}.gesture-name{font-size:22px;font-weight:700}.pill{display:inline-block;padding:2px 9px;border-radius:14px;background:#e8eef7;font-size:13px;color:#344b65}.pill.trusted,.good{color:#167348}.pill.trusted{background:#e2f3e9}.pill.untrusted,.warn{color:#8c5700}.pill.untrusted{background:#fff0d0}.pill.missing{background:#e8ebee;color:#586774}.bad{color:#a72835}.notice{padding:10px 12px;background:#edf3ff;border-left:4px solid #4b7ac3;border-radius:3px}.notice.warn{background:#fff6e2;border-color:#c58b22}.notice.bad{background:#fff0f1;border-color:#bd5361}.change-summary{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:12px 0}.summary-box{padding:9px 10px;border:1px solid #d5dfeb;background:#fff;border-radius:7px;font-weight:600}.summary-box.changed{border-color:#3d7bba;background:#edf5ff}.summary-box.tiny{border-color:#cfb971;background:#fffbeb}.summary-box.unavailable{color:#64758a}.tables{display:grid;grid-template-columns:1fr 1fr;gap:12px}.table-wrap{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:tabular-nums}caption{text-align:left;font-weight:700;margin:3px 0 6px;font-size:14px}th,td{padding:5px 6px;border-bottom:1px solid #e0e7ef;text-align:right;white-space:nowrap}th{color:#4c647c;background:#f0f4f9;font-size:12px;font-weight:600}th:first-child,td:first-child{text-align:left}tr.changed td.delta{background:#dfedff;color:#135c9d;font-weight:700}tr.tiny td.delta{background:#fff4d2;color:#8b620e}td.empty{color:#8b98a7}.metric-strip{display:flex;gap:10px;flex-wrap:wrap}.stat{background:#f1f5fa;border-radius:6px;padding:8px 14px}.stat strong{display:block;font-size:21px}.stat span{font-size:12px;color:#566b80}details{border-top:1px solid #dde5ef;padding-top:10px;margin-top:12px}summary{cursor:pointer;font-weight:600}details>p{font-size:13px}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f3f6fa;padding:10px;font-size:12px;max-height:330px;overflow:auto}textarea{width:100%;min-height:90px;resize:vertical}label{display:block}#message{min-height:24px;font-weight:600}#quality{min-width:200px}#frameInput,#markStart{width:110px}.key{font-family:ui-monospace,monospace;padding:1px 4px;background:#e9eef5;border-radius:3px}.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:#52667c}.legend span::before{content:'';display:inline-block;width:10px;height:10px;background:var(--swatch);margin-right:5px;border-radius:2px}.instruction{font-size:14px;color:#3f5670}.list-plain{padding-left:22px}.hidden{display:none!important}
+@media(min-width:1900px){.layout{grid-template-columns:245px minmax(0,1fr)}.videos video{max-height:39vh}.tables{gap:16px}table{font-size:14px}}
+@media(max-width:1400px){.tables{grid-template-columns:1fr}.layout{grid-template-columns:200px minmax(0,1fr)}.videos video{max-height:30vh}}
+@media(max-width:950px){.layout{grid-template-columns:170px minmax(0,1fr)}.grid{grid-template-columns:1fr}.videos{gap:5px}.videos figcaption{font-size:13px}header{padding:14px}.layout{gap:10px;padding:10px}section{padding:12px}}
+@media(max-width:650px){.layout{display:block}aside{position:static;max-height:190px;margin-bottom:12px}.videos{grid-template-columns:1fr}.videos video{max-height:34vh}.tables{grid-template-columns:1fr}.gesture-name{font-size:19px}}
+</style></head>
+<body>
+<header><h1>Paper A · 示范人工审核</h1><p class="muted">对照 a（机器人目标）和 s（机器人实测状态）的逐帧变化，手势作为参考。视频与原始数据只读；保存的是审核意见和裁剪计划。</p></header>
+<p id="serviceInfo" class="small muted" style="margin:8px 24px" role="status"></p>
+<p id="selectionInfo" class="small muted" style="margin:8px 24px"></p>
+<p id="accessInfo" class="notice small" style="margin:8px 24px" role="status"></p>
+<div class="layout">
+<aside><label>记录筛选 <select id="filter"><option value="all">全部</option><option value="pending">待审核</option><option>A</option><option>B</option><option>C</option><option value="rejected">排除</option></select></label><p id="count" class="small"></p><div id="episodes"></div></aside>
+<main>
+<section><h2 id="title">正在读取审核清单…</h2><p id="summary" class="small muted"></p><p id="qualityExclusion" class="notice warn hidden"></p>
+<div class="row"><button id="originalView" disabled>原始完整视频</button><button id="previewCuts" class="primary" disabled>生成／更新裁剪预览</button><span id="viewMode" class="pill">原始视频</span></div>
+<p id="previewStatus" class="small muted" role="status">预览采用自动裁剪建议＋下方当前填写的人工区间，未保存的修改也可先试看。</p>
+<div id="videos" class="videos"></div>
+<div class="row"><button id="play" disabled>同步播放</button><button id="back" disabled>前一帧</button><button id="forward" disabled>后一帧</button><label>速度 <select id="speed"><option value="0.25">0.25 倍</option><option value="0.5">0.5 倍</option><option value="1" selected>1 倍</option><option value="2">2 倍</option></select></label><span id="time" class="wide"></span><label>原始帧 <input id="frameInput" type="number" min="0" value="0"></label><button id="jump">定位</button></div>
+<input id="seek" type="range" min="0" max="1" step="1" value="0" aria-label="原始完整帧时间条">
+<canvas id="timeline" width="1800" height="78" style="height:78px" aria-label="自动裁剪、抓放保护、人工复查和手势标签时间条"></canvas>
+<div class="legend"><span style="--swatch:#3e77c9">自动保留</span><span style="--swatch:#c5cdd7">自动删除</span><span style="--swatch:#246c83">双侧低位保护</span><span style="--swatch:#148477">历史抓取保护</span><span style="--swatch:#854fa8">历史释放保护</span><span style="--swatch:#e5a52a">需人工复查</span><span style="--swatch:#cb4555">无效数据／底行丢手</span><span id="gestureLegend" style="--swatch:#d7a22a">未知手势／低分</span><span style="--swatch:#9671b9">底行标签不可用</span></div>
+<p id="playbackNote" class="small muted"></p><p id="cutBoundary" class="notice small hidden"></p>
+<p id="frameInfo" class="notice small"></p><p id="saWindowInfo" class="small muted"></p>
+<div id="policyEvidence" class="notice small hidden"><strong id="policyRole"></strong><p id="policyIntent"></p><p id="policyProtection"></p><p id="policyReason"></p><p id="policyWait" class="muted hidden"></p><p id="policyTerminal" class="muted hidden"></p><p id="policySegments" class="muted"></p><p id="manualDecision" class="muted"></p></div>
+</section>
+
+<section aria-label="当前手势与动作状态逐帧对照">
+<div class="row between"><h2>当前帧，相比上一原始帧</h2><label class="small">a 显示来源 <select id="actionSource"><option value="recorded">当前录制目标 a</option><option value="next_control">训练用的下一控制步目标</option></select></label></div>
+<p id="sourceExplanation" class="small muted"></p>
+<p id="comparisonNotice" class="notice small"></p>
+<div class="grid">
+<article class="hand-card" id="leftCard" data-side="left"><h3>左手 → 左臂</h3><div class="gesture-head"><span id="leftGesture" class="gesture-name">等待索引</span><span id="leftTrust" class="pill missing"></span></div><p id="leftScores" class="small"></p><p id="leftGestureDetail" class="small muted"></p><p id="leftSupervision" class="small muted"></p><div class="change-summary"><div id="leftActionSummary" class="summary-box" data-quantity="a"></div><div id="leftStateSummary" class="summary-box" data-quantity="s"></div></div><div class="tables"><div id="leftActionTable" class="table-wrap"></div><div id="leftStateTable" class="table-wrap"></div></div></article>
+<article class="hand-card" id="rightCard" data-side="right"><h3>右手 → 右臂</h3><div class="gesture-head"><span id="rightGesture" class="gesture-name">等待索引</span><span id="rightTrust" class="pill missing"></span></div><p id="rightScores" class="small"></p><p id="rightGestureDetail" class="small muted"></p><p id="rightSupervision" class="small muted"></p><div class="change-summary"><div id="rightActionSummary" class="summary-box" data-quantity="a"></div><div id="rightStateSummary" class="summary-box" data-quantity="s"></div></div><div class="tables"><div id="rightActionTable" class="table-wrap"></div><div id="rightStateTable" class="table-wrap"></div></div></article>
+</div>
+<p id="interpretation" class="notice small"></p>
+<p id="thresholdNote" class="small muted"></p>
+<details id="labelDetails"><summary>技术详情：原始标签、时序和来源（一般审核不用展开）</summary><p>手势是该帧关联的识别测量；a 是机器人目标，s 是实测关节和爪宽，两者含义不同。此处保留原始字段供排查问题，骨架引用不参与页面变化判断。</p><pre id="labels"></pre></details>
+</section>
+
+<section>
+<details id="qualityDetails"><summary>本条自动检查与候选裁剪说明</summary><p class="instruction">结构检查回答“文件和时序是否完整”；候选裁剪回答“哪些原始帧保留到审核结果”。它们不能代替你对动作过程的人工判断，也不表示新结果已兼容训练读取器。</p><p id="structure"></p><div id="stats" class="metric-strip"></div><p id="qualitySummary" class="small"></p><div id="cutTable" class="table-wrap"></div><p class="small muted">上表使用半开区间 [起始帧, 结束帧)，结束帧不包含。点击“查看”定位原始片段。自动删除产生的软缺口不等于原任务中断；裁剪连续片段与真实任务段分别记录。正式训练如何处理这些缺口仍需读取器适配。</p><ul id="structuralIssues" class="list-plain small"></ul><details id="metricDetails"><summary>原始检查字段（维护代码时使用）</summary><pre id="metrics"></pre></details></details>
+</section>
+
+<section><h2>本条审核意见</h2><p class="small">A：平稳完成；B：合理对准／接触修正后完成；C：明显控制器故障或异常过程，单列研究；排除：不作为训练候选。a 不变时 s 仍可能执行先前目标；两者不变时也可能在等待接触稳定，不应只凭一帧删除。</p>
+<div class="row"><select id="quality"><option value="pending">待审核</option><option value="A">A · 平稳完成</option><option value="B">B · 合理恢复后完成</option><option value="C">C · 异常过程</option><option value="rejected">排除</option></select><label>审核者 <input id="reviewer" maxlength="120" placeholder="姓名或稳定标识"></label></div>
+<label><input id="watched" type="checkbox"> 我已完整观看本条提供的所有视角视频，并检查抓持、恢复及结束状态</label>
+<p class="small muted">填写原始帧区间，每行“起始帧,结束帧”，结束帧不包含。例如 0,60 表示第 0～59 帧。只保存裁剪计划，下一次 prepare 才应用；不会剪原始视频。</p>
+<div class="grid"><label>人工排除区间<textarea id="exclude" placeholder="0,60"></textarea></label><label>必要保留区间（覆盖自动裁剪候选）<textarea id="keep" placeholder="60,90"></textarea></label></div>
+<div class="row"><label>起始帧 <input id="markStart" type="number" min="0" value="0"></label><button id="setStart">取当前帧为起点</button><button id="addExclude">截至当前帧加入排除</button><button id="addKeep">截至当前帧加入保留</button></div>
+<label>审核理由与问题片段<textarea id="notes" maxlength="8000" placeholder="排除低位或历史抓取／释放保护段必须填写原因；请注明相关帧／时间。"></textarea></label>
+<div class="row"><button id="save" class="primary">保存本条审核</button><button id="next">下一条</button><span id="message" role="status"></span></div>
+</section>
+</main></div>
+<script src="/review_metrics.js"></script>
+<script>
+'use strict';
+const token=__REVIEW_TOKEN__, $=id=>document.getElementById(id), M=window.ReviewFrameMetrics;
+let manifest,selected=-1,rows=[],videos=[],current=0,playing=false,dirty=false,loading=false,loadId=0,timelineBase=null;
+let preview=null,previewBusy=false,previewGeneration=0,videoGeneration=0,saving=false;
+const editing=['quality','reviewer','watched','notes','exclude','keep','addExclude','addKeep','markStart','setStart','save'];
+const qualities={pending:'待审核',A:'A',B:'B',C:'C',rejected:'排除'};
+const phaseNames={free_stationary:'未抓持 · 静止',free_motion:'未抓持 · 运动',transport:'搬运',grasping:'抓持中',grasp_hold:'抓持保持',contact:'接触',release:'释放',released:'已释放',done:'任务结束'};
+const reasonNames={sa_history_anchor:'无历史可比，保留起始帧',sa_window_change:'窗口内 s 或 a 达到变化阈值',sa_window_stagnant:'窗口内 s 和 a 均低于变化阈值',source_start:'原始序列起点',event_context:'保留事件前后过程',contact_or_execution_boundary:'接触／执行边界',physical_or_target_change:'物理状态或目标变化',physical_velocity:'仍有物理运动',pure_stable_prefix_wait_candidate:'开头纯静止等待',pure_stable_middle_wait_candidate:'中间纯静止等待',pure_stable_tail_wait_candidate:'末尾纯静止等待',first_retained_frame:'首个保留帧',filtered_gap:'裁剪缺口',pause_or_resume_transition:'暂停／恢复边界',terminal_context:'保留结束过程',terminal_frame:'保留终态',human_exclude:'人工排除',human_keep:'人工保留'};
+Object.assign(reasonNames,{
+  invalid_numeric_or_source:'数值或原始来源无效',state_or_action_changed:'机器人状态或目标达到变化门槛',
+  physical_execution_until_actual_verification:'从真实抓放执行起，保留至实际物理验证结束',
+  actual_physical_motion:'独立物理检查发现运动（即使单帧A/S低于阈值仍保留）',insufficient_consecutive_low_change_frames:'连续低变化帧不足，保留',physical_event_pre_context:'保留真实抓放事件前的观察',
+  physical_event_post_context:'保留真实抓放事件后的观察',physical_or_task_event_context:'保留接触变化或任务事件上下文',
+  insufficient_reliable_evidence:'可靠证据不足，不能自动删除',incomplete_source_evidence:'源采样元数据缺失，机器人有效数值仍保留，需人工复查',pre_activity_redundant_wait:'任务活动前的多余等待',
+  after_done_and_object_settled:'任务完成且物体稳定后的等待',accepted_intent_transition_context:'保留已接受控制意图转换过程',
+  stationary_reposition_same_intent:'单/双手暂时Unknown或HOLD，机器人已停稳，恢复后继续相同意图；裁剪内部等待，保留两端上下文',
+  initial_pose_or_accepted_target_departure:'已离开初始位姿或在两帧之间执行了目标变化，任务开始，保留',
+  settling_or_target_change_before_stationary_recenter:'回中等待前仍有残余收敛或目标变化，保留这部分，只裁剪后面已稳定的等待',
+  safety_pause_requires_review:'存在安全暂停，需人工复查',same_fresh_intent_without_physical_event:'前后控制意图相同，区间内没有物理事件',
+  wait_context_or_below_minimum_duration:'保留等待两端上下文，或等待长度不足裁剪门槛',
+  prefix_idle_before_first_activity:'首次任务活动前的多余等待',settled_successful_tail:'成功且物体落稳后的多余等待',
+  same_reliable_intent_redundant_wait:'可靠意图相同且无物理事件的多余等待',
+  accepted_intent_transition:'保留已接受控制意图转换',
+  insufficient_physical_or_intent_evidence:'物理或控制意图证据不足，保留复查',
+  grasp_protected:'保留真实抓取及验证',release_protected:'保留真实释放与落稳',
+  prefix_idle:'任务活动前等待',active_motion:'实际运动或目标变化',ambiguous_idle:'证据不足，保留复查',
+  invalid:'数据无效，不能人工保留'
+},M.waitReasonNames);
+const pauseNames={record_start_baseline:'录制开始时建立基准',hand_lost:'丢手暂停（至少一侧）',hand_near_frame_edge:'手接近画面边缘',tracking_recovery:'等待可信追踪恢复',task_done:'任务结束',operation_pending:'等待操作确认',manual_pause:'手动暂停'};
+const fmt=(value,digits=3)=>typeof value==='number'&&Number.isFinite(value)?value.toFixed(digits):'—';
+const pct=value=>value===null||value===undefined?'无记录':`${(value*100).toFixed(1)}%`;
+const labelReasons=list=>(Array.isArray(list)?list:[]).map(reason=>reasonNames[reason]||`其他记录：${reason}`).join('；');
+function say(text,bad=false){$('message').textContent=text;$('message').className=bad?'bad':'good';}
+function node(tag,text,className){const el=document.createElement(tag);if(text!==undefined)el.textContent=text;if(className)el.className=className;return el;}
+async function api(path,options){const response=await fetch(path,options);const body=await response.json();if(!response.ok)throw Error(body.error||response.statusText);return body;}
+function episode(){return manifest?.episodes[selected];}
+function intentPolicy(){return manifest?.selection_policy==='papera-intent-aware';}
+function editingControls(){for(const id of editing)$(id).disabled=!!manifest?.read_only||saving||loading;}
+function frameCount(ep){const m=ep?.metrics||{};return m.raw_frames??m.frame_count??m.frames??ep?.frame_count??ep?.frames??rows.length;}
+function fps(){return Number(episode()?.fps||episode()?.metrics?.fps||manifest?.frame_review?.nominal_fps||30);}
+function renderEligibility(ep){
+  const eligibility=M.trainingEligibility(ep);
+  $('qualityExclusion').classList.toggle('hidden',!eligibility.excluded);
+  $('qualityExclusion').textContent=eligibility.label;
+  for(const option of $('quality').options)if(option.value==='A'||option.value==='B')option.disabled=eligibility.excluded;
+}
+function renderEpisodeSummary(){const ep=episode();if(!ep)return;$('summary').textContent=`${frameCount(ep)} 个原始帧 · ${fmt(frameCount(ep)/fps(),2)} 秒视频 · 控制器：${ep.controller_version||ep.config_version||ep.version||ep.metrics?.controller_version||'未记录'} · 人工等级：${qualities[ep.review?.quality||'pending']}`;}
+function renderList(){const list=$('episodes');list.replaceChildren();let pending=0;manifest.episodes.forEach((ep,n)=>{const grade=ep.review?.quality||'pending';if(grade==='pending')pending++;if($('filter').value!=='all'&&grade!==$('filter').value)return;const b=node('button',`${n+1}. [${qualities[grade]}] ${ep.session} / ${ep.episode_index}${M.trainingEligibility(ep).excluded?' · 已排除训练候选':''}`,'episode'+(n===selected?' active':''));b.onclick=()=>choose(n);list.append(b);});$('count').textContent=`共 ${manifest.episodes.length} 条 · 待审核 ${pending} 条`;}
+function stop(){playing=false;videos.forEach(v=>v.el.pause());$('play').textContent=preview?'播放裁剪预览':'同步播放';}
+function playCount(){return preview ? preview.kept_frames : frameCount(episode());}
+function playPosition(){return preview ? preview.frame_map.indexOf(current) : current;}
+function rawAt(position){return preview ? preview.frame_map[position] : position;}
+function seekPosition(position){
+  if(!episode()||!Number.isFinite(position)||!playCount())return;
+  stop();const n=Math.max(0,Math.min(playCount()-1,Math.round(position)));
+  current=rawAt(n);videos.forEach(v=>v.el.currentTime=v.start+n/fps());updateTime();
+}
+function seek(frame){
+  if(!episode()||!Number.isFinite(frame))return;
+  const raw=Math.max(0,Math.min(frameCount(episode())-1,Math.round(frame)));
+  if(preview&&!preview.frame_map.includes(raw)){showOriginal();$('previewStatus').textContent='该原始帧已被当前方案排除，已切回原片供检查。';}
+  seekPosition(preview?preview.frame_map.indexOf(raw):raw);
+}
+function mountVideos(sources){
+  const generation=++videoGeneration;
+  $('videos').replaceChildren();
+  $('videos').style.gridTemplateColumns=sources.length===1?'minmax(0,1fr)':'';
+  videos=sources.map(source=>{
+    const figure=node('figure'),caption=node('figcaption',{top:'顶视',front:'正面',side:'侧面',oblique:'模型输入 · 斜视'}[source.camera]||source.camera),el=document.createElement('video');
+    el.src=source.url;el.muted=true;el.playsInline=true;el.preload='auto';el.playbackRate=Number($('speed').value);
+    const start=Number(source.start_s||0);
+    el.addEventListener('loadedmetadata',()=>{if(generation===videoGeneration)el.currentTime=start+Math.max(0,playPosition())/fps();},{once:true});
+    el.addEventListener('error',async()=>{
+      if(generation!==videoGeneration)return;
+      let note='视频播放失败，正在检查是文件读取还是浏览器解码问题。';
+      const detail=node('p',note,'small bad');figure.append(detail);
+      try{
+        const response=await fetch(source.url,{headers:{Range:'bytes=0-0'}});
+        if(!response.ok){
+          const body=response.headers.get('Content-Type')?.includes('json')?await response.json():null;
+          note=response.status===403?`文件读取被拒绝（HTTP 403），尚未进入解码。${body?.error||''}`:`视频请求失败（HTTP ${response.status}）：${body?.error||'请检查当前服务和文件状态。'}`;
+          if(response.status===403&&manifest?.service?.elevated===false)note+=' 当前后台服务是普通权限；以管理员打开浏览器不会提升后台服务权限。';
+        }else{await response.body?.cancel();note=`视频读取请求成功，但浏览器未能播放（媒体错误 ${el.error?.code??'未知'}）。请检查视频编码／完整性；不能据此认定是权限错误。`;}
+      }catch(e){note=`无法连接视频服务：${e.message}`;}
+      if(generation===videoGeneration){detail.textContent=note;say(note,true);}
+    });
+    figure.append(caption,el);$('videos').append(figure);return{el,start,end:Number(source.end_s)};
+  });
+}
+function playbackControls(){
+  const empty=loading||playCount()===0;
+  for(const id of ['back','forward'])$(id).disabled=empty;
+  $('jump').disabled=loading||frameCount(episode())===0;
+  $('seek').disabled=empty;$('seek').max=Math.max(0,playCount()-1);
+  $('seek').setAttribute('aria-label',preview?'裁剪后预览帧时间条':'原始完整帧时间条');
+  $('frameInput').max=Math.max(0,frameCount(episode())-1);
+  $('play').disabled=empty||videos.length===0;
+  $('originalView').disabled=!preview&&!previewBusy;
+  $('previewCuts').disabled=loading||previewBusy||!!manifest?.read_only;
+  $('previewCuts').textContent=previewBusy?'正在生成裁剪预览…':'生成／更新裁剪预览';
+  $('viewMode').textContent=preview?'裁剪后预览':'原始视频';
+  if(!playing)$('play').textContent=preview?'播放裁剪预览':'同步播放';
+  $('playbackNote').textContent=preview?'当前仅播放本次方案保留的帧。滑条与前后帧按钮按裁剪后顺序移动；下方彩色条仍标记原始自动候选，点击已排除位置会切回原片。预览拼接不表示 ACT 可以跨断点训练。':'当前播放原始完整视频，灰色帧也能查看。拖动或逐帧定位会暂停播放。自动候选标记不代表你已审核。';
+  document.querySelector('section[aria-label="当前手势与动作状态逐帧对照"]').classList.toggle('hidden',!!preview&&!playCount());
+}
+function showOriginal(){
+  stop();previewGeneration++;previewBusy=false;preview=null;
+  mountVideos(episode().videos||[]);playbackControls();updateTime();
+  $('previewStatus').textContent='已返回原片；填写区间后可重新生成预览，不会保存或批准审核。';
+}
+function invalidatePreview(){
+  previewGeneration++;
+  if(preview||previewBusy)showOriginal();
+  $('previewStatus').textContent='裁剪区间已修改，请重新生成预览；当前修改尚未保存。';
+}
+async function generatePreview(){
+  if(loading||previewBusy||!episode()||manifest.read_only)return;
+  stop();const generation=++previewGeneration,episodeLoad=loadId;
+  try{
+    const payload={episode_key:episode().key,binding:manifest.binding,exclude_intervals:parseIntervals('exclude'),keep_intervals:parseIntervals('keep'),notes:$('notes').value};
+    previewBusy=true;playbackControls();$('previewStatus').textContent='正在按当前区间生成现有视角的裁剪视频，请稍候。生成过程不保存审核。';
+    const result=await api('/api/preview',{method:'POST',headers:{'Content-Type':'application/json','X-Review-Token':token},body:JSON.stringify(payload)});
+    if(generation!==previewGeneration||episodeLoad!==loadId)return;
+    preview=result;current=result.frame_map[0]??0;
+    mountVideos(result.videos);updateTime();
+    if(!result.kept_frames)$('videos').append(node('p','本方案没有保留帧。请修改人工区间，或返回原片。','notice warn'));
+    $('previewStatus').textContent=`原片 ${result.raw_frames} 帧 / ${fmt(result.raw_duration_s,2)} 秒 → 预览 ${result.kept_frames} 帧 / ${fmt(result.duration_s,2)} 秒；排除 ${result.removed_frames} 帧，${result.segments.length} 个连续片段。采用当前填写的区间（含未保存修改），仅供查看。`;
+  }catch(e){if(generation===previewGeneration&&episodeLoad===loadId){if(preview)showOriginal();$('previewStatus').textContent=`未生成预览：${e.message}`;say(e.message,true);}}
+  finally{if(generation===previewGeneration&&episodeLoad===loadId){previewBusy=false;playbackControls();}}
+}
+function summaryLabel(group,prefix){const labels={changed:`有变化 · ${group.changedCount} 项超显示阈值`,tiny:'微小变化 · 阈值以内',unchanged:'数值未变',unavailable:'暂不能完整比较'};return `${prefix}：${labels[group.summary]}${group.validCount<group.fields.length&&group.summary==='changed'?'（部分字段缺失）':''}`;}
+function renderTable(container,group,quantity,side){const table=node('table');table.dataset.quantity=quantity;table.dataset.side=side;table.append(node('caption',quantity==='a'?($('actionSource').value==='next_control'?'下一控制步目标（7 项）':'a · 当前录制目标（7 项）'):'s · 实测状态（8 项）'));const head=node('thead'),headRow=node('tr');['字段','上一原始帧','当前帧','差值 Δ'].forEach(text=>headRow.append(node('th',text)));head.append(headRow);table.append(head);const body=node('tbody');for(const field of group.fields){const tr=node('tr',undefined,field.change);tr.dataset.field=field.key;tr.append(node('td',`${field.label} (${field.unit})`));for(const key of ['previous','current','delta']){const value=field[key];let text=fmt(value);if(key==='delta'&&value!==null){if(Math.abs(value)>0&&Math.abs(value)<0.0005)text=(value>0?'+':'−')+'<0.001';else text=(value>0?'+':'')+fmt(value);}const td=node('td',text,(key==='delta'?'delta ':'')+(value===null?'empty':''));td.dataset.value=key;td.title=value===null?'缺失或跨边界，不能比较':`${value} ${field.unit}${key==='delta'?`; 显示阈值 ${field.threshold} ${field.unit}`:''}`;tr.append(td);}body.append(tr);}table.append(body);$(container).replaceChildren(table);}
+function renderFrame(){const options={...manifest?.frame_review,fps:fps(),actionSource:$('actionSource').value};const data=M.compareFrame(rows,current,options),row=data.current,status=row?.status_summary||row?.status||{};
+  $('sourceExplanation').textContent=data.actionSource==='recorded'?'a = 当前原始帧记录的机器人目标（XYZ、RPY、总爪宽）；s = 当前实测关节角和总爪宽。两表都与原始帧 n−1 比较，不与上次点击的位置比较。':'当前切换为训练用的下一控制步目标：对比每帧各自对应的 next_control_target，不是该画面时刻的 a。缺失时不回退替代；s 仍是当前帧实测状态。';
+  const comparison=data.boundary.comparable?`原始帧 ${current-1} → ${current} · 仿真间隔 ${fmt(data.boundary.deltaSeconds*1000,1)} ms${row?.keep!==data.previous?.keep?' · 自动保留标记变化，仍按真实相邻帧比较':''}`:data.boundary.description;
+  $('comparisonNotice').textContent=comparison+(data.actionIssue?`；a：${data.actionIssue.description}`:'');$('comparisonNotice').className='notice small'+(!data.boundary.comparable||data.actionIssue?' warn':'');
+  for(const side of ['left','right']){
+    const g=data.gestures[side];$(side+'Gesture').textContent=g.label;
+    $(side+'Trust').textContent={trusted:'标签可信',recorded:'按记录类别',untrusted:g.recordedWithoutScores?'类别／时序不可用':'标签未达可信条件',missing:'测量／标签缺失'}[g.trust];
+    $(side+'Trust').className='pill '+g.trust;
+    $(side+'Scores').textContent=g.recordedWithoutScores
+      ?`类别策略：不使用置信度门槛 · 测量年龄 ${g.ageMs===null?'无记录':fmt(g.ageMs,1)+' ms'}`
+      :`手势分数 ${pct(g.score)} · 身份分数 ${pct(g.identityScore)} · 测量年龄 ${g.ageMs===null?'无记录':fmt(g.ageMs,1)+' ms'}`;
+    $(side+'GestureDetail').textContent=g.description+(g.globalHandLost?'。本帧记录了全局丢手暂停，不能仅凭此确定是哪一只手。':'');
+    $(side+'Supervision').textContent=(g.paused&&!g.recordedWithoutScores?'暂停中：历史类别辅助标签被屏蔽。':g.supervision?'本帧保留了可用类别标签；不等于整帧已通过人工质量审核。':'类别辅助标签不可用；机器人 a / s 仍须独立检查。')+(g.recordedWithoutScores?(intentPolicy()?' 裁剪另结合已接受意图与物理证据。':' 历史版本只依据机器人 s / a 裁剪。'):'')+(g.mode?` 已记录控制模式：${g.mode}（可能保留暂停前状态）。`:'');
+    for(const [key,suffix,prefix] of [['action','Action','a'],['state','State','s']]){const group=data[key][side],el=$(side+suffix+'Summary');el.textContent=summaryLabel(group,prefix);el.className='summary-box '+group.summary;renderTable(side+suffix+'Table',group,prefix,side);}
+  }
+  const actionChanged=['left','right'].some(side=>data.action[side].summary==='changed'),stateChanged=['left','right'].some(side=>data.state[side].summary==='changed');
+  const incomplete=['action','state'].some(key=>['left','right'].some(side=>data[key][side].validCount<data[key][side].fields.length));
+  $('interpretation').textContent=!data.boundary.comparable?'当前无法作连续帧差值判断。表中仍展示各帧已有数值，“—”表示不可比，不表示零变化。':incomplete?'部分字段缺失或目标时序不可比，不能判断整帧 a / s 是否不变。已有的有效字段仍可查看，“—”不等于零变化。':!actionChanged&&stateChanged?'a 没有明显变化，但 s 在变化：机器人可能仍在执行先前目标，不能把这帧当作“无动作”直接删除。':actionChanged?'目标正在变化。继续结合 s 和视频判断是否真正运动、是否抓稳；手势可信也不等于动作一定执行成功。':'a / s 没有超过显示阈值的变化。先看这是否是抓持、接触稳定或结束确认，再决定是否属于多余等待；本页不会据此自动删除。';
+  const at=data.actionThresholds,st=data.stateThresholds;$('thresholdNote').textContent=`差值 = 当前 − 上一原始帧。蓝色：超过本次审核的显示阈值；浅黄：有微小数值变化但未超过阈值。目标位置 ${fmt(at.position_m*1000,3)} mm；目标／实际爪宽 ${fmt(at.aperture_m*1000,3)} / ${fmt(st.aperture_m*1000,3)} mm；目标角／实测关节角 ${fmt(at.rotation_rad*180/Math.PI,4)} / ${fmt(st.joint_rad*180/Math.PI,4)}°。只给 RPY 差值处理 ±180° 环绕；关节角直接相减。这些阈值仅帮助阅读，不是完整自动删帧条件。`;
+  $('frameInfo').textContent=row?`帧 ${current} · ${row.keep?'自动候选保留':'自动候选排除'} · ${phaseNames[row.robot_phase]||row.robot_phase||'阶段未标注'} · ${status.paused?'暂停：'+(pauseNames[status.pause_reason]||status.pause_reason||'未记录原因'):'运行中'}${row.reason?.length?' · '+labelReasons(row.reason):''}`:loading?'正在加载原始帧索引…':'此帧暂无索引，不能确认动作或手势';
+  const delta=row?.sa_window?.maximum_changes;
+  $('saWindowInfo').textContent=delta?`${row.sa_window.history_count===1?'与上一原始帧相比':'与前 '+row.sa_window.history_count+' 个原始帧相比的最大'}变化：实测关节 ${fmt(delta.state_joint_rad,5)} rad；实测爪宽 ${fmt(delta.state_aperture_m*1000,3)} mm；目标位置 ${fmt(delta.action_position_m*1000,3)} mm；目标姿态 ${fmt(delta.action_rotation_rad,5)} rad；目标爪宽 ${fmt(delta.action_aperture_m*1000,3)} mm。`:(row?.sa_window?'本帧没有同一连续序列内的历史样本，保留为起始帧。':'');
+  if(row?.sa_stationarity){const st=row.sa_stationarity;$('saWindowInfo').textContent+=st.below_threshold?` 连续低变化 ${st.run_length} 次（原帧 ${st.start_raw_frame}–${st.end_raw_frame}），要求 ${st.minimum_frames} 次；${st.confirmed?'已确认A/S静止候选，仍须通过物理保护及安全拼接':'未达到静止确认要求'}。`:' 当前不构成低变化比较（超阈值或边界不可比）。';}
+  renderPolicy(row);
+  if($('labelDetails').open)$('labels').textContent=row?JSON.stringify({raw_frame_index:row.raw_frame_index,control_epoch:row.control_epoch,original_time_s:row.original_time_s,status:row.status_summary||row.status,auxiliary:row.auxiliary,original_control_labels:row.original_control_labels,source_refs:row.source_refs,action_recorded:row.action_recorded,state_recorded:row.state_recorded,next_control_target:row.next_control_target,frame_role:row.frame_role,policy_reason:row.policy_reason,pre_intent:row.pre_intent,post_intent:row.post_intent,phase_pause_interpretation:row.phase_pause_interpretation,height_protected:row.height_protected,height_evidence:row.height_evidence,height_protection_overridden_by_terminal:row.height_protection_overridden_by_terminal,terminal_completion_raw_frame:row.terminal_completion_raw_frame,terminal_post_release_frames:row.terminal_post_release_frames,terminal_tail_excluded:row.terminal_tail_excluded,execution_grasp_phase:row.execution_grasp_phase,execution_release_phase:row.execution_release_phase,protection_by_side:row.protection_by_side,protection_start_event:row.protection_start_event,protection_end_event:row.protection_end_event,evidence:row.evidence},null,2):'';
+}
+function renderPolicy(row){
+  const p=M.policySummary(row);$('policyEvidence').classList.toggle('hidden',!p);if(!p)return;
+  $('policyEvidence').className='notice small'+(p.invalid?' bad':p.reviewRequired?' warn':'');
+  $('policyRole').textContent=`${p.label} · 自动${p.automaticKeep?'保留':'删除'}${p.reviewRequired?' · 需人工复查':''}`;
+  $('policyIntent').textContent=`已接受控制意图：左 ${p.left}；右 ${p.right}。停滞区间：${p.stagnantRun??'无'}。`;
+  $('policyProtection').textContent=p.height?`${p.height.description} 抓放阶段记录：抓取 ${p.executionGrasp?'是':'否'}／释放 ${p.executionRelease?'是':'否'}${p.height.fallbackPolicy?'（真实执行完整保护）':'（仅诊断，不代表长期保护）'}。${p.heightProtected||p.grasp||p.release?'人工排除保护帧需在审核理由中解释。':''}`:`抓取保护：${p.grasp?'是':'否'} · 释放保护：${p.release?'是':'否'}。${p.grasp||p.release?'人工排除需在审核理由中解释。':''}`;
+  $('policyReason').textContent='自动原因：'+(labelReasons(p.reasons)||p.label);
+  $('policyWait').classList.toggle('hidden',!p.wait);$('policyWait').textContent=p.wait?.description||'';
+  const wait=row.phase_pause_interpretation,cores=wait?.stationary_cores;
+  if(cores?.length){
+    const core=cores.find(c=>row.raw_frame_index>=c.start_raw_frame&&row.raw_frame_index<=c.end_raw_frame);
+    $('policyWait').classList.remove('hidden');
+    $('policyWait').textContent+=core?` 当前稳定区间：原帧 ${core.start_raw_frame}–${core.end_raw_frame}，${fmt(core.duration_s,3)} 秒；压缩门槛 ${fmt(wait.minimum_duration_s,3)} 秒，每段保留 ${wait.retained_frame_budget} 帧，仍需安全拼接通过。`:' 当前帧在稳定区间之外，保留收敛或恢复运动；此前稳定区间独立判断。';
+  }
+  if(row.stitch_restoration)$('policyReason').textContent+='；安全拼接检查补回原始边缘/运动帧，避免连接跳变。';
+  $('policyTerminal').classList.toggle('hidden',!p.terminal);$('policyTerminal').textContent=p.terminal?.description||'';
+  $('policySegments').textContent=`原任务段 ${p.taskSegment??'未记录'} · 裁剪连续片段 ${p.fragment??'不在保留片段'}${p.softGap?' · 此帧属于自动裁剪软缺口':''}。${p.sequence?.description||'此行未包含虚拟训练序列；不能由视频预览推断可跨缺口训练。'}`;
+  const review=episode()?.review,inside=intervals=>(intervals||[]).some(([a,b])=>a<=current&&current<b);
+  $('manualDecision').textContent=inside(review?.exclude_intervals)?`已保存人工覆盖：排除。理由：${review.notes}`:inside(review?.keep_intervals)?'已保存人工覆盖：必要保留；自动原因仍保留在上方。':'尚无此帧的已保存人工覆盖；自动证据不会被审核意见改写。';
+}
+function updateTime(){
+  if(!episode())return;const count=playCount(),position=Math.max(0,playPosition());
+  $('seek').value=position;$('frameInput').value=current;
+  $('time').textContent=preview?(count?`预览帧 ${position} / ${count-1} · ${(position/fps()).toFixed(2)} / ${(count/fps()).toFixed(2)} 秒 · 原始帧 ${current}`:'裁剪后无保留帧'):(count?`原始帧 ${current} / ${count-1} · 视频 ${(current/fps()).toFixed(2)} 秒`:'无可读取原始帧');
+  renderFrame();drawTimeline();
+  $('cutBoundary').classList.toggle('hidden',!preview||!count);
+  if(preview&&count){const i=preview.segments.findIndex(segment=>position>=segment.preview_start&&position<segment.preview_end),segment=preview.segments[i];$('cutBoundary').textContent=`裁剪片段 ${i+1} / ${preview.segments.length} · 原始帧 [${segment.raw_start}, ${segment.raw_end})。${position===segment.preview_start&&position>0?'此处是分段接点。':''}下表仍与原始帧 ${current-1} 比较，不跨裁剪缺口计算差值。`;}
+  if(preview&&!count)$('frameInfo').textContent='本方案没有保留帧，当前没有对应的手势／a／s。';
+}
+function drawTimeline(){const c=$('timeline'),ctx=c.getContext('2d'),count=Math.max(1,frameCount(episode()));if(!timelineBase){timelineBase=document.createElement('canvas');timelineBase.width=c.width;timelineBase.height=c.height;const base=timelineBase.getContext('2d');base.fillStyle='#edf1f6';base.fillRect(0,0,c.width,c.height);for(const r of rows){const x=(r.raw_frame_index??0)/count*c.width,w=Math.max(1,c.width/count),p=M.policySummary(r);base.fillStyle=(p?p.automaticKeep:r.keep)?'#3e77c9':'#c5cdd7';base.fillRect(x,0,w,22);if(p?.heightProtected){base.fillStyle='#246c83';base.fillRect(x,25,w,19);}if(p?.grasp){base.fillStyle='#148477';base.fillRect(x,25,w,9);}if(p?.release){base.fillStyle='#854fa8';base.fillRect(x,35,w,9);}if(p?.reviewRequired||p?.invalid){base.fillStyle=p.invalid?'#cb4555':'#e5a52a';base.fillRect(x,47,w,10);}const status=r.status_summary||r.status||{},reason=String(status.pause_reason||''),aux=Object.values(r.auxiliary||{});if(reason.includes('hand_lost'))base.fillStyle='#cb4555';else if(aux.some(a=>a.reason==='unknown_or_low_score'||['None','Unknown','unknown'].includes(a.category)))base.fillStyle='#d7a22a';else if(aux.some(a=>!a.category_mask))base.fillStyle='#9671b9';else continue;base.fillRect(x,60,w,18);}}ctx.clearRect(0,0,c.width,c.height);ctx.drawImage(timelineBase,0,0);ctx.strokeStyle='#10283f';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(current/count*c.width,0);ctx.lineTo(current/count*c.width,c.height);ctx.stroke();}
+function renderQuality(ep){const m=ep.metrics||{},dm=m.dataset_metrics||m.recorded_metrics||{};$('structure').textContent=ep.structural_pass?'结构检查通过。人工质量尚需逐条确认，成功标签不代表高质量。':'结构检查未通过：不能标为 A / B，请查看下方问题。';$('structure').className=ep.structural_pass?'good':'bad';$('stats').replaceChildren();for(const [label,value] of [['原始帧',frameCount(ep)],['自动保留帧',m.kept_frames],['自动排除帧',m.filtered_frames],['候选连续片段',m.segment_count??ep.segments?.length]]){const box=node('div',undefined,'stat');box.append(node('strong',value??'未记录'),node('span',label));$('stats').append(box);}$('qualitySummary').textContent=`记录结果：${m.outcome==='success'?'成功':m.outcome||'未记录'} · 碰撞计数 ${m.collision_count??dm.collision_count??'未记录'} · 接触丢失计数 ${m.contact_loss_count??dm.contact_loss_count??'未记录'} · 自动排除约 ${fmt(m.filtered_physics_s,2)} 秒仿真时间。以上是排查线索，不会自动设置人工等级。`;
+  const table=node('table'),head=node('thead'),tr=node('tr');['建议排除的原始帧 [起,止)','帧数','视频位置','自动建议原因','查看'].forEach(t=>tr.append(node('th',t)));head.append(tr);table.append(head);const body=node('tbody');for(const cut of ep.cuts||[]){const start=cut.start_raw_frame_index,end=cut.end_raw_frame_index+1,row=node('tr');row.append(node('td',`[${start}, ${end})`),node('td',end-start),node('td',`${fmt(start/fps(),2)}–${fmt(end/fps(),2)} s`),node('td',labelReasons(cut.reasons)));const td=node('td'),button=node('button','查看');button.onclick=()=>seek(start);td.append(button);row.append(td);body.append(row);}table.append(body);$('cutTable').replaceChildren((ep.cuts||[]).length?table:node('p','此条没有自动候选排除区间。','small'));
+  $('structuralIssues').replaceChildren();for(const error of ep.errors||[])$('structuralIssues').append(node('li',`结构问题：${typeof error==='string'?error:JSON.stringify(error)}`,'bad'));for(const warning of ep.warnings||[]){const text=typeof warning==='string'&&warning.startsWith('human_quality_review_pending')?'人工质量仍待审核；结构通过不自动批准训练。':`检查提示：${typeof warning==='string'?warning:JSON.stringify(warning)}`;$('structuralIssues').append(node('li',text));}if(!(ep.errors||[]).length)$('structuralIssues').prepend(node('li','未发现清单中记录的结构错误。'));if($('metricDetails').open)$('metrics').textContent=JSON.stringify({metrics:ep.metrics,cuts:ep.cuts,segments:ep.segments,errors:ep.errors,warnings:ep.warnings},null,2);
+}
+async function choose(n){
+  if(saving){say('审核正在保存，请稍候。');return;}
+  if(dirty&&!confirm('本条有未保存修改，确定切换并放弃这些修改？'))return;
+  stop();previewGeneration++;previewBusy=false;preview=null;const request=++loadId;selected=n;dirty=false;loading=true;
+  const ep=episode(),review=ep.review||{};renderList();
+  $('title').textContent=`${n+1} / ${manifest.episodes.length} · ${ep.session} · episode ${ep.episode_index}`;
+  renderEpisodeSummary();
+  renderQuality(ep);$('quality').value=review.quality||'pending';renderEligibility(ep);
+  $('reviewer').value=review.reviewer||localStorage.getItem('papera-reviewer')||'';
+  $('watched').checked=review.watched_full||false;$('notes').value=review.notes||'';
+  for(const [id,field] of [['exclude','exclude_intervals'],['keep','keep_intervals']])$(id).value=(review[field]||[]).map(p=>p.join(',')).join('\n');
+  mountVideos(ep.videos||[]);
+  rows=[];timelineBase=null;current=0;$('markStart').value=0;say('');
+  $('previewStatus').textContent=manifest.read_only?'历史版本只读：可查看原片、自动证据与已保存审核；不能保存或生成新的预览。':'预览采用自动裁剪建议＋当前人工区间；排除保护段须填写理由，未保存的修改也可先试看。';
+  editingControls();playbackControls();updateTime();
+  try{const result=await api(`/api/index/${n}`);if(request===loadId){rows=result;loading=false;timelineBase=null;editingControls();playbackControls();updateTime();}}
+  catch(e){if(request===loadId){loading=false;editingControls();$('save').disabled=true;$('previewCuts').disabled=true;updateTime();say(e.message,true);}}
+}
+function parseIntervals(id){return $(id).value.split(/\r?\n/).map(s=>s.trim()).filter(Boolean).map(s=>{const p=s.split(/[,，\s]+/);if(p.length!==2||!p.every(v=>/^\d+$/.test(v)))throw Error('区间每行请输入两个整数，例如 0,60');return p.map(Number);});}
+$('play').onclick=async()=>{if(playing){const master=videos[0],time=master?Math.max(0,master.el.currentTime-master.start):current/fps();seekPosition(Math.floor(time*fps()+.01));return;}if(playPosition()>=playCount()-1)seekPosition(0);const request=loadId,mediaRequest=videoGeneration,activeVideos=videos;try{await Promise.all(activeVideos.map(v=>v.el.play()));if(request!==loadId||mediaRequest!==videoGeneration){activeVideos.forEach(v=>v.el.pause());return;}playing=true;$('play').textContent='暂停';}catch(e){if(request===loadId&&mediaRequest===videoGeneration){stop();say(`无法播放：${e.message}`,true);}}};
+$('seek').oninput=()=>seekPosition(Number($('seek').value));$('back').onclick=()=>seekPosition(playPosition()-1);$('forward').onclick=()=>seekPosition(playPosition()+1);$('jump').onclick=()=>seek(Number($('frameInput').value));$('frameInput').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();seek(Number($('frameInput').value));}};
+$('speed').onchange=()=>videos.forEach(v=>v.el.playbackRate=Number($('speed').value));$('timeline').onclick=e=>{if(!loading)seek((e.offsetX/$('timeline').clientWidth)*frameCount(episode()));};$('filter').onchange=renderList;$('actionSource').onchange=renderFrame;
+$('labelDetails').ontoggle=()=>{if($('labelDetails').open&&episode())renderFrame();};$('metricDetails').ontoggle=()=>{if($('metricDetails').open&&episode())renderQuality(episode());};
+$('setStart').onclick=()=>$('markStart').value=current;
+for(const [button,field] of [['addExclude','exclude'],['addKeep','keep']])$(button).onclick=()=>{const start=Number($('markStart').value),end=current+1;if(!Number.isInteger(start)||start<0||start>=end){say('请先选取更早的起点。',true);return;}$(field).value+=($(field).value.trim()?'\n':'')+`${start},${end}`;dirty=true;invalidatePreview();};
+for(const id of ['quality','reviewer','watched','notes','exclude','keep'])$(id).addEventListener('input',()=>dirty=true);
+$('save').onclick=async()=>{if(manifest?.read_only||saving)return;try{saving=true;editingControls();const review={quality:$('quality').value,reviewer:$('reviewer').value,watched_full:$('watched').checked,notes:$('notes').value,exclude_intervals:parseIntervals('exclude'),keep_intervals:parseIntervals('keep')};const response=await api('/api/review',{method:'POST',headers:{'Content-Type':'application/json','X-Review-Token':token},body:JSON.stringify({episode_key:episode().key,binding:manifest.binding,revision:manifest.revision,review})});manifest.revision=response.revision;episode().review=response.review;dirty=false;localStorage.setItem('papera-reviewer',review.reviewer);renderList();renderEpisodeSummary();renderFrame();say('已保存审核；原始数据及自动原因未改动。新 Prepared 的训练适配仍未完成。');}catch(e){say(e.message,true);}finally{saving=false;editingControls();}};
+$('previewCuts').onclick=generatePreview;$('originalView').onclick=showOriginal;
+for(const id of ['exclude','keep'])$(id).addEventListener('input',invalidatePreview);
+$('next').onclick=()=>choose((selected+1)%manifest.episodes.length);
+window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue='';}});
+function tick(){if(playing&&videos.length){const master=videos[0],time=Math.max(0,master.el.currentTime-master.start),count=playCount();if(master.el.ended||time>=count/fps()){stop();seekPosition(count-1);}else{for(const v of videos.slice(1)){if(Math.abs((v.el.currentTime-v.start)-time)>.12)v.el.currentTime=v.start+time;}const position=Math.min(count-1,Math.floor(time*fps()+.01)),next=rawAt(position);if(next!==current){current=next;updateTime();}}}requestAnimationFrame(tick);}requestAnimationFrame(tick);
+api('/api/manifest').then(result=>{manifest=result;const policy=result.frame_review?.selection;if(policy)$('gestureLegend').textContent='未知手势';$('selectionInfo').textContent=intentPolicy()?`版本 ${result.run_id} · 根据 s/a、已接受控制意图与真实抓放证据裁剪；${policy?.minimum_static_frames?`每帧与前 ${policy.window_frames} 帧比较，连续 ${policy.minimum_static_frames} 次低变化才确认静止候选`:`比较前 ${policy?.window_frames??'未记录'} 个原始帧`}。手势分数不直接决定删帧。`:(policy?`历史版本 ${result.run_id} · 原策略只按 s/a 裁剪，窗口 ${policy.window_frames} 帧；保持历史结果。`:`历史／证据版本 ${result.run_id}`);$('accessInfo').textContent=(result.read_only?'只读浏览：不能保存、生成预览或导出新的 Prepared。':'可审核：人工排除低位或历史抓放保护段必须填写理由。')+' 新流程 Prepared 尚未完成训练读取器适配，请勿直接用于训练。';$('accessInfo').className='notice small'+(result.read_only?' warn':'');$('serviceInfo').textContent=result.service?`当前审核服务 PID ${result.service.pid} · ${result.service.elevated===true?'管理员':result.service.elevated===false?'普通权限':'身份未检测'} · ${location.host}（权限取决于此后台服务，而非浏览器）`:'当前为旧后台服务，不能确认运行身份；更新代码后需要关闭旧服务并重新启动。';editingControls();if(!manifest.episodes.length){$('title').textContent='清单没有 episode';return;}renderList();choose(0);}).catch(e=>{$('title').textContent='清单无法读取';say(e.message,true);});
+</script>
+</body></html>

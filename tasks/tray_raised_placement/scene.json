@@ -1,0 +1,238 @@
+{
+  "scene": {
+    "timestep": 0.002,
+    "control_hz": 60,
+    "table_top_z": 0.35,
+    "table_half_size_xy": [
+      0.5,
+      0.55
+    ],
+    "task_frame_position": [
+      0,
+      0,
+      0
+    ],
+    "task_frame_quaternion_wxyz": [
+      1,
+      0,
+      0,
+      0
+    ],
+    "left_base_position": [
+      0,
+      -0.75,
+      0.35
+    ],
+    "right_base_position": [
+      0,
+      0.75,
+      0.35
+    ],
+    "left_base_quaternion_wxyz": [
+      0.70710678,
+      0,
+      0,
+      0.70710678
+    ],
+    "right_base_quaternion_wxyz": [
+      0.70710678,
+      0,
+      0,
+      -0.70710678
+    ],
+    "home_qpos": [
+      0,
+      -0.3,
+      0,
+      -2.0,
+      0,
+      1.7,
+      0.78539816
+    ],
+    "right_home_qpos": [
+      0,
+      -0.3,
+      0,
+      -2.0,
+      0,
+      1.7,
+      -2.35619449
+    ],
+    "left_home_ee": [
+      0,
+      -0.23,
+      0.55
+    ],
+    "right_home_ee": [
+      0,
+      0.23,
+      0.55
+    ],
+    "ee_rotation_matrix": [
+      [
+        0,
+        1,
+        0
+      ],
+      [
+        1,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        -1
+      ]
+    ],
+    "left_workspace": [
+      [
+        -0.22,
+        0.3
+      ],
+      [
+        -0.45,
+        -0.06
+      ],
+      [
+        0.36,
+        0.8
+      ]
+    ],
+    "right_workspace": [
+      [
+        -0.22,
+        0.3
+      ],
+      [
+        0.06,
+        0.45
+      ],
+      [
+        0.36,
+        0.8
+      ]
+    ],
+    "object_half_size": [
+      0.018,
+      0.27,
+      0.022
+    ],
+    "object_mass_kg": 0.35,
+    "gripper_stiffness_npm": 800,
+    "gripper_damping_nspm": 20,
+    "gripper_max_force_n": 80,
+    "gravity_compensation": 1.0,
+    "object_friction": [
+      3,
+      0.1,
+      0.02
+    ],
+    "finger_friction": [
+      4,
+      0.1,
+      0.02
+    ],
+    "object_position": [
+      -0.16,
+      0.0,
+      0.372
+    ],
+    "target_position": [
+      0.15,
+      0.0,
+      0.422
+    ],
+    "grasp_offsets": [
+      [
+        0,
+        -0.22,
+        0
+      ],
+      [
+        0,
+        0.22,
+        0
+      ]
+    ],
+    "randomization": {
+      "object_xy_range_m": [
+        0.01,
+        0.03
+      ],
+      "target_xy_range_m": [
+        0.0,
+        0.0
+      ],
+      "object_yaw_range_rad": 0.08
+    },
+    "cameras": {
+      "top": {
+        "projection": "orthographic",
+        "position": [
+          0.04,
+          0,
+          3.35
+        ],
+        "xyaxes": [
+          0,
+          1,
+          0,
+          -1,
+          0,
+          0
+        ],
+        "fovy": 0.62
+      },
+      "front": {
+        "projection": "orthographic",
+        "position": [
+          0.65,
+          0,
+          0.55
+        ],
+        "target": [
+          0.075,
+          0,
+          0.47
+        ],
+        "fovy": 0.52
+      },
+      "side": {
+        "projection": "orthographic",
+        "position": [
+          0.75,
+          -0.8,
+          0.85
+        ],
+        "target": [
+          0.065,
+          0,
+          0.43
+        ],
+        "fovy": 0.64
+      }
+    },
+    "blockers_follow_initial_pose": true,
+    "target_yaw_rad": 0.12,
+    "paper_object": {
+      "kind": "tray",
+      "visual_style": "matte_v1",
+      "pan_width_m": 0.24,
+      "pan_length_m": 0.32,
+      "handle_width_m": 0.036,
+      "handle_length_m": 0.12,
+      "bottom_thickness_m": 0.008,
+      "wall_thickness_m": 0.014
+    },
+    "placement_platform": {
+      "height_m": 0.05,
+      "extra_size_xy_m": [
+        0.01,
+        0.01
+      ],
+      "containment_tolerance_m": 0.001
+    },
+    "scenario": "S3"
+  }
+}

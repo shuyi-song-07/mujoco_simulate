@@ -1,0 +1,143 @@
+{
+  "version": "papera-intent-aware",
+  "_help": {
+    "version": "唯一日常裁剪策略标识，固定值，不自行修改。",
+    "scope": "参数只影响新派生版本，不改原件或控制器。30Hz/60Hz及因果动作是固定契约；原控制判据来自每条示范冻结配置，缺失时保留待审。",
+    "documentation": "_help仅为说明，不进入有效参数哈希。调整数值须重新生成新版本。"
+  },
+  "sa": {
+    "window_frames": 1,
+    "minimum_static_frames": 3,
+    "thresholds": {
+      "state_joint_rad": 0.002,
+      "state_aperture_m": 0.0005,
+      "action_position_m": 0.0005,
+      "action_rotation_rad": 0.002,
+      "action_aperture_m": 0.0005,
+      "_help": {
+        "state_joint_rad": "实际最大单关节变化，弧度(0,π]，默认0.002约0.115度；增大会将更多小运动视为A/S停滞。",
+        "state_aperture_m": "实际总爪宽变化，米(0,0.08]，默认0.5mm；增大忽略更小变化，抓放保护仍优先。",
+        "action_position_m": "每臂目标XYZ欧氏距离变化，米(0,1]，默认0.5mm；增大产生更多停滞候选。",
+        "action_rotation_rad": "目标RPY按±π环绕后范数，弧度(0,π]，默认0.002；增大忽略更小目标旋转。",
+        "action_aperture_m": "目标总爪宽变化，米(0,0.08]，默认0.5mm；增大产生更多候选，真实执行优先。"
+      }
+    },
+    "_help": {
+      "window_frames": "相比较的历史原始帧数量，整数1–3000。当前固定使用1，即只比较上一原始帧，不累计前三帧变化；旧配置3仅用于历史复现。不要为增加静止确认长度修改此项，应改minimum_static_frames。",
+      "minimum_static_frames": "连续低变化比较次数，整数1–3000，默认3：连续3次当前帧对上一帧的五组A/S变化均严格小于阈值，回溯确认整段为静止候选（涉及4个观测帧）。一次超阈值、无效帧或源边界结束该段；不足3次保留。增大更保守，减小接纳更短候选。物理保护、最短等待时长和安全拼接仍独立核验；不等于最终保留3帧。",
+      "thresholds": "任一组达到阈值即为A/S变化；仅构造证据，最终仍检查意图及真实物理事件。"
+    }
+  },
+  "intent": {
+    "stable_frames": 3,
+    "min_distinct_inputs": 2,
+    "recenter_search_frames": 60,
+    "_help": {
+      "stable_frames": "稳定模式上下文的连续原帧数量，整数1–60，默认3。增大会使更多短段变为不确定保留，不能因此删除。",
+      "min_distinct_inputs": "每个参与意图比较的单侧上下文至少不同已接受event及measurement ID数量，整数1–stable_frames，默认2；至少一只相同的手前后均可靠才可比较，不允许左手代替右手。另一侧仍核验真实目标、授权、暂停和物理变化。输入时效来自episode冻结配置，不新增分类分数门槛。",
+      "recenter_search_frames": "静止等待前后每侧最多搜索的原始帧数，整数stable_frames–300，默认60约2秒；左右上下文可异步。增大可找到更远上下文，但不放宽时效或跨epoch；上下文之间全体控制仍须检查。第三模式、反复切换、执行事件和安全异常保留，Unknown/HOLD不等于真实丢手或无动作。"
+    }
+  },
+  "context": {
+    "before_frames": 6,
+    "after_frames": 6,
+    "_help": {
+      "before_frames": "真实事件/保护起点前额外观察帧，整数0–300，默认6约0.2秒；不把整个此前下降标为物理抓取。",
+      "after_frames": "任务中真实事件/保护终点后额外观察帧，整数0–300，默认6。成功释放的最终尾段另由waits.post_release_frames决定，优先于本参数。"
+    }
+  },
+  "waits": {
+    "minimum_prefix_s": 1.0,
+    "minimum_middle_s": 2.0,
+    "minimum_recenter_s": 0.2,
+    "same_intent_frames": 3,
+    "changed_intent_frames": 10,
+    "post_release_frames": 3,
+    "_help": {
+      "minimum_prefix_s": "开头准备等待候选最短仿真时长，秒0–600，默认1；增大保留更多首部。首次机器人活动前用A/S、固定初始位姿累计变化、物理与60Hz实际目标判定，不要求手势稳定；允许准备期丢手/恢复，无接触/抓放且无安全故障才删。活动前保留context.before_frames帧。",
+      "minimum_middle_s": "同意图且无回中迹象的静止核心最短时长，秒0–600，默认2；增大保留更多等待。可解释回中使用minimum_recenter_s，换意图使用minimum_transition_s，执行/安全事件另行保护；累计位移、物理与全部间隔控制核验仍同时生效。",
+      "minimum_recenter_s": "同意图回中/追踪恢复的每个稳定区间最短时长，秒0–600，默认0.2约6帧。逐段固定起点核验，后续恢复移动不会否定之前的稳定区间；达到门槛后保留same_intent_frames帧，仍需Safe Stitch通过。换意图另用minimum_transition_s。",
+      "same_intent_frames": "前后同一只手可靠意图一致时，冗余静止核心保留帧数，整数2–600，默认3约100ms，分配给两端且至少各1帧；适用XY/Z及已稳定持物等所有阶段。减小减少纯等待，增大保留更多。残余收敛、真实执行和6帧事件上下文独立保留，不消耗此预算。",
+      "changed_intent_frames": "前后同侧可靠意图改变时，冗余静止核心保留帧数，整数2–600，默认10约333ms；各侧最多一次可解释切换。减小减少换手势等待，增大保留更多。不能截断真实开合、未完成授权、释放确认、基准变化或6帧事件上下文；安全拼接另按现有物理阈值逐缺口核验。",
+      "post_release_frames": "确认真实释放、两爪实际全开且脱离物体、物体放稳、DONE成功之后额外保留原始帧数，整数0–300，默认3约100ms，完成帧本身另保留。增大保留更多尾部；后面的全部尾段排除，优先于低高度保护和普通事件6帧上下文，不要求尾段满1秒。只有DONE标签或张掌/开爪指令不够；完成前的真实过程不截短。",
+      "minimum_transition_s": "前后意图改变的稳定区间最短时长，秒0–600，默认0.2约6帧，保留changed_intent_frames帧；不足保留预算时不删帧，与快速同意图回中分别配置。旧冻结配置没有此项时沿用其minimum_recenter_s，不改旧参数指纹。"
+    },
+    "minimum_transition_s": 0.2
+  },
+  "protection": {
+    "height_threshold_m": 0.39,
+    "settle_seconds": 0.12,
+    "aperture_stability_m": 0.0005,
+    "relative_position_stability_m": 0.0005,
+    "relative_rotation_stability_rad": 0.002,
+    "open_width_tolerance_m": 0.001,
+    "_help": {
+      "height_threshold_m": "关键物理或执行证据缺失时的双侧低位兜底阈值，米[0.001,3]，默认0.390即390mm；仅左右实测末端site世界Z都严格低于阈值才标记低位保护。物理证据完整时低位纯等待仍可压缩；高度或稳定证据缺失始终保留待审。真实开合从执行至物理稳定完整保护，不受高度限制；成功终态及后3帧规则优先。调大/调小只改变低位兜底标记范围，不改变物理删留容差。",
+      "settle_seconds": "离线核验实际爪宽/相对位姿持续稳定最短时间，秒(0,10]，默认0.12；增大延长保护，不能替代冻结控制器抓稳判据。",
+      "aperture_stability_m": "稳定窗口内实际总爪宽最大变化，米(0,0.08]，默认0.5mm；减小更严格，目标不变不能替代实际稳定。",
+      "relative_position_stability_m": "稳定窗口末端相对物体位置最大变化，米(0,1]，默认0.5mm；减小更严格，搬运看相对关系而非世界位置静止。",
+      "relative_rotation_stability_rad": "稳定窗口末端相对物体旋转最大变化，弧度(0,π]，默认0.002；减小更严格，缺失证据不能当零。",
+      "open_width_tolerance_m": "实际爪宽距episode冻结最大开度的容差，米(0,0.02]，默认1mm；增大较早判已打开，但仍须接触解除、物体稳定、DONE。"
+    }
+  },
+  "quality": {
+    "excluded_episodes": [],
+    "_help": {
+      "excluded_episodes": "用户明确排除的示范清单，每项episode_key和非空reason；只排除训练候选/Prepared，不删除原始文件或自动裁剪证据。修改后生成新结果；不得按高度自动认定其他示范成功或失败。空列表表示无显式排除。"
+    }
+  },
+  "physical_motion": {
+    "position_m": 0.0005,
+    "rotation_rad": 0.001,
+    "joint_rad": 0.001,
+    "aperture_m": 0.0001,
+    "linear_speed_mps": 0.005,
+    "angular_speed_radps": 0.02,
+    "joint_speed_radps": 0.03,
+    "_help": {
+      "position_m": "实际末端/物体的位置变化及候选稳定区间累计位置容差，米(0,1]，默认0.0005即0.5mm（原为0.1mm）。容忍更小的持物漂移；不关闭累计位移、实际速度、关节变化、接触事件或Safe Stitch检查，不允许任意慢移压缩为跳跃。",
+      "rotation_rad": "实际末端/物体旋转阈值，弧度(0,π]，默认0.001；减小更敏感。",
+      "joint_rad": "实际单关节变化阈值，弧度(0,π]，默认0.001；与A/S历史窗口阈值独立。",
+      "aperture_m": "实际总爪宽变化阈值，米(0,0.08]，默认0.1mm；减小更容易识别缓慢开合。",
+      "linear_speed_mps": "实际末端/物体线速度阈值，米每秒(0,10]，默认0.005；大于阈值不算静止。",
+      "angular_speed_radps": "物体角速度阈值，弧度每秒(0,100]，默认0.02；减小保留更久落稳。",
+      "joint_speed_radps": "关节速度阈值，弧度每秒(0,100]，默认0.03；减小更敏感，缺失不能当零。"
+    }
+  },
+  "alignment": {
+    "time_fallback": {
+      "enabled": false,
+      "max_control_periods": 1,
+      "_help": {
+        "enabled": "仅ID/tick缺失时允许时间降级匹配，布尔值，默认false；开启也必须记录误差/低可靠性且不可跨epoch。",
+        "max_control_periods": "降级匹配最大误差，当前固定1个60Hz周期约16.7ms，不能放宽掩盖对齐错误。"
+      }
+    },
+    "_help": {
+      "time_fallback": "优先明确event/measurement ID及控制tick；时间匹配只能显式开启。"
+    }
+  },
+  "auxiliary": {
+    "maximum_age_ms": 150.0,
+    "minimum_identity_score": 0.8,
+    "image_margin": 0.06,
+    "category_minimum_scores": {
+      "ILoveYou": 0.75,
+      "Open_Palm": 0.55,
+      "Closed_Fist": 0.8,
+      "_help": {
+        "ILoveYou": "骨架任务适用性诊断门槛，0–1；增大减少适用骨架，类别与删帧不使用此门槛。",
+        "Open_Palm": "骨架任务适用性诊断门槛，0–1；增大减少适用骨架，类别与删帧不使用此门槛。",
+        "Closed_Fist": "骨架任务适用性诊断门槛，0–1；增大减少适用骨架，类别与删帧不使用此门槛。"
+      }
+    },
+    "unknown_task_geometry": false,
+    "_help": {
+      "maximum_age_ms": "辅助标签测量最大年龄，毫秒1–1000，默认150；仅影响标签，不用于删帧或覆盖控制意图时效。",
+      "minimum_identity_score": "骨架标签身份门槛0–1，默认0.8；增大减少有效骨架，类别不按此分数过滤。",
+      "image_margin": "骨架图像边缘比例0–0.49，默认0.06；增大减小可用区域，仅影响骨架。",
+      "category_minimum_scores": "骨架任务适用性原诊断评分，每项0–1；类别监督不按分数过滤，也不用于删帧。",
+      "unknown_task_geometry": "是否允许Unknown任务骨架标签，布尔值默认false；开启不能伪造已知手势类别。"
+    }
+  }
+}

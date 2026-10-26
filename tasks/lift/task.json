@@ -1,0 +1,21 @@
+{
+  "task_id": "lift",
+  "display_name": "独立双臂抬升任务",
+  "status": "development",
+  "version": "0.0.0",
+  "scene_id": null,
+  "scene_config": null,
+  "model_xml": null,
+  "mesh_directory": null,
+  "controller": "dual_panda_v1",
+  "schema": {
+    "state": "dual_panda_q7_width_m_s16",
+    "action": "dual_xyz_rpy_width_m_a14",
+    "observation": "oblique_rgb",
+    "state_dim": 16,
+    "action_dim": 14
+  },
+  "hooks": {},
+  "source_files": [],
+  "reason": "尚未定义独立场景及物理成功判据，不能采集或评估。"
+}

@@ -1,0 +1,8 @@
+{
+  "collection_python": "D:/Conda/envs/mujoco_repro/python.exe",
+  "training_python": "D:/Conda/envs/paperA_train/python.exe",
+  "web_port": 8014,
+  "backend_port": 5014,
+  "review_port": 8026,
+  "node_executable": "D:/Tools/nodejs/node.exe"
+}

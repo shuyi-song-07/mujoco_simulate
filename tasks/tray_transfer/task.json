@@ -1,0 +1,35 @@
+{
+  "task_id": "tray_transfer",
+  "display_name": "托盘双臂搬运",
+  "status": "ready",
+  "version": "1.0.0",
+  "scene_id": "S1",
+  "scene_config": "tasks/tray_transfer/scene.json",
+  "model_xml": "simulation/mujoco/assets/dual_arm/dual_arm_scene.xml",
+  "mesh_directory": "simulation/mujoco/assets/franka_emika_panda/assets",
+  "controller": "dual_panda_v1",
+  "schema": {
+    "state": "dual_panda_q7_width_m_s16",
+    "action": "dual_xyz_rpy_width_m_a14",
+    "observation": "oblique_rgb",
+    "state_dim": 16,
+    "action_dim": 14
+  },
+  "hooks": {
+    "configure_xml": "tasks.tray_transfer.scene:configure_xml",
+    "reset": "tasks.tray_transfer.scene:reset",
+    "collection_success": "tasks.tray_transfer.scene:collection_success",
+    "rollout_monitor": "tasks.tray_transfer.scene:rollout_monitor",
+    "dataset_adapter": "tasks.tray_transfer.scene:dataset_adapter",
+    "initial_state": "tasks.tray_transfer.scene:initial_state",
+    "preflight": "tasks.tray_transfer.scene:preflight"
+  },
+  "source_files": [
+    "tasks/tray_transfer/scene.py",
+    "tasks/adapters/tray.py",
+    "simulation/mujoco/dual_arm/task_scenes.py"
+  ],
+  "initialization": "scene.json: scene.randomization; seed drives existing controller reset",
+  "cameras": "current views top/front/oblique; policy input oblique only",
+  "evaluation_config": "config/evaluation_baseline.json"
+}
