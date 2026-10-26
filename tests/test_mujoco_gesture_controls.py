@@ -12,6 +12,7 @@ from simulation.mujoco.record_mujoco_panda import (
     DEFAULT_MODEL_PATH,
     INITIAL_ARM_QPOS,
     MujocoPandaRecorder,
+    PhysicsStepScheduler,
     parse_args,
 )
 
@@ -225,7 +226,12 @@ class GestureControlTest(unittest.TestCase):
             mujoco.mj_forward(state.model, state.data)
             cube_joint = int(state.model.body_jntadr[state.cube_id])
             cube_address = int(state.model.jnt_qposadr[cube_joint])
-            xy = state.data.xpos[state.hand_id][:2].copy() if centered else original_xy
+            # Keep this deliberately one-sided at both 1 ms and 2 ms physics
+            # timesteps; exact XY symmetry can settle onto both fingertips.
+            xy = (
+                state.data.xpos[state.hand_id][:2] + np.array([0.004, 0.0])
+                if centered else original_xy
+            )
             state.data.qpos[cube_address:cube_address + 3] = [
                 *xy, state.args.table_top_z + half_size + 0.002,
             ]
@@ -240,15 +246,18 @@ class GestureControlTest(unittest.TestCase):
 
         def step(state, index):
             mujoco.mj_step(state.model, state.data)
-            if index % 17 == 16:
+            lock_interval = max(1, round(0.017 / state.model.opt.timestep))
+            if index % lock_interval == lock_interval - 1:
                 state.hard_lock_gripper_yaw()
                 state.enforce_layout_support()
 
         off_center = arrange(centered=False)
         widths = []
-        for index in range(4000):
+        sample_interval = max(1, round(0.010 / off_center.model.opt.timestep))
+        for index in range(round(4.0 / off_center.model.opt.timestep)):
             step(off_center, index)
-            if index >= 3000 and index % 10 == 0:
+            elapsed = index * off_center.model.opt.timestep
+            if elapsed >= 3.0 and index % sample_interval == 0:
                 widths.append(sum(off_center.data.qpos[off_center.finger_qpos_addresses]))
         self.assertLess(max(widths) - min(widths), 0.001)
         self.assertFalse(off_center.is_holding_cube())
@@ -257,7 +266,7 @@ class GestureControlTest(unittest.TestCase):
         initial_cube_z = float(centered.data.xpos[centered.cube_id][2])
         minimum_bottom = float("inf")
         hold_cube_z = []
-        for index in range(5000):
+        for index in range(round(5.0 / centered.model.opt.timestep)):
             elapsed = index * centered.model.opt.timestep
             if 1.0 <= elapsed < 2.5:
                 centered.data.ctrl[:7] = start_arm + (lifted_arm - start_arm) * ((elapsed - 1.0) / 1.5)
@@ -286,7 +295,7 @@ class GestureControlTest(unittest.TestCase):
 
         # A wide aperture is likewise insufficient without both contacts.
         wide = arrange(centered=True, half_size=0.034, yaw=cube_yaw - np.pi / 6)
-        for index in range(4000):
+        for index in range(round(4.0 / wide.model.opt.timestep)):
             elapsed = index * wide.model.opt.timestep
             if 1.0 <= elapsed < 2.5:
                 wide.data.ctrl[:7] = start_arm + (lifted_arm - start_arm) * ((elapsed - 1.0) / 1.5)
@@ -308,6 +317,13 @@ class GestureControlTest(unittest.TestCase):
         self.assertFalse(wide.is_holding_cube())
         wide.gripper_closed = False
         self.assertFalse(wide.is_holding_cube())
+
+    def test_physics_step_scheduler_preserves_500_hz(self):
+        scheduler = PhysicsStepScheduler(0.002)
+        per_tick = [scheduler.steps_for(1.0 / 60.0) for _ in range(60)]
+        self.assertEqual(sum(per_tick), 500)
+        self.assertEqual(set(per_tick), {8, 9})
+        self.assertAlmostEqual(scheduler.remainder, 0.0, places=12)
 
     def test_pointing_orientation_stays_fixed_during_diagonal_motion(self):
         state = controller()

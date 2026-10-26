@@ -62,6 +62,25 @@ GRASP_HEIGHT_MARGIN = 0.001
 GRIPPER_CUBE_VIEW_DWELL_S = 0.05
 
 
+class PhysicsStepScheduler:
+    """Distribute integer MuJoCo steps across a fixed-rate outer loop."""
+
+    def __init__(self, timestep: float) -> None:
+        self.timestep = float(timestep)
+        if not np.isfinite(self.timestep) or self.timestep <= 0:
+            raise ValueError("MuJoCo timestep must be a positive finite number")
+        self.remainder = 0.0
+
+    def steps_for(self, interval: float) -> int:
+        interval = float(interval)
+        if not np.isfinite(interval) or interval <= 0:
+            raise ValueError("Physics interval must be a positive finite number")
+        budget = interval + self.remainder
+        steps = int(budget / self.timestep + 1e-9)
+        self.remainder = max(0.0, budget - steps * self.timestep)
+        return steps
+
+
 def gripper_centered_over_cube(
     hand_pos: np.ndarray,
     cube_pos: np.ndarray,
@@ -892,7 +911,7 @@ class MujocoPandaRecorder:
             joint_id = self._joint_id(name)
             trial.qpos[self.model.jnt_qposadr[joint_id]] = 0.05
         mujoco.mj_forward(self.model, trial)
-        for _ in range(150):
+        for _ in range(round(0.15 / self.model.opt.timestep)):
             mujoco.mj_step(self.model, trial)
             for contact in trial.contact:
                 if table_geom == contact.geom1:
@@ -2093,8 +2112,8 @@ class MujocoPandaRecorder:
         self.episode_frames += 1
 
     def run_headless_test(self) -> None:
-        steps_per_frame = max(1, round(1.0 / self.args.fps / self.model.opt.timestep))
         for _ in range(self.args.test_episodes):
+            physics_steps = PhysicsStepScheduler(self.model.opt.timestep)
             self.start_episode()
             for frame_index in range(self.args.test_frames):
                 if self.args.test_motion:
@@ -2107,7 +2126,7 @@ class MujocoPandaRecorder:
                         (0.0, -0.002, 0.0),
                     )
                     self.move_hand(*test_deltas[phase])
-                for _ in range(steps_per_frame):
+                for _ in range(physics_steps.steps_for(1.0 / self.args.fps)):
                     mujoco.mj_step(self.model, self.data)
                 self.update_target_state()
                 self.update_transport_state()
@@ -2134,10 +2153,14 @@ class MujocoPandaRecorder:
         print("方向键/I/K/J/L 仍可作为备用控制")
         print(f"数据集目录：{self.args.dataset_root}")
         print(f"失败数据集：{self.args.failure_dataset_root}")
+        print(
+            f"物理步长：{self.model.opt.timestep:.6f} s "
+            f"({1.0 / self.model.opt.timestep:.1f} Hz)"
+        )
         print("===========================================\n")
 
         ui_hz = 60
-        substeps = max(1, round(1.0 / ui_hz / self.model.opt.timestep))
+        physics_steps = PhysicsStepScheduler(self.model.opt.timestep)
         record_interval = 1.0 / self.args.fps
         next_record_time = time.perf_counter()
         # Alternate three auxiliary cameras without blocking a simulation tick
@@ -2156,7 +2179,7 @@ class MujocoPandaRecorder:
                 self.process_queued_commands()
                 self.maintain_locked_plane()
                 self.maintain_gripper_orientation()
-                for _ in range(substeps):
+                for _ in range(physics_steps.steps_for(1.0 / ui_hz)):
                     mujoco.mj_step(self.model, self.data)
                 self.hold_pointing_arm()
                 self.hard_lock_gripper_yaw()

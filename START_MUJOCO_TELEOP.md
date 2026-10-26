@@ -10,6 +10,7 @@ MUJOCO_GL=egl /home/dex/miniconda3/envs/mujoco/bin/python simulation/mujoco/reco
 ```
 
 等待终端显示 `[手势控制] 已监听 http://127.0.0.1:5001/control`。这会打开 MuJoCo 操作窗口，并启动采集服务。
+当前单臂 Pick-and-place 和 Push-T 场景的 MuJoCo 物理步长均为 `0.002 s`（`500 Hz`）；启动时终端会打印实际加载的步长和频率。新采集 episode 的 `episode_videos/initial_positions.jsonl` 也会记录该物理配置，便于与旧数据区分。
 
 Pick-and-place 随机生成桌面散放、红块在上层、红块在下层三种布局。默认堆叠概率 40%，堆叠时随机选择上下层，碰撞筛选可能改变最终比例。红块在下层时，上层刚体边长随机为 2.8–3.2 cm（下层红块为 6.4–6.8 cm），并检查掌部和手指空间。红块在下层时，上下方块朝向一致，整组朝向随机。红块、其他物体、圆盘的位置和物体朝向会随机变化。
 

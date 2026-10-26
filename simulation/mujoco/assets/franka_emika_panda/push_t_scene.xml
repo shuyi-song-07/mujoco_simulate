@@ -1,7 +1,7 @@
 <mujoco model="panda Push-T scene">
   <include file="panda.xml"/>
 
-  <option timestep="0.001"
+  <option timestep="0.002"
           integrator="implicitfast"
           iterations="50"
           noslip_iterations="5"/>

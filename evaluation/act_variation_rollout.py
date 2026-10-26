@@ -395,7 +395,7 @@ def main() -> None:
     parser.add_argument("--max-xyz-step-m", type=float, default=DEFAULT_MAX_XYZ_STEP_M)
     parser.add_argument("--max-joint-step-rad", type=float, default=DEFAULT_MAX_JOINT_STEP_RAD)
     parser.add_argument("--max-yaw-step-rad", type=float, default=DEFAULT_MAX_YAW_STEP_RAD)
-    parser.add_argument("--device", choices=("cuda", "cpu", "mps"), default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--device", choices=("cuda", "cpu", "mps"), default="cuda")
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument(
         "--screenshot-dir", type=Path,
@@ -405,6 +405,8 @@ def main() -> None:
     parser.add_argument("--viewer", action="store_true", help="Show the live MuJoCo window during rollout")
     parser.add_argument("--realtime", action="store_true", help="Pace the viewer at 30 FPS wall time")
     args = parser.parse_args()
+    if args.device == "cuda" and not torch.cuda.is_available():
+        parser.error("CUDA was requested but is unavailable")
     if args.episodes < 1 or not math.isfinite(args.max_seconds) or args.max_seconds <= 0:
         parser.error("Episodes and maximum task time must be positive")
     if not math.isfinite(args.success_dwell_seconds) or args.success_dwell_seconds < 0 or args.video_every < 0:
