@@ -13,6 +13,8 @@ Task(task_id + task_version + task_binding)
 
 内部既有 `run_id`、`session`、`episode_index` 不为命名整齐而重复改写：上图给出统一含义。Episode key 是数据会话目录和 episode_index 的稳定组合；读取 manifest，不用创建时间推断来源。
 
+导航文件 `CURATION_CURRENT.json`、`PREPARED_CURRENT.json`、`TRAINING_PACK_CURRENT.json` 共用 `dataset.manage_dataset.write_navigation`：标准 JSON 序列化，UTF-8 无 BOM，中文采用 JSON Unicode 转义以兼容 Windows PowerShell 5.1 的默认读取；绝对路径使用 `/`，不手工拼接或替换 JSON 转义。写入同目录临时文件后原子替换，避免读取到半截 JSON。字段继续为 Curation 的 `selected_version/recent_versions`、Prepared 的 `path/curation`、Pack 的 `path/prepared`；候选与未完成 Pack 不更新 CURRENT。PowerShell 示例显式使用 `Get-Content -LiteralPath ... -Raw -Encoding UTF8 | ConvertFrom-Json`。导航修复不选择新版本、不改已有产物或其指纹，Unicode 转义只是文件表示，解析后仍得到中文路径。
+
 ## Task Registry
 
 入口 `tasks.registry.get(task_id)` 返回经校验的 Task，`.config()` 合并共享采集配置和任务完整 scene 参数，`.binding()` 冻结身份。`tasks.artifacts` 负责跨 Raw/Audit/Prepared/Pack 的绑定检查。

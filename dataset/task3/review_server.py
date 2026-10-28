@@ -213,13 +213,14 @@ def linked_review_sources(derived_root, original_root, episode):
 
 
 class ReviewStore:
-    def __init__(self, output_dir, *, read_only=None, review_source=None):
+    def __init__(self, output_dir, *, read_only=None, review_source=None, frozen_preview=False):
         self.output = Path(output_dir).resolve()
         self.manifest_path = self.output / "manifest.json"
         self.manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
         if read_only is not None and type(read_only) is not bool:
             raise ValueError("read_only 必须为布尔值或 None")
-        self.read_only = (self.manifest.get("selection_policy") != CURRENT_POLICY
+        self.frozen_preview = bool(frozen_preview)
+        self.read_only = (self.frozen_preview or self.manifest.get("selection_policy") != CURRENT_POLICY
                           or read_only is True)
         self.document = load_reviews(self.output, self.manifest)
         self.source_root = Path(self.manifest["source_root"]).resolve()
@@ -272,7 +273,7 @@ class ReviewStore:
     def manifest_view(self):
         return {"version": self.manifest.get("version"), "run_id": self.manifest.get("run_id"),
                 "selection_policy": self.manifest.get("selection_policy"),
-                "read_only": self.read_only, "training_ready": False,
+                "read_only": self.read_only, "frozen_preview": self.frozen_preview, "training_ready": False,
                 "training_compatibility": "export_prepared_then_verified_safe_stitch_pack",
                 "service": service_identity() | {"read_only": self.read_only, "training_ready": False},
                 "binding": self.document["binding"], "revision": self.document["revision"],
@@ -357,7 +358,7 @@ class ReviewStore:
                     'sequence_validation': sequence_validation}
 
     def preview(self, payload):
-        if self.read_only:
+        if self.read_only and not self.frozen_preview:
             raise ReadOnlyReviewError("历史版本只读：不能生成新的裁剪预览，请用当前流程生成新版本")
         if (payload.get("binding") != self.document["binding"] or
                 review_binding(self.manifest, self.manifest_path) != self.document["binding"]):
@@ -375,9 +376,12 @@ class ReviewStore:
                                   "notes": payload.get("notes", "")}, episode)
         rows = self.index(number)
         validate_frame_overrides(rows, review)
+        if self.frozen_preview and (review['exclude_intervals'] or review['keep_intervals']):
+            raise ValueError('只读裁剪预览不接受人工删留区间')
         plan = preview_plan(rows, review, _frame_count(episode),
                             float(self.manifest.get("config", {}).get("fps", 30)),
-                            config=self.manifest['config'] if self.manifest.get('sequence_contract') else None)
+                            config=self.manifest['config'] if self.manifest.get('sequence_contract') and not self.frozen_preview else None,
+                            frozen=self.frozen_preview)
         sources = self.review_video_sources[number]
         return self.previews.create(plan, sources)
 
@@ -401,11 +405,11 @@ def _byte_range(header, length):
 
 
 def make_review_server(output_dir, host="127.0.0.1", port=8023, *,
-                       read_only=None, review_source=None):
+                       read_only=None, review_source=None, frozen_preview=False):
     """Create a testable server; only IPv4 loopback is allowed."""
     if host not in {"127.0.0.1", "localhost"}:
         raise ValueError("审核服务仅允许本机 127.0.0.1")
-    store = ReviewStore(output_dir, read_only=read_only, review_source=review_source)
+    store = ReviewStore(output_dir, read_only=read_only, review_source=review_source, frozen_preview=frozen_preview)
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
@@ -552,10 +556,10 @@ def make_review_server(output_dir, host="127.0.0.1", port=8023, *,
 
 
 def serve_review(output_dir, host="127.0.0.1", port=8023, *,
-                 read_only=None, review_source=None):
+                 read_only=None, review_source=None, frozen_preview=False, open_browser=False):
     try:
         server = make_review_server(output_dir, host, port, read_only=read_only,
-                                    review_source=review_source)
+                                    review_source=review_source, frozen_preview=frozen_preview)
     except OSError as exc:
         if getattr(exc, "winerror", None) in {10013, 10048} or exc.errno in {98, 48}:
             raise SystemExit(f"审核端口 {port} 已被占用。请先关闭旧审核服务，或用 --port 指定空闲端口；"
@@ -565,6 +569,9 @@ def serve_review(output_dir, host="127.0.0.1", port=8023, *,
     identity = service_identity()
     label = "管理员" if identity["elevated"] else "普通权限"
     print(f"当前服务 PID {identity['pid']} · {label}。网页顶部应显示同一个 PID。", flush=True)
+    if open_browser:
+        import webbrowser
+        webbrowser.open(f'http://127.0.0.1:{server.server_port}/')
     try:
         server.serve_forever()
     except KeyboardInterrupt:

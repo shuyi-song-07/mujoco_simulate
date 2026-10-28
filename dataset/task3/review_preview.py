@@ -15,7 +15,7 @@ import tempfile
 import threading
 
 
-def preview_plan(rows, review, count, fps, *, config=None):
+def preview_plan(rows, review, count, fps, *, config=None, frozen=False):
     from dataset.task3.prepare_paper_dataset import apply_review
     from dataset.task3.review_server import validate_frame_overrides
 
@@ -24,7 +24,9 @@ def preview_plan(rows, review, count, fps, *, config=None):
     if len(rows) != count or any(row.get("raw_frame_index") != n for n, row in enumerate(rows)):
         raise ValueError("原始帧索引缺失、重复或乱序，不能生成对齐预览")
     validate_frame_overrides(rows, review)
-    effective = apply_review(rows, review)
+    if frozen and (config is not None or review.get('exclude_intervals') or review.get('keep_intervals')):
+        raise ValueError('Frozen preview cannot change cuts or re-evaluate Safe Stitch')
+    effective = rows if frozen else apply_review(rows, review)
     sequence = None
     if config is not None:
         from dataset.task3.sequence_stitching import build_sequence_contract

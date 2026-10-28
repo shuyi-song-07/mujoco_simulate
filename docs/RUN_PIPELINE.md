@@ -55,12 +55,24 @@ Raw 保存到 `datasets/<task_id>/<会话目录>`；失败保存到同名 `_fail
 
 ## 2. Audit、自动裁剪和审核
 
+双击 `dataset/PREVIEW-CURATION.cmd` 可进入裁剪预览菜单，先选择任务，再选择：1 打开 CURRENT 明确指定的结果；2 手动选择已有裁剪版本；3 调用现有 process 生成新版本后打开。选项1、2不会重新裁剪、修改 CURRENT 或保存人工审核。浏览器自动打开后，点击“生成／更新裁剪预览”再播放；默认展示原片，原片里的灰色帧仍然可见。只读预览直接使用已保存的 keep/原始帧映射，不按当前参数重新执行 Safe Stitch，临时预览视频不属于 Training Pack。若场景后来改变，仍可查看历史结果，但正式 prepare/pack 的来源一致性校验不放宽。
+
+启动器从 `config/environments.json` 读取 `training_python` 和 `review_port`，默认端口8026；菜单发现占用后会尝试后续20个端口，显示实际地址，不关闭或替换旧服务。终端保持打开，Ctrl+C退出。只有遇到原视频ACL拒绝读取时，才需要关闭自己这次的服务、右键CMD选择管理员运行；管理员不会替换旧服务。所有旧原片、裁剪索引和历史结果保持不变。菜单选项3仍严格核验任务来源；旧数据场景与当前配置不同会明确报错，不会自动混用。
+
+```powershell
+# 固定任务打开菜单，也可指定预览端口
+.\dataset\PREVIEW-CURATION.cmd -Task tray_to_platform -Port 8026
+# 不经过菜单：读取该任务 CURRENT；--run 可显式指定另一个裁剪目录
+& $train dataset/manage_dataset.py --task $task preview
+& $train dataset/manage_dataset.py --task $task preview --run $curation --port 8027
+```
+
 ```powershell
 & $train dataset/manage_dataset.py --task $task locations
 & $train dataset/manage_dataset.py --task $task process --workers 2
 & $train dataset/manage_dataset.py --task $task list
 $dataRoot = "outputs/dataset/$task"
-$curation = (Get-Content "$dataRoot/CURATION_CURRENT.json" -Raw | ConvertFrom-Json).selected_version
+$curation = (Get-Content -LiteralPath "$dataRoot/CURATION_CURRENT.json" -Raw -Encoding UTF8 | ConvertFrom-Json).selected_version
 & $train dataset/manage_dataset.py --task $task review --run $curation
 ```
 
@@ -83,9 +95,9 @@ $audit = '<实际 outputs/dataset/任务/audits/evidence_... 目录>'
 # auto：使用自动建议，不冒充已人工审核
 & $train dataset/manage_dataset.py --task $task prepare --run $curation --review-mode auto
 # 如已逐条人工审核并按规则批准，可改用 --review-mode reviewed；两者分别导出新版本。
-$prepared = (Get-Content "$dataRoot/PREPARED_CURRENT.json" -Raw | ConvertFrom-Json).path
+$prepared = (Get-Content -LiteralPath "$dataRoot/PREPARED_CURRENT.json" -Raw -Encoding UTF8 | ConvertFrom-Json).path
 & $train dataset/manage_dataset.py --task $task pack --prepared $prepared
-$pack = (Get-Content "$dataRoot/TRAINING_PACK_CURRENT.json" -Raw | ConvertFrom-Json).path
+$pack = (Get-Content -LiteralPath "$dataRoot/TRAINING_PACK_CURRENT.json" -Raw -Encoding UTF8 | ConvertFrom-Json).path
 & $train dataset/manage_dataset.py --task $task verify-pack --pack $pack
 ```
 
@@ -189,11 +201,11 @@ $evaluation = '<实际 outputs/rollout/任务/variant/evaluation_id>'
 & $collect tests/pipeline_smoke.py --task tray_transfer --sessions 2
 & $train dataset/manage_dataset.py --task tray_transfer --engineering process
 $engineeringRoot = '.local/checks/pipeline/outputs/dataset/tray_transfer'
-$curation = (Get-Content "$engineeringRoot/CURATION_CURRENT.json" -Raw | ConvertFrom-Json).selected_version
+$curation = (Get-Content -LiteralPath "$engineeringRoot/CURATION_CURRENT.json" -Raw -Encoding UTF8 | ConvertFrom-Json).selected_version
 & $train dataset/manage_dataset.py --task tray_transfer --engineering prepare --run $curation --review-mode auto
-$prepared = (Get-Content "$engineeringRoot/PREPARED_CURRENT.json" -Raw | ConvertFrom-Json).path
+$prepared = (Get-Content -LiteralPath "$engineeringRoot/PREPARED_CURRENT.json" -Raw -Encoding UTF8 | ConvertFrom-Json).path
 & $train dataset/manage_dataset.py --task tray_transfer --engineering pack --prepared $prepared
-$testPack = (Get-Content "$engineeringRoot/TRAINING_PACK_CURRENT.json" -Raw | ConvertFrom-Json).path
+$testPack = (Get-Content -LiteralPath "$engineeringRoot/TRAINING_PACK_CURRENT.json" -Raw -Encoding UTF8 | ConvertFrom-Json).path
 & $train dataset/manage_dataset.py --task tray_transfer --engineering verify-pack --pack $testPack
 $testRun = '.local/checks/training/my_smoke_baseline'
 & $train -m training.papera --task tray_transfer --variant baseline --pack $testPack --smoke-test --output $testRun
@@ -251,6 +263,7 @@ $task = 'tray_to_platform'
 | `-m collection list/start` | Task Manifest、seed、摄像头 | datasets/task、logs/task | collect + Node |
 | `manage_dataset process` | datasets/task 的成功真人会话 | audits、curation、CURRENT | train |
 | `manage_dataset review` | 指定 Curation | reviews.json、临时裁剪预览 | train + 浏览器 |
+| `manage_dataset preview/preview-menu` | CURRENT或指定冻结Curation | 只读自动裁剪预览、临时视频；不改CURRENT | train + 浏览器 |
 | `manage_dataset prepare` | Curation + auto/reviewed | prepared、PREPARED_CURRENT | train |
 | `manage_dataset pack/verify-pack` | Prepared + 固定 split | training_packs、TRAINING_PACK_CURRENT | train |
 | `-m training.papera` | task、variant、明确 Pack | outputs/training/task/variant/run | train/CUDA |
@@ -275,7 +288,8 @@ $task = 'tray_to_platform'
 | `scripts/launch.ps1` | CMD内部调用；日常无需单独双击 | 读取 `config/environments.json`，设置解释器/PATH/UTF-8、移除旧PYTHONPATH，再运行采集菜单 | 不安装环境，不自动关闭其他服务 |
 | `python -m collection list` | 使用 `$collect` 运行 | 只列出注册任务及ready/development状态 | 不打开网页或仿真 |
 | `python -m collection start --task ...` | 使用 `$collect`；可指定种子、操作者和端口 | 跳过交互菜单，启动指定任务的同一套采集服务 | 与CMD相同；`--no-browser`不打开浏览器，`--headless`不显示MuJoCo窗口 |
-| `dataset/manage_dataset.py` | 使用 `$train`，必须有 `--task` 和子命令 | `process/reclip`处理，`review`启动审核网页，`prepare/pack/verify-pack`导出和核验；没有另一个Dataset CMD入口 | `outputs/dataset/<task_id>/`；审核默认8026，不控制机器人 |
+| `dataset/manage_dataset.py` | 使用 `$train`，指定 `--task` 和子命令；`preview-menu`可交互选择任务 | `process/reclip`处理，`review`可写审核，`preview`只读裁剪预览，`prepare/pack/verify-pack`导出和核验 | `outputs/dataset/<task_id>/`；审核默认8026，不控制机器人 |
+| `dataset/PREVIEW-CURATION.cmd` | 双击，选任务与菜单1/2/3；可传 `-Task tray_to_platform -Port 8026` | 调用 `start-preview.ps1` 配置训练环境，再调用同一 `manage_dataset.py preview-menu`；选1/2仅预览，选3才处理数据；不训练 | 浏览器自动打开，只读预览；终端显示版本与实际端口，Ctrl+C退出 |
 | `python -m training.papera` | 使用 `$train`；显式指定task、variant、Pack，或指定resume checkpoint | 启动训练；Baseline/Gesture共用入口，默认20,000步；不会自动打开采集网页 | `outputs/training/<task>/<variant>/<run_id>/`；按第5节恢复 |
 | `python -m rollout` | 使用 `$train`；显式指定task、mode、run/Pack | `check`只检查，`prepare`只固定初态清单，`preview`执行一次，`batch`批量执行，`summarize`汇总 | `outputs/rollout/<task>/<variant>/`；默认headless，视频须等完成后播放 |
 | `python -m training.papera.analyze_checkpoint` | `& $train -m training.papera.analyze_checkpoint --run $run` | 读取checkpoint做离线指标分析，不继续训练 | `<run>/analysis/evaluation/` |
