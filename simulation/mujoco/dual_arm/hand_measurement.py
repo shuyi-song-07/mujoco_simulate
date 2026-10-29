@@ -4,7 +4,7 @@ import numpy as np
 
 GESTURE_PROTOCOL = "gesture-grasp-release-v2"
 RATE_PROTOCOL = "gesture-rate-gripper-v3"
-RATE_PARAMETERS = {"mode_confirm_ms": 200, "open_score_min": .55, "close_score_min": .80, "motion_score_min": .75}
+RATE_PARAMETERS = {"mode_confirm_ms": 200, "open_score_min": .5, "close_score_min": .80, "motion_score_min": .75}
 GESTURE_PARAMETERS = {
     "mode_confirm_ms": 200, "wrist_still_ms": 200, "wrist_motion_threshold": .008,
     "aperture_takeover_tolerance_m": .012, "palm_score_min": .6, "motion_score_min": .75,
@@ -141,13 +141,17 @@ def inspect_rate_input(payload, *, parameters=None):
     if not isinstance(calibration, dict) or calibration.get("palm_binding_guard") is not False:
         return "palm_binding_guard"
     expected = {"XY_HOLD": ("ILoveYou", p["motion_score_min"]),
-                "Z_OPEN": ("Open_Palm", p["open_score_min"]), "Z_CLOSE": ("Closed_Fist", p["close_score_min"])}
+                "Z_OPEN": ("Open_Palm", p["open_score_min"])}
     for side, mode in zip(("left", "right"), modes):
         pair = [h for h in measurement["hands"] if isinstance(h, dict) and h.get("bound_side") == side]
         if len(pair) != 1 or pair[0].get("valid") is not True:
             return "untrusted_hand_measurement"
         if mode != "HOLD":
-            name, threshold = expected[mode]
+            if mode == "Z_CLOSE":
+                name = "Closed_Fist"
+                threshold = p.get("left_close_score_min", p["close_score_min"]) if side == "left" else p["close_score_min"]
+            else:
+                name, threshold = expected[mode]
             score = pair[0].get("gesture_score")
             if (pair[0].get("gesture") != name or type(score) not in (int, float) or
                     not math.isfinite(score) or not threshold <= score <= 1):

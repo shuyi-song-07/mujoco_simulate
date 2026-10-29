@@ -16,8 +16,9 @@ function hold(engine,reason) {
   if(widths.some(width=>!Number.isFinite(width)))return engine.pause("backend_state_unknown");
   return packet(engine,["HOLD","HOLD"],zeros(),widths,reason);
 }
-function category(hand,p) {
-  const threshold={ILoveYou:p.motion_score_min??.75,Closed_Fist:p.close_score_min??.8,Open_Palm:p.open_score_min??.55}[hand.gesture];
+function category(hand,p,side) {
+  const closeThreshold=side==="left"?p.left_close_score_min??p.close_score_min??.8:p.close_score_min??.8;
+  const threshold={ILoveYou:p.motion_score_min??.75,Closed_Fist:closeThreshold,Open_Palm:p.open_score_min??.5}[hand.gesture];
   if(!Number.isFinite(hand.gesture_score)||threshold===undefined||hand.gesture_score<threshold)return "HOLD";
   return {ILoveYou:"XY_HOLD",Closed_Fist:"Z_CLOSE",Open_Palm:"Z_OPEN"}[hand.gesture];
 }
@@ -38,7 +39,7 @@ export function updateRate(engine,detections,now) {
   if(engine.tracker.controlResumeRequired) {
     engine.tracker.controlResumeRequired=false;engine.resetGestureModes();return hold(engine,"tracking_recovered");
   }
-  const p=engine.gestureParameters,candidates=observed.map(hand=>category(hand,p));
+  const p=engine.gestureParameters,candidates=observed.map((hand,index)=>category(hand,p,sides[index]));
   if(engine.tracker.palmBindingGuard) {
     if(!candidates.every(mode=>mode==="XY_HOLD"||mode==="Z_CLOSE"))return hold(engine,"binding_complete");
     engine.tracker.palmBindingGuard=false;engine.resetGestureModes();

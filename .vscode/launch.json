@@ -6,7 +6,7 @@
       "type": "debugpy",
       "request": "launch",
       "module": "collection",
-      "python": "D:/Conda/envs/mujoco_repro/python.exe",
+      "python": "/home/dex/miniconda3/envs/mujoco/bin/python",
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "justMyCode": true,

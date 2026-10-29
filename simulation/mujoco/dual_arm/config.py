@@ -72,6 +72,10 @@ def load_config(source=None) -> dict:
             value = gesture.get(key)
             if type(value) not in (int, float) or not math.isfinite(value) or not 0 < value <= 1:
                 raise ValueError(f"gesture_control.{key} must be a confidence fraction in (0, 1]")
+        if "left_close_score_min" in gesture:
+            value = gesture["left_close_score_min"]
+            if type(value) not in (int, float) or not math.isfinite(value) or not 0 < value <= 1:
+                raise ValueError("gesture_control.left_close_score_min must be a confidence fraction in (0, 1]")
         duration = gesture.get("mode_confirm_ms")
         if type(duration) not in (int, float) or not math.isfinite(duration) or duration < 0 or (not level_gestures and duration == 0):
             raise ValueError("gesture_control.mode_confirm_ms must be finite; zero is allowed only for palm_fist_level_v2")

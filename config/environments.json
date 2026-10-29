@@ -1,8 +1,8 @@
 {
-  "collection_python": "D:/Conda/envs/mujoco_repro/python.exe",
+  "collection_python": "/home/dex/miniconda3/envs/mujoco/bin/python",
   "training_python": "D:/Conda/envs/paperA_train/python.exe",
   "web_port": 8014,
   "backend_port": 5014,
   "review_port": 8026,
-  "node_executable": "D:/Tools/nodejs/node.exe"
+  "node_executable": "/home/dex/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node"
 }

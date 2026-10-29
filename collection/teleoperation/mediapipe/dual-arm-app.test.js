@@ -1437,8 +1437,8 @@ test("v3 manual pause and recovery never ask for finger aperture matching",async
 test("v3 insufficient classification explains the actual per-side threshold and hidden calibration cannot pause it",async(t)=>{
   const h=makeHarness();t.after(()=>h.close());await boundRateCamera(h);
   for(let i=0;i<9;i++)await deliverRecognition(h,gestureResult(["FIST","FIST"]));
-  for(let i=0;i<2;i++)await deliverRecognition(h,gestureResult(["PALM","FIST"],{scores:[.54,.79]}));
-  assert.match(h.element("left-interaction").textContent,/张掌评分 54%.*至少 55%/);
+  for(let i=0;i<2;i++)await deliverRecognition(h,gestureResult(["PALM","FIST"],{scores:[.49,.79]}));
+  assert.match(h.element("left-interaction").textContent,/张掌评分 49%.*至少 50%/);
   assert.match(h.element("right-interaction").textContent,/握拳评分 79%.*至少 80%/);
   const reason=h.app.output.reason;
   h.element("recalibrate-aperture").dispatch("click");
@@ -1805,8 +1805,8 @@ test("a short valid unknown shape sends HOLD input in Z and cannot become a hard
 
 test("edge-trigger cards retain current confidence and transition explanations",async(t)=>{
   const h=makeHarness();t.after(()=>h.close());await boundEdgeCamera(h);
-  await deliverRecognition(h,gestureResult(["PALM","FIST"],{scores:[.54,.79]}));h.app.renderState();
-  assert.match(h.element("left-interaction").textContent,/张掌评分 54%.*至少 55%.*不产生新的开合切换/);
+  await deliverRecognition(h,gestureResult(["PALM","FIST"],{scores:[.49,.79]}));h.app.renderState();
+  assert.match(h.element("left-interaction").textContent,/张掌评分 49%.*至少 50%.*不产生新的开合切换/);
   assert.match(h.element("right-interaction").textContent,/握拳评分 79%.*至少 80%/);
   await deliverRecognition(h,gestureResult(["PALM","FIST"]));h.app.renderState();
   assert.match(h.element("left-interaction").textContent,/新手势确认 200 ms.*本帧保持爪宽/);

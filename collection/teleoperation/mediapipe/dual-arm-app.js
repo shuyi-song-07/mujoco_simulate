@@ -385,6 +385,11 @@ async function pollPreviews() {
 const percent = (value) => `${Math.floor((Number.isFinite(value) ? value : 0) * 1000 + 1e-8) / 10}%`;
 const gripperThreshold = (action) => engine.config[`gripper_${action}_confidence_min`] ?? engine.config.gripper_confidence_min;
 const gripperInstructions = () => `握拳闭合各至少 ${percent(gripperThreshold("close"))}，张掌打开各至少 ${percent(gripperThreshold("open"))}；双手保持约 ${(engine.config.gripper_confirm_ms / 1000).toFixed(1)} 秒。`;
+const rateGestureThreshold = (gesture, parameters, side) => ({
+  ILoveYou: parameters.motion_score_min??.75,
+  Open_Palm: parameters.open_score_min??.5,
+  Closed_Fist: side === "left" ? parameters.left_close_score_min??parameters.close_score_min??.8 : parameters.close_score_min??.8,
+})[gesture];
 function gripperDetail() {
   const failure = runtime.task_state === "FAIL" ? `本轮失败：${failureLabels[runtime.failure_reason] ?? runtime.failure_reason ?? "安全条件不满足"}。` : "";
   if (failure && engine.gripperLatch !== "CLOSED") return `${failure}禁止继续移动或抓取；${runtime.recording ? "请保存失败或放弃本轮，再重置场景。" : "请点击“重置场景”后重试。"}`;
@@ -647,14 +652,14 @@ function rateSideStatus(side) {
   if(!reading.hand)return {name,kind:"tracking",detail:"未检测到此侧手；位置与爪宽保持，完整入镜后等待可信恢复"};
   if(engine.tracker.palmBindingGuard)return {name,kind:"binding",detail:"绑定张掌不会开爪；双手先换 I Love You 或握拳，再开始控制"};
   if(edgeTriggeredGrippers()) {
-    const p=engine.gestureParameters??{},threshold={ILoveYou:p.motion_score_min??.75,Open_Palm:p.open_score_min??.55,Closed_Fist:p.close_score_min??.8}[reading.hand.gesture];
+    const p=engine.gestureParameters??{},threshold=rateGestureThreshold(reading.hand.gesture,p,side);
     if(Number.isFinite(threshold)&&reading.hand.gesture_score<threshold)return {name,kind:"hold",detail:`${gestures[reading.hand.gesture]}评分 ${percent(reading.hand.gesture_score)}，需要至少 ${percent(threshold)}；本帧保持，不产生新的开合切换`};
     if(wire==="HOLD"&&state.candidate&&state.candidate!=="HOLD")return {name,kind:"confirmation",detail:"新手势确认 200 ms；本帧保持爪宽，确认后再由后端判断是否构成掌↔拳切换"};
     if(wire==="HOLD"&&state.candidate==="HOLD")return {name,kind:"hold",detail:resumableGrippers()?"当前手势未分配，本帧保持爪宽；追踪可信时保留未完成开合，恢复原手形可继续":"当前手势未分配，本帧保持爪宽；短暂过渡恢复原手形可继续未过期的开合授权"};
     return rateEdgeStatus(side);
   }
   if(levelTriggeredGrippers()) {
-    const p=engine.gestureParameters??{},threshold={ILoveYou:p.motion_score_min??.75,Open_Palm:p.open_score_min??.55,Closed_Fist:p.close_score_min??.8}[reading.hand.gesture];
+    const p=engine.gestureParameters??{},threshold=rateGestureThreshold(reading.hand.gesture,p,side);
     if(Number.isFinite(threshold)&&reading.hand.gesture_score<threshold)return {name,kind:"hold",detail:`${gestures[reading.hand.gesture]}评分 ${percent(reading.hand.gesture_score)}，需要至少 ${percent(threshold)}；当前位置与爪宽保持`};
     if(wire==="HOLD"&&state.candidate&&state.candidate!=="HOLD")return {name,kind:"confirmation",detail:`${rateModeConfirmation()}；过渡期间保持位置和已下发爪宽，不继续旧开合`};
     if(wire==="XY_HOLD")return {name,kind:"xy",detail:"I Love You 控制 XY；保持当前已下发爪宽"};
@@ -675,7 +680,7 @@ function rateSideStatus(side) {
   }
   if(state.candidate&&state.candidate!=="HOLD")return {name,kind:"confirmation",detail:"新手势确认 200 ms，当前爪宽保持；确认后重建手腕基准"};
   const hand=engine.measurement?.hands?.find(h=>h.bound_side===side),p=engine.gestureParameters??{};
-  const threshold={ILoveYou:p.motion_score_min??.75,Open_Palm:p.open_score_min??.55,Closed_Fist:p.close_score_min??.8}[hand?.gesture];
+  const threshold=rateGestureThreshold(hand?.gesture,p,side);
   if(Number.isFinite(threshold)&&hand.gesture_score<threshold)return {name,kind:"hold",detail:`${gestures[hand.gesture]}评分 ${percent(hand.gesture_score)}，需要至少 ${percent(threshold)}；当前位置与爪宽保持`};
   return {name,kind:"hold",detail:"手势未分配或评分不足，位置与爪宽保持；请用 I Love You、张掌或握拳"};
 }

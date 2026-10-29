@@ -19,18 +19,37 @@ class RateHandGuardTests(unittest.TestCase):
             self.assertEqual(reason, "tracking_recovery" if i < 4 else None)
 
     def test_raw_category_scores_and_intents_checked(self):
-        for mode, threshold in (("Z_OPEN", .55), ("Z_CLOSE", .8), ("XY_HOLD", .75)):
+        parameters = {"open_score_min": .5, "close_score_min": .8, "motion_score_min": .75}
+        for mode, threshold in (("Z_OPEN", .5), ("Z_CLOSE", .8), ("XY_HOLD", .75)):
             p = packet(modes=(mode, mode))
             h = p["telemetry"]["recognition_result"]["measurement"]["hands"][0]
             h["gesture_score"] = threshold
-            self.assertIsNone(inspect_rate_input(p))
+            self.assertIsNone(inspect_rate_input(p, parameters=parameters))
             h["gesture_score"] = threshold-.001
-            self.assertEqual(inspect_rate_input(p), "interaction_gesture_mismatch")
+            self.assertEqual(inspect_rate_input(p, parameters=parameters), "interaction_gesture_mismatch")
             h["gesture_score"] = 1.
             h["gesture"] = "Victory"
-            self.assertEqual(inspect_rate_input(p), "interaction_gesture_mismatch")
+            self.assertEqual(inspect_rate_input(p, parameters=parameters), "interaction_gesture_mismatch")
         p = packet(modes=("Z_CLOSE", "Z_CLOSE")); p["release_intent"] = [True, True]
         self.assertEqual(inspect_rate_input(p), "release_intent_mode_mismatch")
+
+    def test_left_close_threshold_is_independent_from_right(self):
+        parameters = {"left_close_score_min": .5, "close_score_min": .6,
+                      "open_score_min": .5, "motion_score_min": .75}
+        left = packet(modes=("Z_CLOSE", "HOLD"))
+        hands = left["telemetry"]["recognition_result"]["measurement"]["hands"]
+        hands[0]["gesture_score"] = .5
+        self.assertIsNone(inspect_rate_input(left, parameters=parameters))
+        hands[0]["gesture_score"] = .499
+        self.assertEqual(inspect_rate_input(left, parameters=parameters), "interaction_gesture_mismatch")
+        hands[0]["gesture_score"] = .55
+        self.assertEqual(inspect_rate_input(left, parameters={"close_score_min": .6}), "interaction_gesture_mismatch")
+        right = packet(modes=("HOLD", "Z_CLOSE"))
+        hands = right["telemetry"]["recognition_result"]["measurement"]["hands"]
+        hands[1]["gesture_score"] = .55
+        self.assertEqual(inspect_rate_input(right, parameters=parameters), "interaction_gesture_mismatch")
+        hands[1]["gesture_score"] = .6
+        self.assertIsNone(inspect_rate_input(right, parameters=parameters))
 
     def test_wrong_plane_and_hold_motion_rejected(self):
         p = packet(modes=("XY_HOLD", "Z_OPEN"))

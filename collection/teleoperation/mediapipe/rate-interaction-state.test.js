@@ -8,7 +8,7 @@ function setup({bind=true,modeConfirmMs=200}={}) {
   const e=new ContinuousInteractionState({wrist_filter:"ema",ema_alpha:1});let now=-40;
   e.syncHealth({task_state:"PREGRASP",gripper_latch:"CONTINUOUS",grippers:{left:{command_width_m:.08},right:{command_width_m:.08}},
     physical_contact:{control_protocol:protocol,hold_width_m:{left:null,right:null}},
-    action_contract:{control_protocol:protocol,gesture_parameters:{mode_confirm_ms:modeConfirmMs,open_score_min:.55,close_score_min:.8,motion_score_min:.75}}},0);
+    action_contract:{control_protocol:protocol,gesture_parameters:{mode_confirm_ms:modeConfirmMs,open_score_min:.5,close_score_min:.8,motion_score_min:.75}}},0);
   const s={e,tick(shapes=["ILY","ILY"],opts={}) {
     now+=opts.stepMs??40;const m=gestureMeasure(shapes,now,opts),result=gestureResult(shapes,opts);
     if(opts.invalid)m.hands[0].valid=false;
@@ -21,6 +21,20 @@ function setup({bind=true,modeConfirmMs=200}={}) {
   return s;
 }
 const noMotion=out=>sides.forEach(s=>assert.equal(Math.hypot(...out.command.delta_task_m[s]),0));
+test("left fist uses its lower close threshold while the right retains the shared threshold",()=>{
+  const s=setup({modeConfirmMs:0});s.settle(["FIST","FIST"]);
+  s.e.gestureParameters={...s.e.gestureParameters,left_close_score_min:.5,close_score_min:.6};
+  const out=s.settle(["FIST","FIST"],{scores:[.55,.55]});
+  assert.deepEqual(out.command.interaction_modes,["Z_CLOSE","HOLD"]);
+  assert.deepEqual(s.tick(["FIST","FIST"],{scores:[.49,.6]}).command.interaction_modes,["HOLD","Z_CLOSE"]);
+});
+test("open palm at 50 percent qualifies and anything below it holds the gripper",()=>{
+  const s=setup({modeConfirmMs:0});s.settle();
+  const boundary=s.settle(["PALM","PALM"],{scores:[.5,.5]});
+  assert.deepEqual(boundary.command.interaction_modes,["Z_OPEN","Z_OPEN"]);
+  const below=s.tick(["PALM","PALM"],{scores:[.499,.5]});
+  assert.deepEqual(below.command.interaction_modes,["HOLD","Z_OPEN"]);
+});
 test("100 ms current-shape confirmation holds old ramps then requests independent endpoints at the exact boundary",()=>{
   const s=setup({modeConfirmMs:100});s.settle();
   s.e.health.grippers.left.command_width_m=.025;s.e.health.grippers.right.command_width_m=.043;

@@ -96,8 +96,9 @@
   "gesture_control": {
     "gripper_trigger_policy": "palm_fist_level_v2",
     "mode_confirm_ms": 100,
-    "open_score_min": 0.55,
-    "close_score_min": 0.8,
+    "open_score_min": 0.5,
+    "close_score_min": 0.6,
+    "left_close_score_min": 0.5,
     "motion_score_min": 0.75
   }
 }
