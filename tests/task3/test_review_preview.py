@@ -22,17 +22,6 @@ def rows_fixture():
 
 
 class PreviewPlanTests(unittest.TestCase):
-    def test_frozen_plan_never_recomputes_cuts_or_stitching(self):
-        rows=rows_fixture(); before=copy.deepcopy(rows)
-        review={'quality':'pending','exclude_intervals':[],'keep_intervals':[]}
-        with patch('dataset.task3.prepare_paper_dataset.apply_review', side_effect=AssertionError('must not reapply')), \
-             patch('dataset.task3.sequence_stitching.build_sequence_contract', side_effect=AssertionError('must not restitch')):
-            result=preview_plan(rows,review,12,30,frozen=True)
-        self.assertEqual(result['frame_map'],[r['raw_frame_index'] for r in rows if r['keep']])
-        self.assertEqual(rows,before)
-        with self.assertRaises(ValueError):preview_plan(rows,review,12,30,config={},frozen=True)
-        with self.assertRaises(ValueError):preview_plan(rows,{**review,'exclude_intervals':[[4,6]]},12,30,frozen=True)
-
     def test_plan_matches_export_with_draft_overrides_and_keeps_boundaries(self):
         rows = rows_fixture()
         original = copy.deepcopy(rows)
@@ -151,20 +140,6 @@ class PreviewHTTPTests(unittest.TestCase):
         self.assertEqual(plan, cached)
         self.assertEqual(len(self.server.review_store.previews.entries), 1)
         self.assertEqual(self.server.review_store.document["revision"], 0)
-
-    def test_frozen_preview_allows_video_but_rejects_edits(self):
-        from dataset.task3.review_server import ReviewStore
-        store=ReviewStore(self.output,frozen_preview=True)
-        self.assertTrue(store.read_only)
-        self.assertTrue(store.manifest_view()['frozen_preview'])
-        self.server.review_store.frozen_preview=True
-        self.server.review_store.read_only=True
-        payload=self.payload(exclude_intervals=[],keep_intervals=[])
-        status,_,body=self.request('/api/preview',payload)
-        self.assertEqual(status,200,body)
-        self.assertEqual(json.loads(body)['frame_map'],list(range(2,10)))
-        self.assertEqual(self.request('/api/review',payload)[0],403)
-        self.assertEqual(self.request('/api/preview',self.payload())[0],400)
 
     def test_bad_intervals_binding_identity_and_auth_do_not_generate(self):
         for override in ({"exclude_intervals": [[4, 13]]}, {"keep_intervals": [[5, 8]]},

@@ -6,7 +6,6 @@ ROOT=Path(__file__).resolve().parents[1]
 for path in (ROOT,ROOT/'tests/task3',ROOT/'tests/papera'):sys.path.insert(0,str(path))
 MODULES=[
     'tests.test_task_registry',
-    'tests.test_dataset_navigation',
     *['tests.task3.'+n for n in (
         'test_sequence_stitching','test_adjacent_stationarity','test_wait_compression',
         'test_height_protection','test_terminal_tail','test_frame_evidence',

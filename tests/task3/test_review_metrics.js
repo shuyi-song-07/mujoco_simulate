@@ -11,18 +11,17 @@ test('actual review playback controls accept single-view and legacy three-view m
   const fs = require('node:fs'), vm = require('node:vm'), path = require('node:path');
   const html = fs.readFileSync(path.join(__dirname, '../../dataset/task3/review.html'), 'utf8');
   const fn = html.slice(html.indexOf('function playbackControls(){'), html.indexOf('function showOriginal(){'));
-  for (const count of [0, 1, 3]) for (const loading of [false, true]) for (const previewing of [false, true]) for(const mode of [{read_only:false},{read_only:true},{read_only:true,frozen_preview:true}]) {
+  for (const count of [0, 1, 3]) for (const loading of [false, true]) for (const previewing of [false, true]) {
     const nodes = {};
     const $ = id => nodes[id] ??= {setAttribute(){}, classList:{toggle(){}}};
     vm.runInNewContext(`${fn}\nplaybackControls();`, {
       $, document:{querySelector:()=>({classList:{toggle(){}}})},
       videos:Array.from({length:count},()=>({})), loading, playing:false,
-      preview:previewing?{kept_frames:20}:null, previewBusy:false, manifest:mode,
+      preview:previewing?{kept_frames:20}:null, previewBusy:false, manifest:{read_only:false},
       episode:()=>({}), frameCount:()=>20, playCount:()=>20,
     });
     assert.equal(nodes.play.disabled, loading || count===0,
       `videos=${count}, loading=${loading}, preview=${previewing}`);
-    assert.equal(nodes.previewCuts.disabled,loading||(!!mode.read_only&&!mode.frozen_preview));
   }
 });
 

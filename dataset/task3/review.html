@@ -157,7 +157,7 @@ function playbackControls(){
   $('frameInput').max=Math.max(0,frameCount(episode())-1);
   $('play').disabled=empty||videos.length===0;
   $('originalView').disabled=!preview&&!previewBusy;
-  $('previewCuts').disabled=loading||previewBusy||(!!manifest?.read_only&&!manifest?.frozen_preview);
+  $('previewCuts').disabled=loading||previewBusy||!!manifest?.read_only;
   $('previewCuts').textContent=previewBusy?'正在生成裁剪预览…':'生成／更新裁剪预览';
   $('viewMode').textContent=preview?'裁剪后预览':'原始视频';
   if(!playing)$('play').textContent=preview?'播放裁剪预览':'同步播放';
@@ -168,7 +168,6 @@ function showOriginal(){
   stop();previewGeneration++;previewBusy=false;preview=null;
   mountVideos(episode().videos||[]);playbackControls();updateTime();
   $('previewStatus').textContent='已返回原片；填写区间后可重新生成预览，不会保存或批准审核。';
-  if(manifest.frozen_preview)$('previewStatus').textContent='已返回完整原片；点击生成预览可查看该版本自动保留的帧。';
 }
 function invalidatePreview(){
   previewGeneration++;
@@ -176,11 +175,10 @@ function invalidatePreview(){
   $('previewStatus').textContent='裁剪区间已修改，请重新生成预览；当前修改尚未保存。';
 }
 async function generatePreview(){
-  if(loading||previewBusy||!episode()||(manifest.read_only&&!manifest.frozen_preview))return;
+  if(loading||previewBusy||!episode()||manifest.read_only)return;
   stop();const generation=++previewGeneration,episodeLoad=loadId;
   try{
     const payload={episode_key:episode().key,binding:manifest.binding,exclude_intervals:parseIntervals('exclude'),keep_intervals:parseIntervals('keep'),notes:$('notes').value};
-    if(manifest.frozen_preview)Object.assign(payload,{exclude_intervals:[],keep_intervals:[],notes:''});
     previewBusy=true;playbackControls();$('previewStatus').textContent='正在按当前区间生成现有视角的裁剪视频，请稍候。生成过程不保存审核。';
     const result=await api('/api/preview',{method:'POST',headers:{'Content-Type':'application/json','X-Review-Token':token},body:JSON.stringify(payload)});
     if(generation!==previewGeneration||episodeLoad!==loadId)return;
@@ -188,7 +186,6 @@ async function generatePreview(){
     mountVideos(result.videos);updateTime();
     if(!result.kept_frames)$('videos').append(node('p','本方案没有保留帧。请修改人工区间，或返回原片。','notice warn'));
     $('previewStatus').textContent=`原片 ${result.raw_frames} 帧 / ${fmt(result.raw_duration_s,2)} 秒 → 预览 ${result.kept_frames} 帧 / ${fmt(result.duration_s,2)} 秒；排除 ${result.removed_frames} 帧，${result.segments.length} 个连续片段。采用当前填写的区间（含未保存修改），仅供查看。`;
-    if(manifest.frozen_preview)$('previewStatus').textContent=`原片 ${result.raw_frames} 帧 → 自动裁剪预览 ${result.kept_frames} 帧；严格使用此版本已保存的保留帧，不应用人工区间，不重新裁剪。`;
   }catch(e){if(generation===previewGeneration&&episodeLoad===loadId){if(preview)showOriginal();$('previewStatus').textContent=`未生成预览：${e.message}`;say(e.message,true);}}
   finally{if(generation===previewGeneration&&episodeLoad===loadId){previewBusy=false;playbackControls();}}
 }
@@ -268,10 +265,6 @@ async function choose(n){
   mountVideos(ep.videos||[]);
   rows=[];timelineBase=null;current=0;$('markStart').value=0;say('');
   $('previewStatus').textContent=manifest.read_only?'历史版本只读：可查看原片、自动证据与已保存审核；不能保存或生成新的预览。':'预览采用自动裁剪建议＋当前人工区间；排除保护段须填写理由，未保存的修改也可先试看。';
-  if(manifest.frozen_preview){
-    $('previewStatus').textContent='只读自动裁剪预览：点击“生成／更新裁剪预览”查看此版本保留的帧。';
-    $('accessInfo').textContent='只读自动裁剪预览：按冻结索引生成临时视频；不保存审核、不更改 CURRENT、不导出训练数据。历史场景与当前配置可不同，训练兼容性未在此确认。';
-  }
   editingControls();playbackControls();updateTime();
   try{const result=await api(`/api/index/${n}`);if(request===loadId){rows=result;loading=false;timelineBase=null;editingControls();playbackControls();updateTime();}}
   catch(e){if(request===loadId){loading=false;editingControls();$('save').disabled=true;$('previewCuts').disabled=true;updateTime();say(e.message,true);}}
