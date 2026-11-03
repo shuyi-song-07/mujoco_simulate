@@ -28,7 +28,7 @@
       </section>
           <section class="panel recording-toolbar">
             <div class="panel-title"><h2>示范录制</h2><span id="dataset-counts">成功 0 / 失败 0</span></div>
-            <p>点击后才录制三路仿真画面；不录制你的摄像头视频。</p>
+            <p>点击后仅录制 oblique 斜视视频；top / front / side 三路用于辅助观察，不录制你的摄像头视频。</p>
             <div class="record-buttons">
               <button data-command="record_start" class="primary" disabled>开始录制</button>
               <button data-command="record_save" disabled>保存成功</button>
@@ -44,7 +44,7 @@
         <section class="panel main-view">
           <div class="panel-title"><h2 id="main-view-title">俯视 · XY 对准（↑ −X，→ +Y）</h2><span id="preview-state">等待仿真画面</span></div>
           <label class="control-row">主画面 <select id="view-select"><option value="auto">XY 看正上方 / Z 看内侧近景</option><option value="top">正上方 · 对平面</option><option value="front">内侧近景 · 对准与高度</option><option value="oblique">斜视 · 模型输入 oblique</option></select></label>
-          <p class="view-help">俯视中的机械臂半透明，便于观察物块；内侧近景看对准与高度，oblique 斜视与模型输入使用同一相机。</p>
+          <p class="view-help">三路仿真视角：top / front 辅助观察，斜视统一为 oblique，与录制视频、模型输入使用同一相机。俯视机械臂半透明，便于观察物块。</p>
           <div class="image-frame"><img id="main-preview" alt="双臂任务主视角" hidden /><p id="main-placeholder">连接后显示固定俯视；Z 模式自动显示内侧近景。</p></div>
           <div class="auxiliary">
             <figure><div class="image-frame"><img id="auxiliary-preview-one" alt="辅助视角一" hidden /><p id="auxiliary-placeholder-one">等待画面</p></div><figcaption id="auxiliary-view-one">斜视 · 模型输入 oblique</figcaption></figure>

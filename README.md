@@ -1,6 +1,7 @@
 # Paper A：双臂任务的采集、数据与学习工程
 
-本工程将同一套 Panda 双臂控制器、数据处理和 ACT 接入任务注册表。研究对照为 **ACT Baseline 与 ACT + Gesture 辅助监督**：两组推理都只输入单 oblique RGB 和机器人状态，人手标签只用于训练辅助监督。
+
+本工程将同一套 Panda 双臂控制器、数据处理和策略训练接入任务注册表。现有研究对照为 **ACT Baseline 与 ACT + Gesture 辅助监督**，另提供 **Diffusion Policy（DP）Baseline** 训练入口。三者都只以单 oblique RGB 和机器人状态为策略输入；人手标签只用于 ACT Gesture 的训练辅助监督，DP 本轮不增加手势头。
 
 ```mermaid
 flowchart LR
@@ -10,6 +11,7 @@ flowchart LR
   A --> P[人工审核或 auto → Prepared]
   P --> K[Training Pack / verify]
   K --> M[ACT Baseline / Gesture]
+  K --> D[Diffusion Policy 训练 / 离线验证]
   M --> W[best / last Checkpoint]
   T --> E[同场景 MuJoCo Rollout]
   W --> E
@@ -36,6 +38,7 @@ ready 表示现有实现可加载，不表示新任务的真人采集质量或�
 | `simulation/mujoco/` | 共享 IK、双臂控制、接触保护、Recorder、XML/mesh |
 | `dataset/` | 唯一数据管理入口；既有裁剪、Safe Stitch、审核、Prepared、Pack |
 | `training/papera/` | 现有 ACT 主体、正式单相机读取、训练/恢复与分析 |
+| `training/diffusion/` | 单相机 Diffusion Policy、合法历史/未来窗口、训练与恢复 |
 | `rollout/` | 唯一模型检查、预览、固定初态批量评估入口 |
 | `config/` | 环境、采集基础、裁剪、训练和评估配置 |
 | `assets/models/` | ResNet18 初始预训练资源；不是历史实验权重 |
@@ -64,11 +67,13 @@ $train = $envs.training_python
 
 采集策略保持迁移前最新的 `palm_fist_level_v2`：100 ms 确认；ILoveYou 控制 XY 并保持爪宽，张掌控制 Z 并匀速打开，握拳控制 Z 并匀速闭合；左右独立。绑定、暂停、丢手恢复和物理保护沿用原实现。
 
-新采集默认只保存模型输入的 `oblique.mp4`，减小保存时的渲染与编码工作量；完整物理快照、状态、动作和手势日志继续保留，实时三视图为 top/front/oblique，斜视与模型输入共用同一相机。保存视角参数在 `config/recording.json`，新单视角和历史多视角均可审核及构建 Pack，详见全流程命令表第1～2节。
+当前网页展示 top/front/oblique 三路（一主画面+两辅助，可切换主视图）；保留自动模式XY看top、Z看front，也可手动选择oblique。当前页面的斜视（side）统一命名为 oblique，oblique 是唯一录制与模型输入视角，top/front 只辅助观察、不录制。完整物理快照、状态、动作和手势日志继续保留。保存视角参数在 `config/recording.json`，新单视角和历史多视角均可审核及构建 Pack，详见全流程命令表第1～2节。
 
 体验新高台任务：双击启动器后输入 **`tray_to_platform`**，或运行 `& $collect -m collection start --task tray_to_platform --seed 0 --operator-id operator01`。物体先在原桌面，抓稳后需要把底面抬过0.45 m台顶再搬运。几何、参数与物理验收见 [全流程命令第7.1节](docs/RUN_PIPELINE.md#71-高侧壁托盘到10厘米高台tray_to_platform)。脚本物理成功不代表真人遥操作或ACT模型成功；本轮没有正式训练。
 
-先采集至少两个独立会话，再按 [全流程命令](docs/RUN_PIPELINE.md) 构建 Pack、运行 Baseline/Gesture。新工程没有正式真人 Pack 或训练好的正式模型，不能直接拿工程失败示范开始正式训练。
+ACT Baseline/Gesture 与 DP 正式默认统一为单 oblique RGB 640×480、单帧观察、30Hz模型动作、K30动作块和40,000次参数更新；DP 的 `model.observation_horizon=1`。物理仿真500Hz、控制器60Hz，每个模型动作目标执行2个控制tick。对照实验使用同一Pack、split、相机和预算。
+
+先采集至少两个独立会话，再按 [全流程命令](docs/RUN_PIPELINE.md) 构建 Pack、运行 ACT Baseline/Gesture 或 DP。DP 先用 `& $train -m training.diffusion --task $task --pack $pack --check-only` 只读检查，再去掉 `--check-only` 启动训练；默认参数见 `config/training_diffusion.json`，正式输出为 `outputs/training/<task>/diffusion/<run_id>`，支持 `--resume <run/checkpoints/last.pt>`。现有 `rollout` 只支持 ACT；DP 的离线误差不代表自主成功率。工程检查与正式长训练分开，长训练由你手动启动。
 
 - 新任务接入：[ADD_TASK.md](docs/ADD_TASK.md)
 - 全流程命令、参数、VS Code、恢复训练：[RUN_PIPELINE.md](docs/RUN_PIPELINE.md)

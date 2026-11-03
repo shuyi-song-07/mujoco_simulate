@@ -19,7 +19,7 @@ Task(task_id + task_version + task_binding)
 
 入口 `tasks.registry.get(task_id)` 返回经校验的 Task，`.config()` 合并共享采集配置和任务完整 scene 参数，`.binding()` 冻结身份。`tasks.artifacts` 负责跨 Raw/Audit/Prepared/Pack 的绑定检查。
 
-Task Binding 含 task_id、task_version、scene_id、Manifest SHA、Schema、七个任务 hook、XML/mesh 路径和 source_files 哈希。共享采集/仿真配置也参与绑定。Source files 必须覆盖自定义任务代码的依赖；新增文件后要更新清单。Task 配置或资源变化时拒绝旧绑定，不自动取当前参数解释历史数据。
+Task Binding 含 task_id、task_version、scene_id、Manifest SHA、Schema、七个任务 hook、XML/mesh 路径和 source_files 哈希。共享采集/仿真配置也参与绑定。Source files 必须覆盖自定义任务代码的依赖；新增文件后要更新清单。正式来源审计在 Task 配置或资源变化时拒绝旧绑定，不自动取当前参数解释历史数据。DP 默认训练检查 Pack 内冻结身份，完整文件和当前源码审计由显式 `--full-verify` 启用，见下文。
 
 任务目录只允许本工程中的资源。模型创建、随机初态、reset、采集终态、Rollout monitor、评估前检查和 Dataset 事实语义通过任务钩子连接，签名见 [ADD_TASK.md](ADD_TASK.md)。执行器本身仍为共享 `dual_panda_v1`。
 
@@ -31,9 +31,9 @@ Task Binding 含 task_id、task_version、scene_id、Manifest SHA、Schema、七
 
 `input_kind=human_teleop` 且成功的正式示范才能进入普通 Dataset 流程。`scripted_test` 的失败工程保存只能走 `.local/checks/pipeline` 和显式 `--engineering`；任务成功仍为 false，不能伪造为正式候选。
 
-新采集按 `config/recording.json` 默认只生成 oblique 原视频，完整保存物理快照与控制证据；实时辅助预览使用 top/front/oblique；后端和网页代理提供 `/oblique-preview`，替代旧 `/side-preview`。录制器、LeRobot features、相机清单及逐帧映射只声明实际生成的视角，不能把未生成的视频宣称为已保存。单视角审核直接使用 oblique；含 oblique 的三/四视角原件用 top/front/oblique 审核，历史派生数据继续严格解析其原始三视图来源。
+当前网页展示 top/front/oblique 三路（一主画面+两辅助，可切换主视图），保留自动模式XY看top、Z看front，也可手动选择oblique；当前页面的斜视（side）统一使用 oblique 命名。oblique 是唯一录制与模型输入视角，top/front 只辅助观察、不录制。新采集按 `config/recording.json` 只生成 oblique 原视频，完整物理快照与控制证据继续保存。后端和网页代理分别提供相应实时预览。录制器、LeRobot features、相机清单及逐帧映射只声明实际生成的视角，不能把未生成的视频宣称为已保存。单视角审核直接使用 oblique；历史含 oblique 的三/四视角原件用 top/front/oblique 审核，历史派生数据继续严格解析其原始三视图来源。
 
-录制输出视角与物理任务绑定分开：`collection.config.recording_config(task)` 在任务配置上应用输出选择，得到的完整配置及指纹写入 Raw；历史冻结配置不应用当前选项。任务、相机定义、State/Action Schema、裁剪和训练算法没有因此改变。允许原生 oblique 单视角、当前 top/front/oblique 三视角，兼容历史 top/front/side 三视角及 top/front/side/oblique 四视角；不接受意外缺失一两路的混合布局。Training Pack 仍只构建 oblique 图像输入。
+录制输出视角与物理任务绑定分开：`collection.config.recording_config(task)` 在任务配置上应用输出选择，得到的完整配置及指纹写入 Raw；历史冻结配置不应用当前选项。任务、相机定义、State/Action Schema和裁剪不因此改变。新采集为 oblique 单视角，历史 top/front/oblique、top/front/side 三视角及 top/front/side/oblique 四视角继续兼容；不接受意外缺失一两路的混合布局。Training Pack 仍只构建 oblique 图像输入。
 
 ## State / Action / 相机
 
@@ -48,8 +48,9 @@ Task Binding 含 task_id、task_version、scene_id、Manifest SHA、Schema、七
 | 坐标系 | Raw metadata 的 task_frame / transforms；不能默认用物体局部坐标 |
 | 夹爪 | 连续米制宽度，0为闭；当前每爪最大约0.08m，以冻结配置为准；不是0/255 |
 | Raw RGB / Pack | oblique RGB uint8，640×480×3；不透明机器人 |
-| 模型 RGB | 单相机 `[B,1,3,240,320]`，全帧resize，float32/255，模型内部沿用原ImageNet归一化 |
-| 物理/控制/图像 | 2ms物理步；60Hz控制；固定相位30Hz图像锚点，控制步离散化可造成小幅间隔差异 |
+| ACT 模型 RGB | 单帧单相机 `[B,1,3,480,640]`，全画面、float32/255，模型内部沿用原ImageNet归一化 |
+| DP 模型观察 | 默认单帧 oblique，RGB `[B,1,1,3,480,640]`、State `[B,1,16]`，`observation_horizon=1`；模型内部ImageNet归一化 |
+| 物理/控制/图像与动作 | 500Hz物理（2ms步）；60Hz控制；固定相位30Hz图像锚点和30Hz模型动作，每个模型目标执行2个控制tick；控制步离散化可造成小幅间隔差异 |
 
 无效数值、Schema、相机或单位不匹配会拒绝；不同机器人的维度不能仅改 manifest 宣称兼容。
 
@@ -62,9 +63,9 @@ Task Binding 含 task_id、task_version、scene_id、Manifest SHA、Schema、七
 - `raw_frame_index`、`original_time_s`、`source_control_tick` 和 `action_control_tick/action_time_s` 追踪原始物理记录。
 - `train_sequence_id`、`training_time_s` 和虚拟索引描述压缩后的合法训练顺序。
 
-每个保留观察的 Action **仍来自其原始观察之后下一合法60Hz控制 tick**。沿虚拟序列构造未来 K30，不把 Action 错移到剪辑后的下一原始帧，也不插值/缩放动作。
+每个保留观察的 Action **仍来自其原始观察之后下一合法60Hz控制 tick**。每个30Hz图像锚点绑定一条该因果动作，沿虚拟序列构造未来K30；这不是连续30个60Hz控制tick，也不把Action错移到剪辑后的下一原始帧，不插值/缩放动作。模型动作按30Hz执行，每个目标保持2个60Hz控制tick。
 
-例如原帧100、101、200、201：只有 Dataset 明确认证101→200为安全拼接时，ACT动作块可以跨越。Episode、重置、人工排除或拒绝拼接形成硬边界；未来不足30步则 Padding。训练不重新判断距离阈值，不根据看起来流畅的视频重新拼接。
+例如原帧100、101、200、201：只有 Dataset 明确认证101→200为安全拼接时，ACT/DP动作块可以跨越。Episode、重置、人工排除或拒绝拼接形成硬边界；未来不足30步则 Padding。DP历史观察也只在同一合法序列内取帧，首部不足时重复该序列首帧。训练不重新判断距离阈值，不根据看起来流畅的视频重新拼接。
 
 真实开合、接触建立/解除和物理收敛仍由原证据保护。未知手势不等于静止；是否压缩仍看原有机器人/物理规则。人工决定与自动证据分开保存。`data_ready` 表示结构可读，`training_ready/approved=false` 仍提醒质量审批没有被代码自动完成，不等于训练读取器未实现。
 
@@ -85,9 +86,13 @@ sequence = episode["diagnostics"]["virtual_sequence"]
 
 主要数组包含 state、action、action_mask、raw_frame_index、original_time_s、action_time_s、source_control_tick、action_control_tick、control_epoch、train_sequence_id、training_time_s、actual_done，以及 category_id/category_mask、hand_normalized/task_geometry_mask、stage_id。完整原始置信度及关联证据保留在 Raw 和 evidence 中，模型本轮不使用的字段不因此删除。
 
-`verify` 校验 Manifest、文件哈希、Prepared来源、任务与工程身份、split、因果标签和拼接证明。轻量读取必须持有当前进程里由 verify 返回的有效 VerifiedPack；旧 JSON 报告不能绕过校验。RGB 是 memmap，Worker 不通过 pickle 复制整份缓存，Windows spawn 后重新打开本地映射。
+`verify` 默认校验 Manifest、文件哈希、Prepared来源、任务与工程身份、split、因果标签和拼接证明。轻量读取必须持有当前进程里由 verify 返回的有效 VerifiedPack；旧 JSON 报告不能绕过校验。RGB 是 memmap，Worker 不通过 pickle 复制整份缓存，Windows spawn 后重新打开本地映射。
 
 Training 的 `training/papera/pack_data.py::SafeStitchDataset` 只负责训练集归一化、合法未来窗口和张量。训练/验证按会话固定划分；归一化只拟合训练部分，验证使用同一统计。输出 action `[B,30,14]`、is_pad `[B,30]`；Padding 不参加 Action Loss 或 CVAE 有效动作编码。Gesture 是观察锚点的左右分类监督，未知/缺失由 Mask 表达，不伪造标签。
+
+DP 的 `training/diffusion/data.py::prepare_data` 默认用 `verify(..., check_hashes=False)` 检查 Pack 文件存在与尺寸、Pack/内嵌Prepared冻结的 task/schema/工程身份、会话 split、逐帧证据、S16/A14有限值、next-control因果关系及 Safe Stitch 证明。不访问外部 Raw/Prepared，不重算大文件哈希或当前任务源码哈希；`--full-verify` 才启用原完整校验。默认检查只能确认格式与接口，不能替代文件内容审计。入口只接受正式 Pack，不能把缺少原始控制/来源日志的 HF merged 数据直接视为 Pack 或在训练时修复。
+
+`DiffusionDataset` 默认返回单帧观察、30帧未来动作与有效Mask；动作仍从每个原始观察后下一合法控制tick开始，与ACT使用同一因果标签。输出 action `[B,30,14]`、is_pad `[B,30]`，硬边界之后的目标 padding 并从 epsilon MSE 排除。状态和动作按 train split 拟合 min-max，将训练集范围映射到 `[-1,1]`；RPY先按训练集角度参考处理周期，验证使用同一统计，不重新拟合、不裁切，超出训练范围的值可以超出 `[-1,1]`。冻结绑定保存 Pack 路径、Manifest元数据摘要、task_binding、工程属性、split、episode/合法序列与窗口数量、1/30/8及640×480图像规格、归一化。该摘要只覆盖小型元数据，不冒充整包内容哈希。
 
 ## 训练与 Checkpoint
 
@@ -97,11 +102,17 @@ ACT 使用原有 ResNet18 + Transformer + CVAE；Baseline 保持 L1+KL；Gesture
 
 完整 checkpoint 保留 model、optimizer、scheduler、sampler、RNG、当前步数、最佳验证值和 provenance。`best` 按验证 z=0 的动作误差选择，`last` 用于恢复；不根据测试成功率挑 best。模型在模拟中的闭环表现必须单独评估，离线 Loss 下降不等于成功。
 
+DP 入口为 `python -m training.diffusion --task ... --pack ...`，默认 `config/training_diffusion.json`。独立使用 ResNet18 和带 FiLM 的 conditional 1D U-Net，100步cosine扩散、epsilon MSE，验证采样用10步DDIM；单帧观察、动作预测30帧、`action_horizon=8`，本轮不增加手势头。`action_horizon` 是后续滚动执行配置，不表示已经接入现有 ACT Rollout。
+
+ACT与DP正式默认均为单帧单oblique、640×480、30Hz模型动作、K30和40,000次更新；DP的 `model.observation_horizon=1`。对照实验固定同Pack、split、相机及预算；修改历史长度、分辨率或预算须作为独立实验记录。
+
+DP run 为 `outputs/training/<task>/diffusion/<run_id>/`，冻结 `config.json`、`data_binding.json`、`run.json`，记录 `metrics.jsonl`、`tensorboard/`、`completion.json` 和 `checkpoints/{best,last}.pt`。Checkpoint 除模型外保存 EMA/EMA更新数、optimizer、scheduler、sampler、RNG、归一化与数据绑定。`best` 按固定噪声和timestep的 **EMA 验证 noise MSE** 选择，采样动作误差只用于诊断；`last` 恢复原配置、Pack、split和预算。默认恢复比较冻结接口和统计，不重复内容哈希；需要完整审计时加 `--full-verify`。离线误差不能说明任务自主成功率，run/checkpoint 明确记录 `closed_loop_verified=false`。
+
 ## Rollout 与场景一致性
 
-入口 `python -m rollout` 读取 run 冻结的 task与Pack；当前 Task不匹配直接拒绝。与采集共用 XML factory、initial_state/reset、物理资产和控制器，单 oblique 相机及图像预处理与训练一致。模型预测经现有双臂物理执行器，记录原预测、接受目标和保护干预。
+入口 `python -m rollout` 当前仅支持 ACT Baseline/Gesture，读取 run 冻结的 task与Pack；当前 Task不匹配直接拒绝。与采集共用 XML factory、initial_state/reset、物理资产和控制器，单 oblique 相机及图像预处理与训练一致。模型预测经现有双臂物理执行器，记录原预测、接受目标和保护干预。DP checkpoint 不兼容该执行入口，需后续独立接入历史缓存、DDIM预测和滚动执行后才能评估闭环成功率。
 
-托盘任务默认30Hz观察、60Hz控制、K30 temporal ensemble（现有系数0.01）、60秒预算；正式成功采用已存在的半开释放评估协议。具体任务成功及 preflight 可由 Task替换，不修改共享 ACT。静态几何检查不等于动态成功。
+托盘任务默认30Hz观察与模型动作、60Hz控制、500Hz物理；每个模型目标执行2个控制tick，使用K30 temporal ensemble（现有系数0.01）、60秒预算。正式成功采用已存在的半开释放评估协议。具体任务成功及 preflight 可由 Task替换，不修改共享 ACT。静态几何检查不等于动态成功。
 
 Evaluation manifest 保存task、checkpoint SHA、Pack/source SHA、初态、代码、执行配置和成功判据；每次结果记录实际物理证据、失败原因、轨迹和已完整封装视频。`--resume` 仅恢复同一协议中未完成项。Dataset CURRENT变化不能改变已冻结 run；评估协议也不会因文件夹时间改变。
 

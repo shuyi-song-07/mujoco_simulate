@@ -25,7 +25,7 @@ class PreparedPack(dict):
     """A serializable frozen binding plus a non-JSON, verified reader session."""
 
 
-def resize_rgb(rgb, image_size=(320, 240)):
+def resize_rgb(rgb, image_size=(640, 480)):
     """Whole-frame PyAV resize shared by training and closed-loop inference.
 
     image_size is (width, height). The raw cache stays untouched, uint8 RGB;
@@ -124,7 +124,7 @@ def _close_episode(episode):
 
 
 def prepare_pack(pack_path, selected_train_keys=None, chunk_size=30, *, checked=None,
-                 image_size=(320, 240)):
+                 image_size=(640, 480)):
     """Verify once and freeze paths, split, statistics, certificates and windows.
 
     Explicit engineering subsets must be a subset of the frozen training split.
@@ -201,14 +201,14 @@ class SafeStitchDataset:
     """Lazy official reads: workers reopen RGB mmaps instead of copying caches."""
 
     def __init__(self, binding, split="train", chunk_size=30, stride=1,
-                 selected_keys=None, image_size=None):
+                 selected_keys=None, image_size=None, normalizer=None):
         if split not in ("train", "val") or stride < 1 or chunk_size != binding["chunk_size"]:
             raise ValueError("Invalid split, stride, or frozen chunk length")
         self.binding = binding if isinstance(binding, PreparedPack) else restore_binding(binding)
         self.root = Path(binding["pack_path"])
         self.manifest = self.binding.checked["manifest"]
         self.entries = {entry["key"]: entry for entry in self.manifest["episodes"]}
-        self.normalizer = Normalizer(binding["stats"])
+        self.normalizer = Normalizer(binding["stats"]) if normalizer is None else normalizer
         self.chunk_size = chunk_size
         self.image_size = tuple(binding["image_size"])
         if image_size is not None and tuple(image_size) != self.image_size:

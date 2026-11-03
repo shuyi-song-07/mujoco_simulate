@@ -2,13 +2,13 @@
   "version": "papera-single-oblique-act-baseline-1",
   "pack_path": null,
   "image_size": [
-    320,
-    240
+    640,
+    480
   ],
   "output_root": "outputs/training",
   "allow_exploratory": true,
   "seed": 20261016,
-  "steps": 20000,
+  "steps": 40000,
   "batch_size": 16,
   "num_workers": 0,
   "learning_rate": 0.0001,

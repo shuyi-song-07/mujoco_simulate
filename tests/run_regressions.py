@@ -16,14 +16,16 @@ MODULES=[
         'test_level_gripper_control','test_operator_view','test_training_camera','test_raised_placement',
         'test_highwall_platform','test_platform_success')],
     *['tests.papera.'+n for n in ('test_safe_stitch_data','test_act_model','test_action_chunks',
-        'test_policy_executor','test_training_loop')]
+        'test_policy_executor','test_training_loop','test_diffusion_model',
+        'test_diffusion_data','test_diffusion_training')]
 ]
 if __name__=='__main__':
     import json
     import subprocess
     collection_only='--collection-only' in sys.argv
     names=['tests.task3.test_action_contract', 'tests.task3.test_level_gripper_control',
-           'tests.task3.test_control_computation','tests.task3.test_episode_completion'] if collection_only else MODULES
+           'tests.task3.test_control_computation','tests.task3.test_episode_completion',
+           'tests.task3.test_preview_cameras'] if collection_only else MODULES
     result=unittest.TextTestRunner(verbosity=1).run(unittest.defaultTestLoader.loadTestsFromNames(names))
     failed=not result.wasSuccessful()
     if not collection_only:

@@ -56,10 +56,11 @@ def file_record(path, root):
     return {'path': str(path.relative_to(root)), 'size': path.stat().st_size, 'sha256': sha256(path)}
 
 
-def verify_files(root, files):
+def verify_files(root, files, *, check_hashes=True):
     for record in files:
         path = within(root, record['path'])
-        if not path.is_file() or path.stat().st_size != record['size'] or sha256(path) != record['sha256']:
+        if (not path.is_file() or path.stat().st_size != record['size']
+                or (check_hashes and sha256(path) != record['sha256'])):
             raise ValueError(f'Cache file changed or hash mismatch: {path}')
 
 
@@ -123,10 +124,10 @@ def _validate_frozen_config(manifest):
         raise ValueError('Frozen curation configuration hash mismatch')
 
 
-def _validate_pack_contract(pack, manifest):
+def _validate_pack_contract(pack, manifest, *, check_hashes=True):
     """Small metadata gate shared by direct reads and full independent checks."""
     frozen_path = pack/'prepared.manifest.json'
-    if sha256(frozen_path) != manifest['binding']['prepared_manifest_sha256']:
+    if check_hashes and sha256(frozen_path) != manifest['binding']['prepared_manifest_sha256']:
         raise ValueError('Pack frozen Prepared manifest differs from build binding')
     frozen = json.loads(frozen_path.read_text(encoding='utf-8'))
     if manifest['version'] == VERSION:
@@ -440,12 +441,12 @@ def build(prepared, output, *, split_file, width=640, height=480, resume=False, 
     return record
 
 
-def _pack_manifest(pack):
+def _pack_manifest(pack, *, check_hashes=True):
     manifest = json.loads((pack/'manifest.json').read_text(encoding='utf-8'))
     if (manifest.get('version') not in (VERSION, LEGACY_VERSION) or not manifest.get('complete')
             or manifest.get('cameras') != ['oblique'] or manifest.get('action_alignment') != ALIGNMENT):
         raise ValueError('Incomplete/incompatible single-view pack')
-    _validate_pack_contract(pack, manifest)
+    _validate_pack_contract(pack, manifest, check_hashes=check_hashes)
     return manifest
 
 
@@ -514,7 +515,7 @@ def _file_states(pack, manifest):
 def _checked_manifest(pack, checked, key):
     if not isinstance(checked, VerifiedPack) or getattr(checked, '_verified_root', None) != str(pack):
         raise ValueError('A live report returned by verify(pack) is required for a lightweight read')
-    if sha256(pack/'manifest.json') != checked._manifest_sha256:
+    if checked._check_hashes and sha256(pack/'manifest.json') != checked._manifest_sha256:
         raise ValueError('Verified pack manifest changed')
     manifest = checked['manifest']
     if digest(manifest) != checked._manifest_digest:
@@ -546,13 +547,31 @@ def read_episode(pack,key,*,verify_files=True,checked=None,include_evidence=True
     return _read_episode(pack,key,_pack_manifest(pack),verify_files=verify_files)
 
 
-def _verify_contents(pack,manifest):
-    verify_files(pack,manifest['files'])
-    from tasks.artifacts import fields
+def _verify_contents(pack,manifest,*,check_hashes=True):
+    verify_files(pack,manifest['files'],check_hashes=check_hashes)
     frozen_prepared=json.loads((pack/'prepared.manifest.json').read_text(encoding='utf-8'))
+    if check_hashes:
+        # Keep the historical ACT gate, including current task source hashes.
+        from tasks.artifacts import fields
+    else:
+        # Offline training consumes the Pack's frozen task, not today's scene
+        # code. Still require an explicit, internally consistent S16/A14 task.
+        from tasks.registry import SCHEMA
+
+        def fields(value):
+            binding = value.get('task_binding')
+            if (not isinstance(binding, dict)
+                    or binding.get('version') != 'papera-task-binding-v1'
+                    or not binding.get('task_id')
+                    or binding.get('task_id') != value.get('task_id')
+                    or binding.get('schema') != SCHEMA
+                    or not binding.get('task_version') or not binding.get('scene_id')
+                    or not isinstance(value.get('engineering_only'), bool)):
+                raise ValueError('Missing/incompatible frozen task identity or S16/A14 schema')
+            return {name: value[name] for name in ('task_id','task_binding','engineering_only')}
     if fields(manifest)!=fields(frozen_prepared):
         raise ValueError('Pack/Prepared task or engineering provenance mismatch')
-    _validate_pack_contract(pack, manifest)
+    _validate_pack_contract(pack, manifest, check_hashes=check_hashes)
     if len({e['key'] for e in manifest['episodes']}) != len(manifest['episodes']):
         raise ValueError('Duplicate pack episodes')
     split = json.loads((pack/'split.json').read_text(encoding='utf-8'))
@@ -563,28 +582,41 @@ def _verify_contents(pack,manifest):
         raise ValueError('Pack split leaks or omits episodes')
     frame_count = 0; gap_count = 0
     for entry in manifest['episodes']:
-        value = _read_episode(pack,entry['key'],manifest)
-        side = 'train' if entry['key'] in split['train'] else 'val'
-        if entry['session'] not in split[side+'_sessions']:
-            raise ValueError('Episode assigned across session boundary')
-        frame_count += len(value['arrays']['state']); gap_count += len(value['diagnostics']['gaps'])
-        del value
+        verify_files(pack,entry['files'],check_hashes=check_hashes)
+        value = _read_episode(pack,entry['key'],manifest,verify_files=False)
+        try:
+            side = 'train' if entry['key'] in split['train'] else 'val'
+            if entry['session'] not in split[side+'_sessions']:
+                raise ValueError('Episode assigned across session boundary')
+            frame_count += len(value['arrays']['state']); gap_count += len(value['diagnostics']['gaps'])
+        finally:
+            value['images']['oblique']._mmap.close()
     if frame_count != manifest['frame_count'] or len(keys) != manifest['episode_count']:
         raise ValueError('Pack totals mismatch')
     return {'valid': True,'episodes': len(keys),'frames': frame_count,'gaps': gap_count,
         'training_started': False,'training_interface': 'training.papera.pack_data.SafeStitchDataset','manifest': manifest}
 
 
-def verify(pack):
+def verify(pack, *, check_hashes=True):
+    """Validate a frozen Pack, optionally hashing every stored file.
+
+    False checks file existence/size, frozen provenance, split, complete frame
+    evidence, causal targets and Safe Stitch certificates. It does not check
+    file hashes or require current scene sources to match the frozen task.
+    The default retains the original strict ACT verification behavior.
+    """
     pack = Path(pack).resolve()
-    manifest_sha256 = sha256(pack/'manifest.json')
-    manifest = _pack_manifest(pack)
+    manifest_sha256 = sha256(pack/'manifest.json') if check_hashes else None
+    manifest = _pack_manifest(pack, check_hashes=check_hashes)
     before = _file_states(pack, manifest)
-    result = _verify_contents(pack,manifest)
+    result = _verify_contents(pack,manifest,check_hashes=check_hashes)
     after = _file_states(pack, manifest)
-    if before != after or sha256(pack/'manifest.json') != manifest_sha256:
+    if before != after or (check_hashes and sha256(pack/'manifest.json') != manifest_sha256):
         raise ValueError('Pack files changed during full verification')
     report = VerifiedPack(result)
+    report['verification'] = ('full_file_hashes_and_current_task_sources' if check_hashes
+        else 'format_file_sizes_frozen_provenance_causal_targets_safe_stitch_no_file_hashes')
+    report._check_hashes = bool(check_hashes)
     report._verified_root = str(pack)
     report._manifest_sha256 = manifest_sha256
     report._manifest_digest = digest(manifest)

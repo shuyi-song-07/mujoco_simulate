@@ -19,6 +19,7 @@ const modes = { XY: "XY 平移", Z: "Z 升降", PAUSE: "暂停", IDLE: "等待",
 const tasks = { PREGRASP: "对准待抓", GRASP_VERIFY: "验证双侧抓取", DUAL_GRASPED: "协同搬运", PLACEMENT: "放置微调", RELEASE_VERIFY: "验证放置", DONE: "成功完成", FAIL: "失败" };
 const failureLabels = { timeout: "超过正式任务时限", grasp_failure: "双侧抓取未建立", contact_loss: "搬运中失去接触", object_drop: "物体跌落", relative_pose_violation: "两臂相对位置超限", robot_robot_collision: "两臂发生碰撞", workspace_violation: "工作空间越界", joint_or_ik_failure: "关节或逆解异常" };
 const viewLabels = { top: "正上方 · XY 对准（↑ −X，→ +Y）", oblique: "斜视 · 模型输入 oblique", front: "内侧近景 · 对准与高度" };
+const previewViews = ["top", "oblique", "front"];
 const reasons = {
   calibration_required: "双手张掌稳定 2 秒后直接绑定，无需确认。",
   binding_complete: "左右手已绑定；持续张掌保持暂停及夹爪状态。换成操作手势后开始控制。",
@@ -334,7 +335,7 @@ function renderViews() {
   $("main-view-title").textContent = viewLabels[mainView];
   const visible = (view) => performance.now() - previewsUpdatedAt[view] <= PREVIEW_GRACE_MS ? previews[view] : null;
   assignImage("main-preview", "main-placeholder", visible(mainView));
-  const auxiliary = ["top", "oblique", "front"].filter((view) => view !== mainView);
+  const auxiliary = previewViews.filter((view) => view !== mainView);
   assignImage("auxiliary-preview-one", "auxiliary-placeholder-one", visible(auxiliary[0]));
   assignImage("auxiliary-preview-two", "auxiliary-placeholder-two", visible(auxiliary[1]));
   $("auxiliary-view-one").textContent = viewLabels[auxiliary[0]];
@@ -349,7 +350,7 @@ async function pollPreviews() {
   const pollStartedAt = performance.now();
   if (connected) {
     const requestedEpoch = runtime.control_epoch, requestedSession = runtime.session;
-    const status = await Promise.all(["top", "oblique", "front"].map(async (view) => {
+    const status = await Promise.all(previewViews.map(async (view) => {
       try {
         const requestStartedAt = performance.now();
         const response = await fetch(`${api}/${view}-preview`, { cache: "no-store", signal: AbortSignal.timeout(2000) });
@@ -1189,7 +1190,7 @@ $("pause-button").addEventListener("click", () => {
   } else pause("user_pause");
   renderState();
 });
-$("view-select").addEventListener("change", () => { viewPreference = ["auto", "top", "oblique", "front"].includes($("view-select").value) ? $("view-select").value : "auto"; renderViews(); });
+$("view-select").addEventListener("change", () => { viewPreference = ["auto", ...previewViews].includes($("view-select").value) ? $("view-select").value : "auto"; renderViews(); });
 function updateMotionSettings() {
   if (runtime.recording || runtime.saving || pendingOperation) { renderState(); return; }
   const mapping = $("motion-mapping").value;

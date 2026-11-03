@@ -101,7 +101,7 @@ class QuietRequests(WSGIRequestHandler):
     def log_request(self, code="-", size="-"):
         if self.path == "/control" and str(code).isdigit() and int(code) < 400:
             return  # Structured diagnostics retain the decisions and contents.
-        if not self.path.startswith(("/health", "/top-preview", "/side-preview", "/front-preview")):
+        if not self.path.startswith(("/health", "/top-preview", "/side-preview", "/front-preview", "/oblique-preview")):
             super().log_request(code, size)
 
 

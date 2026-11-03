@@ -2,27 +2,7 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Paper A · Collection",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "collection",
-      "python": "D:/Conda/envs/mujoco_repro/python.exe",
-      "cwd": "${workspaceFolder}",
-      "console": "integratedTerminal",
-      "justMyCode": true,
-      "args": [
-        "start",
-        "--task",
-        "${input:task}"
-      ],
-      "env": {
-        "PYTHONUTF8": "1",
-        "PYTHONNOUSERSITE": "1",
-        "PYTHONPATH": ""
-      }
-    },
-    {
-      "name": "Paper A · Baseline 20000 steps",
+      "name": "ACT 训练",
       "type": "debugpy",
       "request": "launch",
       "module": "training.papera",
@@ -45,7 +25,30 @@
       }
     },
     {
-      "name": "Paper A · Gesture 20000 steps",
+      "name": "DP 训练",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "training.diffusion",
+      "python": "D:/Conda/envs/paperA_train/python.exe",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "args": [
+        "--task",
+        "${input:task}",
+        "--variant",
+        "baseline",
+        "--pack",
+        "${input:pack}"
+      ],
+      "env": {
+        "PYTHONUTF8": "1",
+        "PYTHONNOUSERSITE": "1",
+        "PYTHONPATH": ""
+      }
+    },
+    {
+      "name": "ACT + 手势辅助监督训练",
       "type": "debugpy",
       "request": "launch",
       "module": "training.papera",
@@ -68,10 +71,10 @@
       }
     },
     {
-      "name": "Paper A · Resume interrupted run",
+      "name": "DP + 手势辅助监督训练（待实现）",
       "type": "debugpy",
       "request": "launch",
-      "module": "training.papera",
+      "module": "training.diffusion",
       "python": "D:/Conda/envs/paperA_train/python.exe",
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
@@ -79,58 +82,10 @@
       "args": [
         "--task",
         "${input:task}",
-        "--resume",
-        "${input:last}"
-      ],
-      "env": {
-        "PYTHONUTF8": "1",
-        "PYTHONNOUSERSITE": "1",
-        "PYTHONPATH": ""
-      }
-    },
-    {
-      "name": "Paper A · Rollout check",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "rollout",
-      "python": "D:/Conda/envs/paperA_train/python.exe",
-      "cwd": "${workspaceFolder}",
-      "console": "integratedTerminal",
-      "justMyCode": true,
-      "args": [
-        "--task",
-        "${input:task}",
-        "--mode",
-        "check",
-        "--run",
-        "${input:run}"
-      ],
-      "env": {
-        "PYTHONUTF8": "1",
-        "PYTHONNOUSERSITE": "1",
-        "PYTHONPATH": ""
-      }
-    },
-    {
-      "name": "Paper A · Rollout preview 60 s",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "rollout",
-      "python": "D:/Conda/envs/paperA_train/python.exe",
-      "cwd": "${workspaceFolder}",
-      "console": "integratedTerminal",
-      "justMyCode": true,
-      "args": [
-        "--task",
-        "${input:task}",
-        "--mode",
-        "preview",
-        "--run",
-        "${input:run}",
-        "--seed",
-        "910001",
-        "--max-seconds",
-        "60"
+        "--variant",
+        "gesture",
+        "--pack",
+        "${input:pack}"
       ],
       "env": {
         "PYTHONUTF8": "1",
@@ -149,17 +104,7 @@
     {
       "id": "pack",
       "type": "promptString",
-      "description": "Verified Training Pack absolute path; same Pack for both variants"
-    },
-    {
-      "id": "last",
-      "type": "promptString",
-      "description": "Exact checkpoints/last.pt path; keeps frozen original budget"
-    },
-    {
-      "id": "run",
-      "type": "promptString",
-      "description": "Training run directory containing run.json (not a .pt file)"
+      "description": "Formal Training Pack absolute path; share Pack/split for ACT and DP comparisons"
     }
   ]
 }

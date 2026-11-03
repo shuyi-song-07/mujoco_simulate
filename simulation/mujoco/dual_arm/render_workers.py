@@ -351,15 +351,16 @@ def preview_worker(config, snapshots, outputs, ready):
                 buffer = io.BytesIO()
                 Image.fromarray(frame).save(buffer, format="JPEG", quality=78)
                 jpegs[name] = buffer.getvalue()
+            result = {"images": jpegs, "created_at": time.monotonic(), **metadata}
             try:
-                outputs.put_nowait({"images": jpegs, "created_at": time.monotonic(), **metadata})
+                outputs.put_nowait(result)
             except queue.Full:
                 try:
                     outputs.get_nowait()
                 except queue.Empty:
                     pass
                 try:
-                    outputs.put_nowait({"images": jpegs, "created_at": time.monotonic(), **metadata})
+                    outputs.put_nowait(result)
                 except queue.Full:
                     pass
     except Exception as error:

@@ -21,13 +21,13 @@ $task = 'tray_transfer'
 
 `$collect` 是已有 mujoco_repro：Flask、LeRobot、MuJoCo 和采集渲染。`$train` 是已有 paperA_train：PyTorch/CUDA、PyAV、PyArrow、TensorBoard 和训练/推理。不要在基础 Anaconda 环境里运行。Node 也从同一环境 JSON 读取。实际版本见迁移报告及 `.local/checks/environment.json`；`requirements.txt`、`training/papera/environment.yml`、`requirements-lock.txt` 是依赖参考，不需要每次运行都安装。
 
-VS Code：**打开 `paperA` 文件夹**，信任本地工程并启用 Python/Python Debugger 扩展；F5 下拉提供 Collection、Baseline、Gesture、Resume、Rollout check/preview。按提示输入 task_id 和 Pack/run 绝对路径。环境路径修改后重新生成快捷配置：
+VS Code：**打开 `paperA` 文件夹**，信任本地工程并启用 Python/Python Debugger 扩展；F5 下拉提供 Collection、ACT Baseline/Gesture/Resume、DP Train/check/Resume、Rollout check/preview。按提示输入 task_id 和 Pack/run 绝对路径。环境路径修改后重新生成快捷配置：
 
 ```powershell
 & $train scripts/configure_vscode.py
 ```
 
-它只更新 `.vscode`，不启动训练。正式 Baseline/Gesture 快捷项默认读取 20,000 steps 的共享配置；使用前必须准备正式真人 Pack。
+它只更新 `.vscode`，不启动训练。ACT Baseline/Gesture 和 DP Train 快捷项默认预算均为40,000次参数更新，分别读取各自训练配置；使用前必须准备正式真人 Pack。正式条件统一为单 oblique RGB 640×480、单帧观察、30Hz模型动作与K30；物理仿真500Hz，控制器60Hz，每个模型动作目标执行2个控制tick。
 
 ## 1. 采集
 
@@ -40,9 +40,9 @@ VS Code：**打开 `paperA` 文件夹**，信任本地工程并启用 Python/Pyt
 
 启动器打开 MuJoCo 和 `http://127.0.0.1:8014/dual_arm.html`。摄像头在网页点击启动后授权，双掌绑定后使用现有 100 ms 手势确认策略。保存成功、保存失败和放弃本轮仍按原 Recorder 区分。保存视频需要等待完成；不要强关写视频的进程，否则 MP4 可能未封装完成。
 
-保存视角统一在 `config/recording.json` 的 `cameras` 设置，默认 `["oblique"]`：先将完整物理快照保存，再在保存本轮时仅渲染模型输入视角。可直接播放 `datasets/<task_id>/<会话>/episode_videos/episode_000000/oblique.mp4`（后续示范编号递增）。State、Action、原始手势、控制日志、全部物理快照和逐帧映射仍完整保留；实时三视图统一为 top/front/oblique；oblique 与模型输入相机参数及不透明外观一致（网页为压缩预览）。保存仍需完成一遍渲染和编码，不是瞬间完成。
+保存视角统一在 `config/recording.json` 的 `cameras` 设置为 `["oblique"]`：先将完整物理快照保存，再在保存本轮时仅渲染模型输入视角。可直接播放 `datasets/<task_id>/<会话>/episode_videos/episode_000000/oblique.mp4`（后续示范编号递增）。State、Action、原始手势、控制日志、全部物理快照和逐帧映射仍完整保留。当前网页展示 top/front/oblique 三路（一主画面+两辅助，可切换主视图），自动模式XY看top、Z看front，也可手动选择oblique；当前页面的斜视（side）统一使用 oblique 命名。oblique 是唯一录制与模型输入视角，top/front 只辅助观察、不录制；oblique 与模型输入相机参数及不透明外观一致（网页为压缩预览）。保存仍需完成一遍渲染和编码，不是瞬间完成。
 
-需要保存当前三路视频时，将上述参数改为 `["top","front","oblique"]`，退出当前采集后重新启动。日常保存视角不要改 `config/collection.json`：它属于任务基线；独立的录制选择会写入每次会话的冻结配置、配置指纹和相机清单。新设置只作用于新会话，不会覆盖、删除或改写旧视频。单视角原件不会在后台自动补生成三路视频；目前没有一键补生成入口，后续补图需要使用原记录的快照和冻结场景核验后重放。
+网页三个视图中仅 oblique 保存为模型视频。独立录制选择会写入每次会话的冻结配置、配置指纹和相机清单；新配置不覆盖、删除或改写旧视频。单视角原件不会在后台自动补生成辅助视角视频；目前没有一键补生成入口，后续补图需要使用原记录的快照和冻结场景核验后重放。
 
 参数：`--task` 选择已注册场景；`--seed` 固定初态，省略则每次新启动随机；`--operator-id` 写入身份来源；`--headless` 不弹 MuJoCo；`--no-browser` 不自动打开网页；`--web-port/--backend-port` 改服务端口。服务冲突明确报错，不关闭其他工程服务。
 
@@ -78,7 +78,7 @@ $curation = (Get-Content -LiteralPath "$dataRoot/CURATION_CURRENT.json" -Raw -En
 
 `process` 只读取该任务已保存成功的真人原件：完整性/视频解码 → 原始事实证据 → 既有自动裁剪与 Safe Stitch。输出分别在 `audits/` 和 `curation/`；源文件指纹不变时复用完整审计。`--fresh` 强制重查原件，`--config` 指向另一份合法裁剪参数文件，每次都产生独立结果。没有可处理数据会报错，不退回旧工程。
 
-审核网页默认 8026。新单视角记录显示 oblique，并可生成对应裁剪预览；新三视角或含 oblique 的四视角记录显示 top/front/oblique；只有旧 top/front/side 原件仍显示旧三视角。单视角存在遮挡时，不要仅凭看不清就认定抓取正确，应结合物理/接触证据；后续需要更充分人工检查可选 top/front/oblique 三路保存。正式模型始终只有 oblique。原片、逐帧 a/s/手势、删留原因、保护区间、裁剪预览和人工覆盖保留。灰色帧在原片中仍然可见；只有“生成/更新裁剪预览”播放删留后的顺序。预览不自动批准数据，人工排除保护段仍需理由。
+审核网页默认 8026。新单视角记录显示 oblique，并可生成对应裁剪预览；历史含 oblique 的三/四视角记录显示 top/front/oblique；只有旧 top/front/side 原件仍显示旧三视角。单视角存在遮挡时，不要仅凭看不清就认定抓取正确，应结合物理/接触证据。正式模型始终只有 oblique；采集网页的其他视角仅辅助实时观察，不作为新录制视频或训练输入。原片、逐帧 a/s/手势、删留原因、保护区间、裁剪预览和人工覆盖保留。灰色帧在原片中仍然可见；只有“生成/更新裁剪预览”播放删留后的顺序。预览不自动批准数据，人工排除保护段仍需理由。
 
 调参数后不必重新复制视频，可从明确的 Audit 重建：
 
@@ -114,7 +114,7 @@ $partialPack = '<该次 training_packs/... 的实际目录>'
 
 会复用 `build.json` 中冻结的 split；源、代码、split 或图像规格改变将拒绝恢复。已有完整 Pack 不覆盖；修改裁剪后构建新 Pack 并明确选择。
 
-## 4. 公平训练两组
+## 4. ACT 公平训练两组
 
 先确认 `$pack` 是本任务的正式真人数据，运行 verify-pack 后保留这个值。两组用 **同一个 Pack、split、seed、训练预算和主干配置**：
 
@@ -125,7 +125,7 @@ $partialPack = '<该次 training_packs/... 的实际目录>'
 
 这是两条长训练命令，由你选择时间执行；本轮迁移没有执行它们。输出自动为 `outputs/training/<task_id>/<variant>/<run_id>`。
 
-默认参数在 `config/training_baseline.json`：K30、batch16、20,000 次参数更新、AdamW、主干学习率 1e-5/其余 1e-4、weight decay 1e-4、warmup500、KL10、BF16。不是 20,000 个 epoch；终端会打印样本窗口与约当 epoch。模型输入 resize 为 320×240，全画面不裁剪；Pack 原图640×480。`--steps` 覆盖训练更新预算，`--seed` 改训练随机种子，`--config` 换参数文件；对照实验应同步变化两组。
+默认参数在 `config/training_baseline.json`：K30、batch16、40,000次参数更新、AdamW、主干学习率1e-5/其余1e-4、weight decay 1e-4、warmup500、KL10、BF16。不是40,000个epoch；终端会打印样本窗口与约当epoch。模型使用640×480全画面，不裁剪、不降低Pack原图分辨率；每次输入单帧观察。模型动作频率30Hz，每个目标由60Hz控制器执行2个tick；物理仿真500Hz。`--steps` 覆盖训练更新预算，`--seed` 改训练随机种子，`--config` 换参数文件；对照实验应同步变化。
 
 Baseline：Action L1 + 10×KL。Gesture：同一主干和动作损失，额外使用原有 gesture head 与分类辅助损失（默认权重1）；缺失/未知/不可信标签按已有 Mask 处理，不以 Mask 删除机器人训练帧。两组推理均为 z=0、无真人输入。现有 ACT 数学实现未重写。
 
@@ -147,6 +147,59 @@ Get-Content "$run/metrics.jsonl" -Tail 5
 
 分别输出 `run/analysis/evaluation` 和 `run/analysis/figures`。绘图使用已有安装 matplotlib 的采集环境；离线动作误差不是闭环成功率。重复分析要给新的 `--output`，不覆盖已有证据。
 
+### 4.1 Diffusion Policy Baseline
+
+DP 复用同一任务的正式 Training Pack、会话 split、S16/A14 和 Safe Stitch 结果；训练入口不读取 Raw，不补日志，也不接收缺失控制/来源信息的 HF merged 导出。先只读检查张量和数据接口，再自行启动正式训练：
+
+```powershell
+& $train -m training.diffusion --task $task --pack $pack --check-only
+& $train -m training.diffusion --task $task --pack $pack
+```
+
+默认配置为 `config/training_diffusion.json`：单 oblique RGB 640×480全画面、单帧观察（`model.observation_horizon=1`）与16D state 条件，预测从当前锚点起的30帧14D action，模型动作频率30Hz。动作尾部 padding 不参加损失；如另做历史长度实验，历史观察不跨硬边界，首部不足时重复同一合法序列首帧。State/Action 的 min-max 归一化仅拟合训练 split，再供验证和恢复使用。模型为 ResNet18 + SpatialSoftmax（32个空间关键点）+ 带 FiLM 条件的1D U-Net，cosine 100步加噪，以 epsilon MSE 训练，预测用10步 DDIM；`action_horizon=8` 保存为后续滚动执行配置，本轮未接入闭环执行。DP 不使用手势标签或 Gesture head。这是依据[原作者实现](https://github.com/real-stanford/diffusion_policy)适配本工程数据接口的基线，未声称复现论文全部超参数或结果。
+
+ACT 与 DP 默认均为单帧观察、640×480、K30和40,000次更新；算法对照使用同一 Pack、split、相机与预算。任何额外历史、降分辨率或预算调整均作为独立实验记录，不能混称为默认正式条件。
+
+默认 AdamW 学习率1e-4、batch16、40,000次更新、warmup500、BF16，EMA 衰减上限0.999且开始阶段预热。每25步记录训练日志，每1000步验证和保存，最终/请求停止时也验证保存。`best.pt` 依据固定噪声与 timestep 的 **EMA 验证 noise MSE** 选择；默认检查完整验证集（`validation_batches=null`），其中前2个 batch 另记录 DDIM 采样动作误差作诊断。采样误差与训练损失都不是任务成功率。
+
+DP 常用配置字段如下；ACT 的对应公共条件在 `config/training_baseline.json`，对照时一起核对。
+
+| JSON 字段 | 当前默认 | 调整作用 |
+|---|---:|---|
+| `steps` / `batch_size` | 40000 / 16 | 优化器更新总数 / 每次使用的样本窗口数 |
+| `image_size` | `[640,480]` | 模型全画面输入的宽、高，单位像素 |
+| `model.observation_horizon` | 1 | 每个条件包含的过去至当前观察帧数；默认与ACT同为单帧 |
+| `model.prediction_horizon` | 30 | 预测未来动作数量，本工程正式Pack接口使用K30 |
+| `model.action_horizon` | 8 | 后续闭环滚动执行时计划取用的前8个目标；当前训练仍监督全部有效K30 |
+| `model.diffusion_steps` | 100 | 从干净动作到噪声的100级扩散时间表 |
+| `model.inference_steps` | 10 | 每次生成一段动作使用10次DDIM去噪计算 |
+| `validation_batches` | `null` | 检查完整验证集；设正整数可限制为前N批工程快速检查 |
+| `validation_sample_batches` | 2 | 验证时额外生成动作并统计误差的批数，设0可只统计噪声MSE |
+| `num_workers` / `precision` | 2 / `bf16` | Windows异步数据读取进程数 / CUDA数值精度 |
+
+已完成640×480、batch16的ACT参数更新和DP真实物理工程Pack短训、保存恢复检查；这些是接口验收，不是正式模型训练或任务成功率结果。
+
+| 参数 | 含义 |
+|---|---|
+| `--config <JSON>` | 替换默认 DP 配置；新运行时使用 |
+| `--steps N` | 覆盖新运行的总更新预算，不是 epoch 数 |
+| `--output <新目录>` | 指定新运行目录；已有目录拒绝覆盖 |
+| `--check-only` | 只检查 Pack 和样本张量，不创建训练 run |
+| `--full-verify` | 可选慢检查，额外重算文件哈希并核对当前任务源码来源 |
+| `--stop-after N` | 本次额外运行N次更新后保存退出，冻结的总预算保持不变 |
+| `--engineering` | 明确允许 scripted_test 工程 Pack；输出隔离在 `.local/checks` |
+
+默认只做必要的 Pack 格式、文件尺寸、冻结身份、split、因果标签和合法序列接口检查，不重复重算全部大文件哈希，不访问外部 Raw/Prepared；这不等于完整内容审计。需要严格审计时显式使用 `--full-verify`。正常训练输出 `outputs/training/<task>/diffusion/<run_id>/`，含 `config.json`、`data_binding.json`、`run.json`、`metrics.jsonl`、`tensorboard/`、`checkpoints/{best,last}.pt`、`completion.json`。
+
+```powershell
+$dpRun = '<实际 outputs/training/任务/diffusion/run_id>'
+Get-Content "$dpRun/completion.json"
+Get-Content "$dpRun/metrics.jsonl" -Tail 5
+& $train -m tensorboard.main --logdir "$dpRun/tensorboard" --port 6006
+```
+
+现有 `training.papera.analyze_checkpoint`、ACT 绘图和 `rollout` 不支持 DP checkpoint。DP 的独立闭环执行与成功率评估需后续接入验证，不能把 DP 权重交给现有 ACT Rollout。
+
 ## 5. 中断恢复与延长预算
 
 ```powershell
@@ -160,7 +213,17 @@ Get-Content "$run/metrics.jsonl" -Tail 5
 
 源码、任务、Pack、split 或归一化变化都会拒绝恢复。恢复训练不是重新读取 CURRENT，也不是自动加载“最新文件夹”。
 
+### 5.1 DP 中断恢复
+
+```powershell
+& $train -m training.diffusion --task $task --resume "$dpRun/checkpoints/last.pt"
+```
+
+DP 恢复同一 run 中的模型与 EMA、优化器、scheduler、sampler、RNG、归一化、Pack路径、split 和预算；输入必须是 DP 的 `last.pt`。不同时传 `--config`、`--steps` 或 `--output`，不更换 Pack。可加 `--stop-after N` 限制本次更新数用于工程验证。默认恢复仍做格式和接口检查；`--full-verify` 可额外核验内容哈希。DP 本轮没有 `--continue-from` 延长预算入口。
+
 ## 6. 模型检查、预览与50次评估
+
+本节仅适用于 ACT Baseline/Gesture。DP 训练入口可做离线验证，当前 `rollout` 未接入 DP 的历史缓存和滚动执行。
 
 ```powershell
 & $train -m rollout --task $task --mode check --run $run
@@ -213,6 +276,17 @@ $testRun = '.local/checks/training/my_smoke_baseline'
 ```
 
 `--smoke-test` 固定3步、较小工程验证范围；`--engineering` 只允许显式工程数据/短预览，不允许正式50次评估。工程采集结果明确保存为 scripted_test / failure，证明记录通路，不伪称成功示范。重复生成前保留或归档旧工程目录；不同 task_binding 不会混合。无需为了迁移重新处理旧视频。
+
+同一工程 Pack 可检查 DP，并验证短训练与恢复；使用新输出目录，预算仍保持默认40,000步，以下只各运行2次更新：
+
+```powershell
+$testDpRun = '.local/checks/training/my_smoke_diffusion'
+& $train -m training.diffusion --task tray_transfer --pack $testPack --engineering --check-only
+& $train -m training.diffusion --task tray_transfer --pack $testPack --engineering --stop-after 2 --output $testDpRun
+& $train -m training.diffusion --task tray_transfer --resume "$testDpRun/checkpoints/last.pt" --stop-after 2
+```
+
+工程属性随 checkpoint 恢复，不会变成正式训练；`completion.json` 的停止状态与完成总预算分别记录。上述工程命令不验证 DP 自主成功率。
 
 ### 7.1 高侧壁托盘到高台：tray_to_platform
 
@@ -267,6 +341,7 @@ $task = 'tray_to_platform'
 | `manage_dataset prepare` | Curation + auto/reviewed | prepared、PREPARED_CURRENT | train |
 | `manage_dataset pack/verify-pack` | Prepared + 固定 split | training_packs、TRAINING_PACK_CURRENT | train |
 | `-m training.papera` | task、variant、明确 Pack | outputs/training/task/variant/run | train/CUDA |
+| `-m training.diffusion` | task、明确 Pack；可选check-only | outputs/training/task/diffusion/run（检查不建run） | train/CUDA |
 | `--resume / --continue-from` | 指定 last.pt 和冻结来源 | 原 run / 新续训 run | train/CUDA |
 | `analyze_checkpoint / plot_training_analysis` | run 与 checkpoint | run/analysis | train / collect |
 | `-m rollout check` | task、run、best/last | 来源核验终端报告 | train |
@@ -290,7 +365,8 @@ $task = 'tray_to_platform'
 | `python -m collection start --task ...` | 使用 `$collect`；可指定种子、操作者和端口 | 跳过交互菜单，启动指定任务的同一套采集服务 | 与CMD相同；`--no-browser`不打开浏览器，`--headless`不显示MuJoCo窗口 |
 | `dataset/manage_dataset.py` | 使用 `$train`，指定 `--task` 和子命令；`preview-menu`可交互选择任务 | `process/reclip`处理，`review`可写审核，`preview`只读裁剪预览，`prepare/pack/verify-pack`导出和核验 | `outputs/dataset/<task_id>/`；审核默认8026，不控制机器人 |
 | `dataset/PREVIEW-CURATION.cmd` | 双击，选任务与菜单1/2/3；可传 `-Task tray_to_platform -Port 8026` | 调用 `start-preview.ps1` 配置训练环境，再调用同一 `manage_dataset.py preview-menu`；选1/2仅预览，选3才处理数据；不训练 | 浏览器自动打开，只读预览；终端显示版本与实际端口，Ctrl+C退出 |
-| `python -m training.papera` | 使用 `$train`；显式指定task、variant、Pack，或指定resume checkpoint | 启动训练；Baseline/Gesture共用入口，默认20,000步；不会自动打开采集网页 | `outputs/training/<task>/<variant>/<run_id>/`；按第5节恢复 |
+| `python -m training.papera` | 使用 `$train`；显式指定task、variant、Pack，或指定resume checkpoint | 启动训练；Baseline/Gesture共用入口，默认40,000步；不会自动打开采集网页 | `outputs/training/<task>/<variant>/<run_id>/`；按第5节恢复 |
+| `python -m training.diffusion` | 使用 `$train`；指定task和Pack，或DP last.pt | DP默认40,000步；`--check-only`只读检查；`--stop-after N`保存并暂停本次更新 | `outputs/training/<task>/diffusion/<run_id>/`；按第5.1节恢复 |
 | `python -m rollout` | 使用 `$train`；显式指定task、mode、run/Pack | `check`只检查，`prepare`只固定初态清单，`preview`执行一次，`batch`批量执行，`summarize`汇总 | `outputs/rollout/<task>/<variant>/`；默认headless，视频须等完成后播放 |
 | `python -m training.papera.analyze_checkpoint` | `& $train -m training.papera.analyze_checkpoint --run $run` | 读取checkpoint做离线指标分析，不继续训练 | `<run>/analysis/evaluation/` |
 | `python -m training.papera.plot_training_analysis` | `& $collect -m training.papera.plot_training_analysis --run $run` | 读取已有训练/分析结果生成图表 | `<run>/analysis/figures/` |
@@ -305,9 +381,12 @@ $task = 'tray_to_platform'
 | F5名称 | 实际含义 | 需要输入 |
 |---|---|---|
 | `Paper A · Collection` | 启动采集，使用mujoco_repro | task_id |
-| `Paper A · Baseline 20000 steps` | 开始正式Baseline训练 | task_id、已验证的正式Pack绝对路径 |
-| `Paper A · Gesture 20000 steps` | 开始Gesture辅助监督训练 | 与Baseline相同的task_id及Pack |
+| `Paper A · Baseline 40000 steps` | 开始正式Baseline训练 | task_id、已验证的正式Pack绝对路径 |
+| `Paper A · Gesture 40000 steps` | 开始Gesture辅助监督训练 | 与Baseline相同的task_id及Pack |
 | `Paper A · Resume interrupted run` | 恢复同一次中断训练，不改变预算 | task_id、完整`checkpoints/last.pt`路径 |
+| `Paper A · DP Train 40000 steps` | 按DP配置开始训练，默认40,000次更新 | task_id、正式Pack绝对路径 |
+| `Paper A · DP check` | 只检查DP数据接口与张量，不启动训练 | task_id、正式Pack绝对路径 |
+| `Paper A · DP Resume` | 恢复同一次DP训练，不改变预算 | task_id、DP的完整`checkpoints/last.pt`路径 |
 | `Paper A · Rollout check` | 核对模型、数据和场景，不执行仿真 | task_id、训练run目录 |
 | `Paper A · Rollout preview 60 s` | 执行一次最多60秒仿真 | task_id、训练run目录 |
 
