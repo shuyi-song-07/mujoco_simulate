@@ -7,16 +7,19 @@ for path in (ROOT,ROOT/'tests/task3',ROOT/'tests/papera'):sys.path.insert(0,str(
 MODULES=[
     'tests.test_task_registry',
     'tests.test_dataset_navigation',
+    'tests.test_recorded_collection',
+    'tests.test_native_source_paths',
     *['tests.task3.'+n for n in (
         'test_sequence_stitching','test_adjacent_stationarity','test_wait_compression',
         'test_height_protection','test_terminal_tail','test_frame_evidence',
-        'test_curation_rules','test_intent_curation','test_curation_safety',
+        'test_curation_rules','test_intent_curation','test_curation_safety','test_review_junction_sources',
+        'test_merge_prepared','test_training_pack_union',
         'test_single_view_prepared_pack','test_measurement_journal','test_hand_measurement','test_review_server','test_review_preview',
-        'test_gesture_hand_guard','test_rate_hand_guard','test_rate_config',
+        'test_gesture_hand_guard','test_rate_hand_guard','test_rate_config','test_recorded_rate_audit',
         'test_level_gripper_control','test_operator_view','test_training_camera','test_raised_placement',
         'test_highwall_platform','test_platform_success')],
     *['tests.papera.'+n for n in ('test_safe_stitch_data','test_act_model','test_action_chunks',
-        'test_policy_executor','test_training_loop','test_diffusion_model',
+        'test_policy_executor','test_training_loop','test_check_training_pack','test_diffusion_model',
         'test_diffusion_data','test_diffusion_training')]
 ]
 if __name__=='__main__':

@@ -233,7 +233,16 @@ class ReviewStore:
         self.indexes = []
         review_root = Path(review_source).resolve() if review_source is not None else None
         for number, episode in enumerate(self.episodes):
-            dataset = _inside(episode["dataset_root"], self.source_root)
+            dataset = Path(episode["dataset_root"]).resolve()
+            native_media_root = self.source_root
+            if not dataset.is_relative_to(self.source_root):
+                # A collection group selects original sessions through direct
+                # directory aliases. Authorize only that exact selected target,
+                # never its parent or another session's media.
+                selected = self.source_root / dataset.name
+                if not selected.is_dir() or selected.resolve() != dataset:
+                    raise ValueError("文件路径超出允许目录")
+                native_media_root = dataset
             from dataset.task3.review_sources import provenance_path
             if review_root is not None or provenance_path(dataset) is not None:
                 original = review_root
@@ -249,7 +258,7 @@ class ReviewStore:
             registered = []
             for camera_no, source in enumerate(sources):
                 external = review_root is not None or provenance_path(dataset) is not None
-                allowed_root = Path(source.get("allowed_root", self.source_root) if external else self.source_root).resolve()
+                allowed_root = Path(source.get("allowed_root", native_media_root) if external else native_media_root).resolve()
                 raw_path = Path(source["path"])
                 path = _inside(raw_path if raw_path.is_absolute() else dataset / raw_path, allowed_root)
                 if not path.is_file() and episode.get("structural_pass") is not True:

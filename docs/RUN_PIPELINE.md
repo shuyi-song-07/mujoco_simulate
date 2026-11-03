@@ -27,7 +27,7 @@ VS Code：**打开 `paperA` 文件夹**，信任本地工程并启用 Python/Pyt
 & $train scripts/configure_vscode.py
 ```
 
-它只更新 `.vscode`，不启动训练。ACT Baseline/Gesture 和 DP Train 快捷项默认预算均为40,000次参数更新，分别读取各自训练配置；使用前必须准备正式真人 Pack。正式条件统一为单 oblique RGB 640×480、单帧观察、30Hz模型动作与K30；物理仿真500Hz，控制器60Hz，每个模型动作目标执行2个控制tick。
+它只更新 `.vscode`，不启动训练。ACT Baseline/Gesture 和 DP Train 快捷项默认预算均为40,000次参数更新，分别读取各自训练配置；使用前必须准备正式真人 Pack。正式条件统一为单 oblique RGB 640×480、30Hz模型动作与K30；ACT观察1帧、DP观察2帧。物理仿真500Hz，控制器60Hz，每个模型动作目标执行2个控制tick。
 
 ## 1. 采集
 
@@ -78,6 +78,29 @@ $curation = (Get-Content -LiteralPath "$dataRoot/CURATION_CURRENT.json" -Raw -En
 
 `process` 只读取该任务已保存成功的真人原件：完整性/视频解码 → 原始事实证据 → 既有自动裁剪与 Safe Stitch。输出分别在 `audits/` 和 `curation/`；源文件指纹不变时复用完整审计。`--fresh` 强制重查原件，`--config` 指向另一份合法裁剪参数文件，每次都产生独立结果。没有可处理数据会报错，不退回旧工程。
 
+同一任务的历史采集如果只调整了握拳／张掌识别门槛，可显式使用下列兼容入口。它核对每条冻结配置，只允许 `gesture_control.close_score_min`、`open_score_min` 和可选的 `left_close_score_min` 不同；场景、相机、物理、动作契约和其余配置仍须一致。每组分别调用原有 Audit 和裁剪流程，保留原始配置、来源与兼容说明，不修改原件或裁剪规则。未加此参数时仍执行原有严格检查。
+
+```powershell
+& $train dataset/manage_dataset.py --task $task process --recorded-collection --workers 2
+$versions = (Get-Content -LiteralPath "$dataRoot/CURATION_CURRENT.json" -Raw -Encoding UTF8 | ConvertFrom-Json).recent_versions
+$versions # 每个路径是一组冻结采集配置的裁剪结果；不要只查看最后一组
+& $train dataset/manage_dataset.py --task $task preview --run $versions[0] --port 8026
+# 前一个命令持续运行服务；如需同时查看另一组，在另一个已设置 $train/$task 的终端运行：
+# & $train dataset/manage_dataset.py --task $task preview --run '<另一组完整路径>' --port 8027
+```
+
+这个入口不依赖采集者姓名、日期或固定示范编号。它保留每组冻结来源；后续联合导出显式使用 `prepare --recorded-collection`，核对真实metadata后形成同一学习任务的Prepared，原来源绑定仍逐条保留。未提供兼容参数的旧单源流程仍严格检查。
+
+同伴应发送整个原生会话目录：`data/`、`meta/`、`episode_videos/`、`research/`（含快照及episode_metadata），不能只发视频或缺研究日志的HF merged导出。相同任务、场景/模型相机、Schema与受支持的采集版本才能自动接入；操作者、seed、会话数量和原件所在盘符可不同。若不想先复制到本工程，可直接读取外部根目录：
+
+```powershell
+& $train dataset/manage_dataset.py --task $task process --source 'E:\同伴采集\完整会话根目录' --recorded-collection --workers 2
+```
+
+程序只读外部原件，仍将结果写到本工程 `outputs/dataset/<task>/`。路径、来源差异或缺文件错误会明确报告，不按采集者添加专用脚本，也不会自动补造丢失的控制记录。
+
+完整会话应保留程序生成的原目录名。重复episode key或同名目录指向不同真实会话会报错，不覆盖、不自动改名。相同输入使用稳定选择目录，复用前检查别名目标，允许既有Audit正常命中；不重定向旧目录。若仅 `config/collection.json` 的排版/换行令文件指纹不同，须用完整冻结配置和实际metadata证明语义一致，不能凭空diff标记放行；场景、模型相机或字段变化仍拒绝。
+
 审核网页默认 8026。新单视角记录显示 oblique，并可生成对应裁剪预览；历史含 oblique 的三/四视角记录显示 top/front/oblique；只有旧 top/front/side 原件仍显示旧三视角。单视角存在遮挡时，不要仅凭看不清就认定抓取正确，应结合物理/接触证据。正式模型始终只有 oblique；采集网页的其他视角仅辅助实时观察，不作为新录制视频或训练输入。原片、逐帧 a/s/手势、删留原因、保护区间、裁剪预览和人工覆盖保留。灰色帧在原片中仍然可见；只有“生成/更新裁剪预览”播放删留后的顺序。预览不自动批准数据，人工排除保护段仍需理由。
 
 调参数后不必重新复制视频，可从明确的 Audit 重建：
@@ -101,9 +124,41 @@ $pack = (Get-Content -LiteralPath "$dataRoot/TRAINING_PACK_CURRENT.json" -Raw -E
 & $train dataset/manage_dataset.py --task $task verify-pack --pack $pack
 ```
 
+多个Curation来源用同一个prepare入口（单来源原命令继续适用）：
+
+```powershell
+$task = 'tray_to_platform'
+$dataRoot = "outputs/dataset/$task"
+$curations = (Get-Content "$dataRoot/CURATION_CURRENT.json" -Raw -Encoding UTF8 | ConvertFrom-Json).recent_versions
+$choice = Get-Content "$dataRoot/SELECTION_CURRENT.json" -Raw -Encoding UTF8 | ConvertFrom-Json
+# 本轮沿用已固定的49/15 split；新实验可提供另一份事先确定的完整会话split
+& $train dataset/manage_dataset.py --task $task prepare --run $curations --recorded-collection --review-mode auto --split-file $choice.split --workers 2
+$prepared = (Get-Content "$dataRoot/PREPARED_CURRENT.json" -Raw -Encoding UTF8 | ConvertFrom-Json).path
+& $train dataset/manage_dataset.py --task $task pack --prepared $prepared --split-file $choice.split
+$pack = (Get-Content "$dataRoot/TRAINING_PACK_CURRENT.json" -Raw -Encoding UTF8 | ConvertFrom-Json).path
+```
+
+`--run`可接一个或多个明确路径，不能把同一批数据的两个重复裁剪版本同时合并。prepare的`--workers 1..4`只控制独立来源导出的并行数，默认2；`--output`可指定一个不存在的新联合Prepared目录。每组原Prepared在`prepared_sources/`，给Pack使用的联合导出在`prepared/`；RGB只在`training_packs/`生成缓存，不复制原视频。联合来源声明在构建时核实，同伴姓名/会话数量不写死。固定split若不提供，普通Pack沿用既有整会话规则；本轮已给定split，因此不能静默替换。
+
 Prepared 保存保留索引、原时间和标签；Pack 解码/cache oblique 并固化数组、虚拟序列、Mask、来源和 split。它不会再次删帧。正式输入来自 **Pack 目录**，不能直接给模型 Raw 或 Prepared。
 
 默认按整个原始会话划分：种子 20261016，约 20% 会话作为验证，至少一个；因此至少需要两个独立采集会话。不是把同一示范的相邻窗口随机分到训练和验证。需要人工固定 split 时传 `--split-file <JSON>`，字段为 `train_sessions`、`val_sessions`（可参考自动生成的 `splits/*.json`）。
+
+2026-11-03 本轮选样：明确排除 `20261103_182433_791007` 的 episode 2、3、4、8、11、12、13、15。理由保存在既有 Curation 的正式 `reviews.json`（`rejected`，不伪称完整观看），并加入 `config/curation.json → quality.excluded_episodes`，防止后续重裁剪时重新成为候选。原始文件和自动裁剪证据保留。仅修改当前配置不会追改旧 Curation，所以两处排除都已写入。
+
+保留64条、60,035帧，按原有整会话规则固定49条训练/15条验证（验证会话 `20261103_144145_400130`）。`SELECTION_CURRENT.json` 导航到带逐条来源、排除理由、两组原始绑定及配置快照的选样清单和同一份 `split.json`：
+
+```powershell
+$task = 'tray_to_platform'
+$dataRoot = "outputs/dataset/$task"
+$chosen = Get-Content "$dataRoot/SELECTION_CURRENT.json" -Raw -Encoding UTF8 | ConvertFrom-Json
+Get-Content $chosen.selection -Raw -Encoding UTF8 | ConvertFrom-Json | Select-Object included_episodes,excluded_episodes,retained_frames,is_training_pack
+Get-Content $chosen.split -Raw -Encoding UTF8
+```
+
+这份清单不是Training Pack，不可传给 `--pack`。两组原绑定由联合Prepared/Pack完整保留；模型实际只接收 `TRAINING_PACK_CURRENT.json.path` 指向的一个正式Pack。ACT和DP在该Pack同一训练部分各拟合自己的归一化，不分别对两组拟合后拼接。各个有效单源Pack的命令继续适用。
+
+本轮实际生成的联合Prepared为 `outputs/dataset/tray_to_platform/prepared/prepared_20261103_211127_436073`；联合Pack为 `outputs/dataset/tray_to_platform/training_packs/auto_20261103_213247_870817`。64条、60,035帧全部构建完成，`complete=true`、`data_ready=true`，CURRENT已指向该Pack。`review_mode=auto`、`human_reviewed=false`，所以`training_ready=false`仍提示未全量人工质量批准，不表示缓存构建失败；现有ACT的`allow_exploratory=true`与DP入口允许用它进行本轮数据可用性Baseline实验。结构检查通过不保证示范质量或任务成功率。
 
 构建中断时，使用该次明确的 Prepared/output：
 
@@ -115,6 +170,8 @@ $partialPack = '<该次 training_packs/... 的实际目录>'
 会复用 `build.json` 中冻结的 split；源、代码、split 或图像规格改变将拒绝恢复。已有完整 Pack 不覆盖；修改裁剪后构建新 Pack 并明确选择。
 
 ## 4. ACT 公平训练两组
+
+本轮先只运行ACT Baseline和DP Baseline，用于验证这批数据能否学到任务，不增加新模型或新loss，不做大范围调参。以下只是正式训练命令，本轮数据准备不会自动执行；同一GPU先运行一个模型，结束后再运行另一个。
 
 先确认 `$pack` 是本任务的正式真人数据，运行 verify-pack 后保留这个值。两组用 **同一个 Pack、split、seed、训练预算和主干配置**：
 
@@ -156,9 +213,9 @@ DP 复用同一任务的正式 Training Pack、会话 split、S16/A14 和 Safe S
 & $train -m training.diffusion --task $task --pack $pack
 ```
 
-默认配置为 `config/training_diffusion.json`：单 oblique RGB 640×480全画面、单帧观察（`model.observation_horizon=1`）与16D state 条件，预测从当前锚点起的30帧14D action，模型动作频率30Hz。动作尾部 padding 不参加损失；如另做历史长度实验，历史观察不跨硬边界，首部不足时重复同一合法序列首帧。State/Action 的 min-max 归一化仅拟合训练 split，再供验证和恢复使用。模型为 ResNet18 + SpatialSoftmax（32个空间关键点）+ 带 FiLM 条件的1D U-Net，cosine 100步加噪，以 epsilon MSE 训练，预测用10步 DDIM；`action_horizon=8` 保存为后续滚动执行配置，本轮未接入闭环执行。DP 不使用手势标签或 Gesture head。这是依据[原作者实现](https://github.com/real-stanford/diffusion_policy)适配本工程数据接口的基线，未声称复现论文全部超参数或结果。
+默认配置为 `config/training_diffusion.json`：单 oblique RGB 640×480全画面、过去至当前2帧观察（`model.observation_horizon=2`）与每帧16D state 条件，预测从当前锚点起的30帧14D action，模型动作频率30Hz。单视角与多帧历史是两个概念，不增加摄像头。动作尾部 padding 不参加损失；历史观察不跨硬边界，首部不足时重复同一合法序列首帧。State/Action 的 min-max 归一化仅拟合训练 split，再供验证和恢复使用。模型为 ResNet18（GN）+ SpatialSoftmax（32个空间关键点）+ 128维视觉投影 + 带 FiLM 条件的1D U-Net，通道 `[256,512,1024]`、卷积核3、时间嵌入128。cosine 100步加噪，以 epsilon MSE 训练，预测用10步 DDIM；`action_horizon=8` 保存为后续滚动执行配置，本轮未接入闭环执行。DP 不使用手势标签或 Gesture head。这是依据[原作者实现](https://github.com/real-stanford/diffusion_policy)适配本工程数据接口的基线，未声称复现论文全部超参数或结果。
 
-ACT 与 DP 默认均为单帧观察、640×480、K30和40,000次更新；算法对照使用同一 Pack、split、相机与预算。任何额外历史、降分辨率或预算调整均作为独立实验记录，不能混称为默认正式条件。
+ACT 与 DP 使用相同640×480、K30、batch16和40,000次更新。ACT保持1帧观察，DP使用2帧；同一算法内Baseline/Gesture必须用相同数据、split、相机、历史和预算。跨算法比较需要披露历史不同，不能称输入信息完全相同；严格控制历史的比较可另跑DP-H1。以后的历史、分辨率、宽度或预算变化都作为新实验记录。
 
 默认 AdamW 学习率1e-4、batch16、40,000次更新、warmup500、BF16，EMA 衰减上限0.999且开始阶段预热。每25步记录训练日志，每1000步验证和保存，最终/请求停止时也验证保存。`best.pt` 依据固定噪声与 timestep 的 **EMA 验证 noise MSE** 选择；默认检查完整验证集（`validation_batches=null`），其中前2个 batch 另记录 DDIM 采样动作误差作诊断。采样误差与训练损失都不是任务成功率。
 
@@ -168,7 +225,8 @@ DP 常用配置字段如下；ACT 的对应公共条件在 `config/training_base
 |---|---:|---|
 | `steps` / `batch_size` | 40000 / 16 | 优化器更新总数 / 每次使用的样本窗口数 |
 | `image_size` | `[640,480]` | 模型全画面输入的宽、高，单位像素 |
-| `model.observation_horizon` | 1 | 每个条件包含的过去至当前观察帧数；默认与ACT同为单帧 |
+| `model.observation_horizon` | 2 | 同一摄像头过去至当前的2个合法观察锚点；不增加相机，不移动当前动作的因果起点 |
+| `model.down_dims` | `[256,512,1024]` | U-Net三层通道；从工程轻量版扩大，选作者类构造器默认值，不冒称视觉YAML唯一默认 |
 | `model.prediction_horizon` | 30 | 预测未来动作数量，本工程正式Pack接口使用K30 |
 | `model.action_horizon` | 8 | 后续闭环滚动执行时计划取用的前8个目标；当前训练仍监督全部有效K30 |
 | `model.diffusion_steps` | 100 | 从干净动作到噪声的100级扩散时间表 |
@@ -199,6 +257,39 @@ Get-Content "$dpRun/metrics.jsonl" -Tail 5
 ```
 
 现有 `training.papera.analyze_checkpoint`、ACT 绘图和 `rollout` 不支持 DP checkpoint。DP 的独立闭环执行与成功率评估需后续接入验证，不能把 DP 权重交给现有 ACT Rollout。
+
+### 4.2 64条选样的固定实验参数与队友对齐
+
+本轮调整只发生在数据质量决定及正式JSON参数：排除指定8条；DP历史1→2，U-Net通道 `[128,256,512]`→`[256,512,1024]`。ACT配置数值不变，不修改两个模型的损失和训练数学实现，不启动正式训练。两份正式参数文件为 `config/training_baseline.json`、`config/training_diffusion.json`；选样目录同时保存它们的快照，不另造一套训练入口。旧checkpoint恢复使用其中冻结的配置，不能拿旧DP权重冒充本轮H2/新宽度模型。
+
+| 条件 | ACT Baseline / ACT Gesture主干 | DP Baseline（DP Gesture尚未实现） |
+|---|---|---|
+| 摄像头、图像 | 单oblique，640×480整幅 | 相同 |
+| State / Action | 实测S16；末端XYZ+RPY+米制爪宽A14 | 相同 |
+| RGB/State/模型动作 | 30Hz；控制60Hz；物理500Hz | 相同 |
+| 观察历史 / 未来 | 当前1帧 / K30 | 过去至当前2帧 / 未来30；第0项仍是当前观察后下一合法tick |
+| 训练预算 | 40,000次参数更新，batch16 | 相同；非40,000个epoch |
+| seed / 精度 | 20261016 / BF16 autocast | 相同；关键归一化、loss和DDIM算术保留FP32路径 |
+| Backbone | 本地ImageNet预训练ResNet18 | 本地同源ResNet18，BN换为GN，32关键点SpatialSoftmax，视觉投影128 |
+| 主体 | hidden256、FFN1024、encoder/posterior/decoder各4层、heads8、latent32、dropout0.1 | FiLM条件1D U-Net，down256/512/1024、kernel3、GN最多8组、time_dim128 |
+| 优化器 | AdamW；主模型1e-4 / backbone1e-5；WD1e-4；默认betas(.9,.999) | AdamW；LR1e-4；WD1e-6；betas(.95,.999) |
+| LR / 梯度裁剪 | warmup500 + cosine，末值为峰值10%；clip1 | 相同 |
+| 归一化 / loss | train-only z-score；有效动作L1 + KL10 | train-only min-max；有效动作坐标的epsilon-MSE；100步cosine加噪 |
+| EMA / 推理 | 不使用EMA；z=0 | EMA预热、上限.999；DDIM10、eta0；规划执行前8步，约0.267秒后重规划（闭环入口待接） |
+| 验证 / 保存 / 日志 | 每1000 / 1000 / 25次更新 | 相同；workers2，ACT当前workers0 |
+| best选择 | 全验证集prior动作L1 | 全验证集固定噪声EMA noise-MSE；前2批DDIM动作指标只作诊断 |
+
+选择依据和边界：
+
+- [原DP论文v5](https://arxiv.org/html/2303.04137v5)附录B.1支持多数视觉任务使用2帧历史；附录A.4既有84×84仿真图，也有320×240真实图，不存在必须128×128的统一规则。本任务要同时看双臂抓柄、托盘和高台，先保持原4:3全画面和已有640×480契约；直接缩成128×128会改变比例。以后降分辨率应保持比例，并对所有同模型对照同步改变。
+- `[256,512,1024]`、kernel3来自[作者ConditionalUnet1D类默认](https://github.com/real-stanford/diffusion_policy/blob/main/diffusion_policy/model/diffusion/conditional_unet1d.py)，不是作者所有视觉实验的唯一默认：[视觉YAML](https://github.com/real-stanford/diffusion_policy/blob/main/diffusion_policy/config/train_diffusion_unet_image_workspace.yaml)采用更宽的512/1024/2048、kernel5。本工程仍是适配实现；本轮从工程轻量版回到有源码依据的中等容量，不宣称已证明比小模型更好。
+- 同一视觉YAML支持LR1e-4、AdamW betas(.95,.999)、WD1e-6、500步warmup与EMA+GroupNorm。我们的EMA预热曲线与作者幂律曲线不同，上限.999也非作者模板的.9999，作为本轮固定工程设置披露；不能仅因朋友关闭EMA就照关，也不能将clip1称为论文唯一规定。
+- 作者论文正文§3.4描述100步训练/10步DDIM推理，附录又有16步真实推理和100步仿真推理。故本轮固定10作为实时推理起点，不代表它在此任务已最优；用同checkpoint比较更多去噪步属于后续执行参数实验。
+- 朋友100,000×batch4约呈现40万窗口，本轮40,000×16约64万，不能只看steps断言谁训练更多。其log100×4与本轮log25×16都约每400窗口记录；其val5000×4与本轮val1000×16也接近。GPU耗时、有效非padding监督与更新次数仍不同，不能称总算力相同。
+- seed1000与20261016没有质量高低。主运行固定20261016；正式论文建议预先声明多个训练seed（例如20261016/17/18），全部报告均值和波动，固定同一份split；DP训练seed在其JSON中设置。
+- ACT-H1与DP-H2对应各自配置，历史信息不同。Paper A的辅助监督增益应先在同一算法内比较Baseline/Gesture；如直接比较ACT与DP，应公开差异或补DP-H1。不能强制两算法采用相同loss、归一化和EMA来冒充公平。
+
+本机RTX5090实测本轮DP配置的合成B16/H2/640×480前向、反向、参数更新、padding及DDIM10输出均通过，模型约54.34M参数；单次更新峰值分配显存约5.16GiB。该数字不包含完整训练所有附加开销，也不能证明模型收敛或任务成功。检查结果在 `.local/checks/experiment_freeze_20261103/dp_h2_gpu_check.json`。40,000步是首轮固定预算，不是收敛保证；最终仍须独立闭环验证，而非只比较ACT的L1与DP的noise-MSE。
 
 ## 5. 中断恢复与延长预算
 
@@ -257,6 +348,20 @@ $evaluation = '<实际 outputs/rollout/任务/variant/evaluation_id>'
 `summary.json` 的 task_success_rate 是任务成功率，timeout、基础设施错误、干预比例分别看；部分完成的比例不当作正式50次结果。托盘正式评估仍采用原来 **每爪至少半开**（0.5）加真实抓取、抬升、脱离接触、到位、支撑、停稳等条件，不要求全开；迁移没有放宽其余物理判据。采集 DONE 的原有逻辑也没有在本轮修改。
 
 ## 7. 可重复的工程检查（不用于论文结果）
+
+对正式真人Pack可先做不写文件的接口检查，再按需要做至多每算法3次独立工程更新。工具读取两份实际JSON配置，当前ACT H1、DP H2，默认使用各自batch16；不是重新裁剪或正式40,000步训练：
+
+```powershell
+$task = 'tray_to_platform'
+$pack = (Get-Content "outputs/dataset/$task/TRAINING_PACK_CURRENT.json" -Raw -Encoding UTF8 | ConvertFrom-Json).path
+& $train -m tests.check_training_pack --task $task --pack $pack
+# 可选；输出目录需换成未使用的新名称
+& $train -m tests.check_training_pack --task $task --pack $pack --updates 2 --device cuda --output '.local/checks/pack-check-01'
+```
+
+默认检查官方Pack Reader、ACT/DP历史形状、原观察后下一合法tick、所有安全拼接/硬边界两侧、Padding与train-only归一化。可选短更新会在第一步保存独立engineering checkpoint，重建模型并恢复optimizer/scheduler/sampler/RNG和DP EMA后继续；checkpoint明确不可部署，不等同完整正式训练或闭环成功。默认不重复全量大缓存哈希；确需完整字节核验可显式加 `--full-verify`。
+
+2026-11-03 对本轮64条真人Pack的实际检查已完成：训练45,958个窗口、验证14,077个窗口，其中分别9,359/2,319个窗口跨Dataset已验证的安全拼接；非法动作锚点均为0。ACT H1、DP H2都以640×480、batch16、CUDA/BF16执行2次参数更新，第一步保存并恢复完整工程状态后继续，状态一致、损失和梯度有限。原始因果动作、全部拼接及硬边界两侧、Mask、训练集归一化检查通过。报告位于 `.local/checks/pipeline_readiness_20261103/real_pack_check/report.json`；全回归467项（3项跳过）及采集39项通过。这些结果仅证明数据接口与短更新/状态恢复可用，不证明模型已学会任务，也不替代正式trainer的长训练收敛或闭环成功率评估。本轮没有启动正式训练或执行Git提交。
 
 ```powershell
 & $train tests/run_regressions.py

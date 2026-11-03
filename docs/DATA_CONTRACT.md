@@ -21,6 +21,10 @@ Task(task_id + task_version + task_binding)
 
 Task Binding 含 task_id、task_version、scene_id、Manifest SHA、Schema、七个任务 hook、XML/mesh 路径和 source_files 哈希。共享采集/仿真配置也参与绑定。Source files 必须覆盖自定义任务代码的依赖；新增文件后要更新清单。正式来源审计在 Task 配置或资源变化时拒绝旧绑定，不自动取当前参数解释历史数据。DP 默认训练检查 Pack 内冻结身份，完整文件和当前源码审计由显式 `--full-verify` 启用，见下文。
 
+同任务的多来源联合使用明确的采集参数等价契约，不能直接重写旧绑定。`dataset/task3/merge_prepared.py` 先核各原Prepared与实际episode_metadata，只允许 `tasks.recorded_collection.ALLOWED_CONFIG_PATHS` 中已支持的采集门槛不同，场景、模型相机、资产、Schema和其余配置必须一致。联合Prepared/Pack的全局 `task_binding` 表示当前规范学习任务（learning domain）；`source_task_bindings`、`source_prepared_manifests` 和 `dataset_collection_compatibility` 完整冻结原采集版本与差异，每条episode保存 `source_task_binding`、`source_prepared`、`source_prepared_manifest_sha256`。原Raw和源Prepared绑定不变。
+
+构建时实际读取原metadata，核对其冻结记录，不能仅靠手写proof取得资格；联合输入还需逐条经过原NPZ/index/sequence因果与拼接检查。Pack随后内嵌这些已核来源，小元数据及每条来源关系在轻量读取时仍验证，但不要求原电脑、原Prepared目录或Raw在线。排除名单取来源并集，重复episode、来源错配、不同相机/场景及split交叉均拒绝。提供的master split冻结到联合Prepared，Pack不得静默改用另一份划分。
+
 任务目录只允许本工程中的资源。模型创建、随机初态、reset、采集终态、Rollout monitor、评估前检查和 Dataset 事实语义通过任务钩子连接，签名见 [ADD_TASK.md](ADD_TASK.md)。执行器本身仍为共享 `dual_panda_v1`。
 
 ## Raw 契约
@@ -49,7 +53,7 @@ Task Binding 含 task_id、task_version、scene_id、Manifest SHA、Schema、七
 | 夹爪 | 连续米制宽度，0为闭；当前每爪最大约0.08m，以冻结配置为准；不是0/255 |
 | Raw RGB / Pack | oblique RGB uint8，640×480×3；不透明机器人 |
 | ACT 模型 RGB | 单帧单相机 `[B,1,3,480,640]`，全画面、float32/255，模型内部沿用原ImageNet归一化 |
-| DP 模型观察 | 默认单帧 oblique，RGB `[B,1,1,3,480,640]`、State `[B,1,16]`，`observation_horizon=1`；模型内部ImageNet归一化 |
+| DP 模型观察 | 当前正式配置使用同一 oblique 的过去至当前2帧，RGB `[B,2,1,3,480,640]`、State `[B,2,16]`，`observation_horizon=2`；模型内部ImageNet归一化 |
 | 物理/控制/图像与动作 | 500Hz物理（2ms步）；60Hz控制；固定相位30Hz图像锚点和30Hz模型动作，每个模型目标执行2个控制tick；控制步离散化可造成小幅间隔差异 |
 
 无效数值、Schema、相机或单位不匹配会拒绝；不同机器人的维度不能仅改 manifest 宣称兼容。
@@ -88,11 +92,13 @@ sequence = episode["diagnostics"]["virtual_sequence"]
 
 `verify` 默认校验 Manifest、文件哈希、Prepared来源、任务与工程身份、split、因果标签和拼接证明。轻量读取必须持有当前进程里由 verify 返回的有效 VerifiedPack；旧 JSON 报告不能绕过校验。RGB 是 memmap，Worker 不通过 pickle 复制整份缓存，Windows spawn 后重新打开本地映射。
 
+单源和联合来源都使用上面的同一 `verify/read_episode` 接口。联合Prepared只链接/复制既有NPZ、索引和sequence，不解码RGB、不改变删留和动作；只有随后正式Pack阶段生成一次模型RGB缓存。小型来源账本不取代数据格式、Action Mask和Safe Stitch检查。
+
 Training 的 `training/papera/pack_data.py::SafeStitchDataset` 只负责训练集归一化、合法未来窗口和张量。训练/验证按会话固定划分；归一化只拟合训练部分，验证使用同一统计。输出 action `[B,30,14]`、is_pad `[B,30]`；Padding 不参加 Action Loss 或 CVAE 有效动作编码。Gesture 是观察锚点的左右分类监督，未知/缺失由 Mask 表达，不伪造标签。
 
 DP 的 `training/diffusion/data.py::prepare_data` 默认用 `verify(..., check_hashes=False)` 检查 Pack 文件存在与尺寸、Pack/内嵌Prepared冻结的 task/schema/工程身份、会话 split、逐帧证据、S16/A14有限值、next-control因果关系及 Safe Stitch 证明。不访问外部 Raw/Prepared，不重算大文件哈希或当前任务源码哈希；`--full-verify` 才启用原完整校验。默认检查只能确认格式与接口，不能替代文件内容审计。入口只接受正式 Pack，不能把缺少原始控制/来源日志的 HF merged 数据直接视为 Pack 或在训练时修复。
 
-`DiffusionDataset` 默认返回单帧观察、30帧未来动作与有效Mask；动作仍从每个原始观察后下一合法控制tick开始，与ACT使用同一因果标签。输出 action `[B,30,14]`、is_pad `[B,30]`，硬边界之后的目标 padding 并从 epsilon MSE 排除。状态和动作按 train split 拟合 min-max，将训练集范围映射到 `[-1,1]`；RPY先按训练集角度参考处理周期，验证使用同一统计，不重新拟合、不裁切，超出训练范围的值可以超出 `[-1,1]`。冻结绑定保存 Pack 路径、Manifest元数据摘要、task_binding、工程属性、split、episode/合法序列与窗口数量、1/30/8及640×480图像规格、归一化。该摘要只覆盖小型元数据，不冒充整包内容哈希。
+`DiffusionDataset` 根据运行配置取历史；当前正式配置返回2帧观察、30帧未来动作与有效Mask。历史只在同一合法虚拟序列内取值，开头不足2帧时重复该序列首帧。动作仍从当前原始观察后下一合法控制tick开始，与ACT使用同一因果标签；不能照搬作者含过去动作序列的 `To-1` 偏移。输出 action `[B,30,14]`、is_pad `[B,30]`，硬边界之后的目标 padding 并从 epsilon MSE 排除。状态和动作按 train split 拟合 min-max，将训练集范围映射到 `[-1,1]`；RPY先按训练集角度参考处理周期，验证使用同一统计，不重新拟合、不裁切，超出训练范围的值可以超出 `[-1,1]`。冻结绑定保存 Pack 路径、Manifest元数据摘要、task_binding、工程属性、split、episode/合法序列与窗口数量、2/30/8及640×480图像规格、归一化。该摘要只覆盖小型元数据，不冒充整包内容哈希。类/函数的历史默认值仍可供既有检查点复现，正式新训练以JSON配置为准。
 
 ## 训练与 Checkpoint
 
@@ -102,9 +108,9 @@ ACT 使用原有 ResNet18 + Transformer + CVAE；Baseline 保持 L1+KL；Gesture
 
 完整 checkpoint 保留 model、optimizer、scheduler、sampler、RNG、当前步数、最佳验证值和 provenance。`best` 按验证 z=0 的动作误差选择，`last` 用于恢复；不根据测试成功率挑 best。模型在模拟中的闭环表现必须单独评估，离线 Loss 下降不等于成功。
 
-DP 入口为 `python -m training.diffusion --task ... --pack ...`，默认 `config/training_diffusion.json`。独立使用 ResNet18 和带 FiLM 的 conditional 1D U-Net，100步cosine扩散、epsilon MSE，验证采样用10步DDIM；单帧观察、动作预测30帧、`action_horizon=8`，本轮不增加手势头。`action_horizon` 是后续滚动执行配置，不表示已经接入现有 ACT Rollout。
+DP 入口为 `python -m training.diffusion --task ... --pack ...`，默认 `config/training_diffusion.json`。独立使用 ResNet18（GN）和带 FiLM 的 conditional 1D U-Net，通道 `[256,512,1024]`、卷积核3、100步cosine扩散、epsilon MSE，验证采样用10步DDIM；2帧观察、动作预测30帧、`action_horizon=8`，本轮不增加手势头。`action_horizon` 是后续滚动执行配置，不表示已经接入现有 ACT Rollout。
 
-ACT与DP正式默认均为单帧单oblique、640×480、30Hz模型动作、K30和40,000次更新；DP的 `model.observation_horizon=1`。对照实验固定同Pack、split、相机及预算；修改历史长度、分辨率或预算须作为独立实验记录。
+ACT与DP正式默认均为单oblique、640×480、30Hz模型动作、K30、batch16和40,000次更新；ACT历史为1帧，DP历史为2帧。各自Baseline/Gesture固定同Pack、split、相机、历史及预算；跨ACT/DP比较必须披露历史差异，若要求相同输入信息，另做DP-H1对照。之后修改历史长度、分辨率、网络宽度或预算须记录为新实验。
 
 DP run 为 `outputs/training/<task>/diffusion/<run_id>/`，冻结 `config.json`、`data_binding.json`、`run.json`，记录 `metrics.jsonl`、`tensorboard/`、`completion.json` 和 `checkpoints/{best,last}.pt`。Checkpoint 除模型外保存 EMA/EMA更新数、optimizer、scheduler、sampler、RNG、归一化与数据绑定。`best` 按固定噪声和timestep的 **EMA 验证 noise MSE** 选择，采样动作误差只用于诊断；`last` 恢复原配置、Pack、split和预算。默认恢复比较冻结接口和统计，不重复内容哈希；需要完整审计时加 `--full-verify`。离线误差不能说明任务自主成功率，run/checkpoint 明确记录 `closed_loop_verified=false`。
 

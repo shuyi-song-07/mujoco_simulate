@@ -114,9 +114,25 @@ def inspect_gesture_input(payload, *, parameters=None):
     return None
 
 
-def inspect_rate_input(payload, *, parameters=None):
-    """V3 checks raw category evidence; it does not infer finger angles/aperture."""
+def inspect_rate_input(payload, *, parameters=None, score_thresholds_by_side=None):
+    """V3 raw category checks, with an explicit offline-only historical override.
+
+    Live callers retain the existing common thresholds. Dataset auditing may
+    supply ``{'left': {'Z_CLOSE': fraction}}`` from frozen metadata; it never
+    lowers the right-hand threshold or changes the recorded hand evidence.
+    """
     p = {**RATE_PARAMETERS, **(parameters or {})}
+    if score_thresholds_by_side is not None:
+        if (not isinstance(score_thresholds_by_side, dict) or
+                set(score_thresholds_by_side) not in (set(), {'left'})):
+            return 'invalid_score_thresholds_by_side'
+        if 'left' in score_thresholds_by_side:
+            left = score_thresholds_by_side['left']
+            if not isinstance(left, dict) or set(left) != {'Z_CLOSE'}:
+                return 'invalid_score_thresholds_by_side'
+            value = left['Z_CLOSE']
+            if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 1:
+                return 'invalid_score_thresholds_by_side'
     if payload.get("control_protocol") != RATE_PROTOCOL:
         return "gesture_control_protocol_required"
     modes = payload.get("interaction_modes")
@@ -148,6 +164,8 @@ def inspect_rate_input(payload, *, parameters=None):
             return "untrusted_hand_measurement"
         if mode != "HOLD":
             name, threshold = expected[mode]
+            if mode == 'Z_CLOSE' and side == 'left' and score_thresholds_by_side:
+                threshold = score_thresholds_by_side['left']['Z_CLOSE']
             score = pair[0].get("gesture_score")
             if (pair[0].get("gesture") != name or type(score) not in (int, float) or
                     not math.isfinite(score) or not threshold <= score <= 1):

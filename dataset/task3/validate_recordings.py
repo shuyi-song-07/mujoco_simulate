@@ -378,7 +378,14 @@ def audit_hand_timeline(research, frozen):
                         restored.setdefault('telemetry',{}).setdefault('recognition_result',{})['measurement']=m
                         if rate:
                             from simulation.mujoco.dual_arm.hand_measurement import inspect_rate_input
-                            problem=inspect_rate_input(restored,parameters=(frozen.get('config') or {}).get('gesture_control'))
+                            parameters=(frozen.get('config') or {}).get('gesture_control') or {}
+                            # Historical collection explicitly supported a left
+                            # close threshold. Interpret it only in this offline
+                            # audit; live hand-guard callers keep their defaults.
+                            overrides=({'left': {'Z_CLOSE': parameters['left_close_score_min']}}
+                                       if 'left_close_score_min' in parameters else None)
+                            problem=inspect_rate_input(restored,parameters=parameters,
+                                                       score_thresholds_by_side=overrides)
                             check(problem is None,'accepted rate mode disagrees with recorded hand input: '+str(problem))
                         elif gesture:
                             from simulation.mujoco.dual_arm.hand_measurement import inspect_gesture_input

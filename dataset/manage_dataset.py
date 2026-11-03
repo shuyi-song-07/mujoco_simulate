@@ -321,6 +321,9 @@ def main(argv=None):
     sub=p.add_subparsers(dest='command',required=True)
     sub.add_parser('locations');sub.add_parser('list')
     a=sub.add_parser('process');a.add_argument('--config',type=Path);a.add_argument('--fresh',action='store_true');a.add_argument('--workers',type=int,default=2)
+    a.add_argument('--source',type=Path,help='Optional complete native recording root; default datasets/<task>')
+    a.add_argument('--recorded-collection',action='store_true',
+                   help='Explicitly group recordings that differ only in frozen gesture score thresholds; keep task/scene/camera checks')
     a=sub.add_parser('reclip');a.add_argument('--audit',type=Path,required=True);a.add_argument('--config',type=Path)
     env=json.loads((ROOT/'config/environments.json').read_text(encoding='utf-8'))
     for command in ('preview', 'preview-menu'):
@@ -329,10 +332,15 @@ def main(argv=None):
         a.add_argument('--no-browser',action='store_true')
         if command == 'preview': a.add_argument('--run',type=Path)
     a=sub.add_parser('review');a.add_argument('--run',type=Path,required=True);a.add_argument('--port',type=int,default=env['review_port'])
-    a=sub.add_parser('prepare');a.add_argument('--run',type=Path,required=True);a.add_argument('--review-mode',choices=['auto','reviewed'],default='auto')
+    a=sub.add_parser('prepare');a.add_argument('--run',type=Path,nargs='+',required=True);a.add_argument('--review-mode',choices=['auto','reviewed'],default='auto')
+    a.add_argument('--recorded-collection',action='store_true',help='Validate frozen collection settings and preserve source bindings when joining')
+    a.add_argument('--split-file',type=Path);a.add_argument('--output',type=Path)
+    a.add_argument('--workers',type=int,default=2,help='Independent Prepared source exports, bounded to 1..4')
     a=sub.add_parser('pack');a.add_argument('--prepared',type=Path,required=True);a.add_argument('--split-file',type=Path);a.add_argument('--output',type=Path);a.add_argument('--resume',action='store_true')
     a=sub.add_parser('verify-pack');a.add_argument('--pack',type=Path,required=True)
     args=p.parse_args(argv)
+    if args.command in ('process','prepare') and not 1 <= args.workers <= 4:
+        p.error('--workers must be within 1..4')
     if args.command in ('preview','preview-menu') and not 1 <= args.port <= 65535:
         p.error('--port must be within 1..65535')
     if args.command == 'preview-menu':
@@ -344,13 +352,27 @@ def main(argv=None):
     if args.command=='locations':print(json.dumps({'raw':str(w.source),'output':str(w.output),'config':str(ROOT/'config/curation.json')},ensure_ascii=False,indent=2))
     elif args.command=='list':
         for item in w.catalog(): print(item['path'])
-    elif args.command=='process':print(w.process(config=args.config,fresh=args.fresh,workers=args.workers))
+    elif args.command=='process':
+        options = {'config':args.config, 'fresh':args.fresh, 'workers':args.workers}
+        if args.source is not None:
+            options['source'] = args.source
+        if args.recorded_collection:
+            from dataset.recorded_collection import process_recorded
+            print(process_recorded(w,**options))
+        else:
+            print(w.process(**options))
     elif args.command=='reclip':
         from tasks.artifacts import check_artifact
         check_artifact(args.audit,args.task,args.engineering);print(w.reclip(args.audit,args.config))
     elif args.command=='review':w.review(args.run,port=args.port)
     elif args.command=='preview':w.preview(args.run,port=args.port,open_browser=not args.no_browser)
-    elif args.command=='prepare':print(w.prepare(args.run,args.review_mode))
+    elif args.command=='prepare':
+        if args.recorded_collection or len(args.run)>1 or args.split_file is not None:
+            from dataset.recorded_collection import prepare_recorded
+            print(prepare_recorded(w,args.run,review_mode=args.review_mode,output=args.output,
+                split_file=args.split_file,allow_recorded=args.recorded_collection,workers=args.workers))
+        else:
+            print(w.prepare(args.run[0],args.review_mode,output=args.output))
     elif args.command=='pack':
         m=w.pack(args.prepared,args.output,split_file=args.split_file,resume=args.resume)
         print(json.dumps({'complete':m['complete'],'episodes':m['episode_count'],'frames':m['frame_count']},ensure_ascii=False))

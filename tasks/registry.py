@@ -108,8 +108,11 @@ def validate_binding(binding, task_id=None):
     if task_id is not None and binding["task_id"] != task_id:
         raise ValueError(f"Cross-task input rejected: {binding['task_id']} != {task_id}")
     task = get(binding["task_id"])
-    if binding != task.binding():
-        raise ValueError(f"Frozen task/assets differ from current task {task.id}; restore exact task sources or register a new version")
+    current_binding = task.binding()
+    if binding != current_binding:
+        from tasks.recorded_collection import accepts_recorded_collection
+        if not accepts_recorded_collection(binding, current_binding):
+            raise ValueError(f"Frozen task/assets differ from current task {task.id}; restore exact task sources or register a new version")
     return task
 
 def hook(config, name):

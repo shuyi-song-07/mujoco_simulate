@@ -7,6 +7,7 @@ is applied: every retained Prepared frame has exactly one cache row.
 from __future__ import annotations
 
 import argparse
+import copy
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -26,6 +27,10 @@ ALIGNMENT = 'next_control_tick_at_raw_observation_anchors'
 STAGES = ('free_stationary', 'free_motion', 'contact_hold', 'contact_motion',
           'partial_grasp', 'dual_grasp_hold', 'dual_grasp_motion', 'releasing',
           'terminal_success', 'terminal_failure')
+SOURCE_MANIFEST_FIELDS = ('source_task_bindings', 'source_prepared_manifests',
+                          'dataset_collection_compatibility')
+SOURCE_EPISODE_FIELDS = ('source_task_binding', 'source_prepared',
+                         'source_prepared_manifest_sha256')
 
 
 def sha256(path):
@@ -106,6 +111,7 @@ def _load_prepared(root):
     episodes = manifest.get('episodes', [])
     if not episodes or len({e['key'] for e in episodes}) != len(episodes):
         raise ValueError('Prepared episodes are empty or duplicate')
+    _validate_prepared_sources(manifest)
     for ep in episodes:
         if (not ep.get('training_candidate') or ep.get('quality_exclusion_reason')
                 or ep.get('review', {}).get('quality') in ('C','rejected')):
@@ -114,6 +120,77 @@ def _load_prepared(root):
         if len(views) != 1 or views[0].get('camera') != 'oblique':
             raise ValueError('Only one oblique training camera is permitted')
     return manifest
+
+
+def _has_source_provenance(manifest):
+    return (any(name in manifest for name in SOURCE_MANIFEST_FIELDS)
+            or any(name in episode for episode in manifest.get('episodes', [])
+                   for name in SOURCE_EPISODE_FIELDS))
+
+
+def _validate_prepared_sources(manifest):
+    """A union requires complete source declarations, including offline reads."""
+    if not _has_source_provenance(manifest):
+        return
+    if (not all(name in manifest for name in SOURCE_MANIFEST_FIELDS)
+            or any(not all(name in episode for name in SOURCE_EPISODE_FIELDS)
+                   for episode in manifest.get('episodes', []))):
+        raise ValueError('Incomplete multi-source Prepared provenance declaration')
+    from dataset.task3.merge_prepared import validate_manifest
+    validate_manifest(manifest)
+
+
+def _validate_episode_sources(entry, original):
+    for name in SOURCE_EPISODE_FIELDS:
+        if (name in entry) != (name in original) or entry.get(name) != original.get(name):
+            raise ValueError(f'Pack episode source provenance differs from Prepared: {entry.get("key")} ({name})')
+
+
+def _validate_source_split(prepared, split):
+    frozen = (prepared.get('dataset_collection_compatibility') or {}).get('split')
+    if frozen is not None and split != frozen:
+        raise ValueError('Pack split differs from the frozen Prepared union split')
+
+
+def _validate_pack_sources(manifest, frozen):
+    if not (_has_source_provenance(manifest) or _has_source_provenance(frozen)):
+        return
+    _validate_prepared_sources(frozen)
+    _validate_source_split(frozen, manifest.get('split'))
+    for name in SOURCE_MANIFEST_FIELDS:
+        if (name in manifest) != (name in frozen) or manifest.get(name) != frozen.get(name):
+            raise ValueError(f'Pack source provenance differs from its frozen Prepared: {name}')
+    originals = {entry['key']: entry for entry in frozen.get('episodes', [])}
+    entries = manifest.get('episodes', [])
+    if (len(originals) != len(frozen.get('episodes', []))
+            or len({entry['key'] for entry in entries}) != len(entries)
+            or {entry['key'] for entry in entries} != set(originals)):
+        raise ValueError('Pack source episode set differs from its frozen Prepared')
+    if (manifest.get('task_id') != frozen.get('task_id')
+            or manifest.get('task_binding') != frozen.get('task_binding')
+            or manifest.get('engineering_only') != frozen.get('engineering_only')
+            or manifest.get('state_dim') != 16 or manifest.get('action_dim') != 14):
+        raise ValueError('Pack learning domain or schema differs from its frozen Prepared')
+    for entry in entries:
+        original = originals[entry['key']]
+        _validate_episode_sources(entry, original)
+        if (entry.get('prepared_arrays_sha256') != original.get('arrays_sha256')
+                or entry.get('source_ref') != original.get('source_ref')
+                or entry.get('source_fingerprints') != original.get('source_fingerprints')):
+            raise ValueError(f'Pack episode source evidence differs from Prepared: {entry["key"]}')
+        views = original.get('training_video_sources', original.get('video_sources', []))
+        source = dict(entry.get('source_video', {}))
+        if len(views) != 1 or views[0].get('camera') != 'oblique':
+            raise ValueError(f'Pack episode source camera differs from Prepared: {entry["key"]}')
+        video = views[0]
+        fingerprints = [record for record in original.get('source_fingerprints', [])
+                        if Path(record.get('path', '')) == Path(video.get('path', ''))]
+        if (len(fingerprints) != 1
+                or source.get('sha256') != fingerprints[0].get('sha256')):
+            raise ValueError(f'Pack episode source video fingerprint differs from Prepared: {entry["key"]}')
+        expected_source = dict(video, sha256=fingerprints[0]['sha256'])
+        if source != expected_source:
+            raise ValueError(f'Pack episode source camera differs from Prepared: {entry["key"]}')
 
 
 def _validate_frozen_config(manifest):
@@ -130,6 +207,7 @@ def _validate_pack_contract(pack, manifest, *, check_hashes=True):
     if check_hashes and sha256(frozen_path) != manifest['binding']['prepared_manifest_sha256']:
         raise ValueError('Pack frozen Prepared manifest differs from build binding')
     frozen = json.loads(frozen_path.read_text(encoding='utf-8'))
+    _validate_pack_sources(manifest, frozen)
     if manifest['version'] == VERSION:
         _validate_frozen_config(frozen)
         if (manifest.get('curation_config') != frozen.get('config')
@@ -349,6 +427,7 @@ def build(prepared, output, *, split_file, width=640, height=480, resume=False, 
         source, _, _, _ = _prepared_episode(prepared,entry,manifest['config'])
         _source_oblique_hash(entry,source)
     split = session_split(entries,split_file)
+    _validate_source_split(manifest, split)
     binding = {'prepared': str(prepared), 'prepared_manifest_sha256': sha256(prepared/'manifest.json'),
         'split_source': str(Path(split_file).resolve()), 'split_source_sha256': sha256(split_file),
         'config': {'image_width': width, 'image_height': height, 'cameras': ['oblique']},
@@ -376,6 +455,7 @@ def build(prepared, output, *, split_file, width=640, height=480, resume=False, 
                 result = json.loads(result_path.read_text(encoding='utf-8'))
                 if result.get('prepared_arrays_sha256') != entry['arrays_sha256']:
                     raise ValueError('Resume cached episode differs from Prepared')
+                _validate_episode_sources(result, entry)
                 verify_files(output,result['files'])
                 results.append(result)
                 continue
@@ -405,6 +485,7 @@ def build(prepared, output, *, split_file, width=640, height=480, resume=False, 
                 'image_paths': {'oblique': str(rgb_path.relative_to(output))},
                 'source_video': dict(source,sha256=source_hash), 'video_check': check,
                 'files': [file_record(p,output) for p in (arrays_path,rgb_path,index_path,diagnostics_path)]}
+            result.update({name: copy.deepcopy(entry[name]) for name in SOURCE_EPISODE_FIELDS if name in entry})
             write_json(result_path,result); results.append(result)
             print(f'Packed {entry["key"]}: {result["frames"]} original-index-aligned frames',flush=True)
         except Exception as exc:

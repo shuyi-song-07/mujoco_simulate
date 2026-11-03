@@ -71,7 +71,13 @@ $train = $envs.training_python
 
 体验新高台任务：双击启动器后输入 **`tray_to_platform`**，或运行 `& $collect -m collection start --task tray_to_platform --seed 0 --operator-id operator01`。物体先在原桌面，抓稳后需要把底面抬过0.45 m台顶再搬运。几何、参数与物理验收见 [全流程命令第7.1节](docs/RUN_PIPELINE.md#71-高侧壁托盘到10厘米高台tray_to_platform)。脚本物理成功不代表真人遥操作或ACT模型成功；本轮没有正式训练。
 
-ACT Baseline/Gesture 与 DP 正式默认统一为单 oblique RGB 640×480、单帧观察、30Hz模型动作、K30动作块和40,000次参数更新；DP 的 `model.observation_horizon=1`。物理仿真500Hz、控制器60Hz，每个模型动作目标执行2个控制tick。对照实验使用同一Pack、split、相机和预算。
+ACT Baseline/Gesture 与 DP 正式默认使用单 oblique RGB 640×480、30Hz模型动作、K30动作块、batch16和40,000次参数更新。ACT观察当前1帧；DP观察过去至当前2帧（仍为同一摄像头，`model.observation_horizon=2`），U-Net通道为 `[256,512,1024]`。物理仿真500Hz、控制器60Hz，每个模型动作目标执行2个控制tick。同模型 Baseline/Gesture 对照须使用相同数据、split、历史长度、主干和预算；ACT与DP历史长度不同，跨算法比较应披露，不能称输入信息完全相同。
+
+2026-11-03 的托盘候选已按用户决定排除8条，冻结64条、60,035帧，以及49条训练/15条验证的整会话划分。`SELECTION_CURRENT.json` 导航选样；`PREPARED_CURRENT.json` 导航正式导出；`TRAINING_PACK_CURRENT.json` 导航模型实际输入。它们都位于 `outputs/dataset/tray_to_platform/`，选样清单本身不是Training Pack。多个采集来源由同一个 `prepare --run <多个Curation> --recorded-collection` 入口联合，保留每条原采集绑定；ACT/DP继续读取同一个正式Pack，不维护第二套Reader。排除范围、命令及边界见全流程命令第2～4节。
+
+该联合Pack已实际完成：`outputs/dataset/tray_to_platform/training_packs/auto_20261103_213247_870817`，`complete=true`、`data_ready=true`。它采用自动裁剪，未冒充全量人工质量批准；`training_ready=false` 保留这项质量审核提示，现有探索性Baseline入口允许显式选用auto Pack。正式训练仍由使用者手动启动。
+
+同伴数据须由本工程的同任务、相同物理场景/模型相机和S16/A14契约采集，并提供完整会话（data、meta、episode_videos、research及物理快照）。不依赖操作者姓名或固定会话编号；已支持的手势置信度门槛差异会按冻结记录解释。只有MP4、缺日志的合并Parquet、不同机器人/任务/相机不能自动冒充同一数据契约。接收外部完整目录可用 `process --source <目录> --recorded-collection`，无需修改源码中的路径。
 
 先采集至少两个独立会话，再按 [全流程命令](docs/RUN_PIPELINE.md) 构建 Pack、运行 ACT Baseline/Gesture 或 DP。DP 先用 `& $train -m training.diffusion --task $task --pack $pack --check-only` 只读检查，再去掉 `--check-only` 启动训练；默认参数见 `config/training_diffusion.json`，正式输出为 `outputs/training/<task>/diffusion/<run_id>`，支持 `--resume <run/checkpoints/last.pt>`。现有 `rollout` 只支持 ACT；DP 的离线误差不代表自主成功率。工程检查与正式长训练分开，长训练由你手动启动。
 
