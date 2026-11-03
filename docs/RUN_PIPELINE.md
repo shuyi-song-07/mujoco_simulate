@@ -423,3 +423,16 @@ Get-Content '<Logs目录>/web.log' -Tail 30
 它用独立临时配置启动无界面Chrome/Edge，在连续状态刷新后检查真实DOM是否为“已连接”，不会请求摄像头或录制。它会短暂加载采集页面，因此不要与真人操作并行执行。报告、页面快照和浏览器日志保存到 `.local/checks/browser_connection/<时间戳>/`。这是界面连接检查，不替代真人手势验收。
 
 高台任务现在不要求对齐目标朝向：完整落在高台支撑范围内且通过实际松爪、稳定及抓持历史等物理条件即可进入 DONE。部署 Rollout 使用相同规则。朝向差数字仍可供观察，但不再阻止成功；悬空、仍接触夹爪、越出台面或放回原桌面仍不成功。升级后重启采集服务并 Ctrl+F5，已运行进程不会自动加载新规则。
+
+
+## 采集保存使用独显（2026-11-03）
+
+本机对**当前Windows用户**的`D:\Conda\envs\mujoco_repro\python.exe`设置`GpuPreference=2;`（高性能）。注册表键为`HKCU\Software\Microsoft\DirectX\UserGpuPreferences`，值名是该Python的完整路径。相机仍是单oblique640×480/30Hz，保存流程、原始日志和物理快照不变；未启用裁剪或启动训练。
+
+实际采集Python的新OpenGL上下文已核验：NVIDIA Corporation / NVIDIA GeForce RTX5090，驱动595.97。无需重新安装Conda或MuJoCo，下次正常双击`START-PAPERA.cmd`即可。GPU选择发生在新进程/图形上下文创建时；若以后改设置时已有采集服务运行，先保存或放弃本轮，再正常退出并重新启动，不能只刷新浏览器。
+
+整段离线工程重放使用同一份1107帧快照和两个同视角视频输出：核显36.79、39.44秒；临时独显对照4.67秒，正式采集解释器独显验证4.49秒。视频、Parquet均1107帧/行，状态与动作逐项相同；不声称不同显卡像素逐项完全相同。人手会话日志导出另测435MB完整会话约3.74秒，因此4.49秒不是“点击保存至下一轮”的保证时间。
+
+换电脑、Windows用户或Python安装路径时，需要重新配置：Windows“设置→系统→屏幕→显示卡/图形”，添加`config/environments.json`中的采集Python作为桌面应用，选择“高性能”，确认显示NVIDIA GPU并保存。训练使用CUDA并不等于采集OpenGL自动使用同一显卡。
+
+旧设置备份`.local/checks/collection-nvidia-20261103/gpu-preference-before.json`，本次此前没有该Python专用条目；如要恢复，可在Windows图形设置删除该应用的专用偏好。不要删除整个UserGpuPreferences键。Git记录本节说明，Windows显卡偏好属于本机设置，不会随源码回退或Git推送自动迁移。实际上下文、完整重放和输出检查证据均在同一检查目录。

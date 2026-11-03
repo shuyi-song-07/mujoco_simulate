@@ -79,3 +79,8 @@ ACT Baseline/Gesture 与 DP 正式默认统一为单 oblique RGB 640×480、单�
 - 全流程命令、参数、VS Code、恢复训练：[RUN_PIPELINE.md](docs/RUN_PIPELINE.md)
 - 字段、时间轴、任务隔离：[DATA_CONTRACT.md](docs/DATA_CONTRACT.md)
 - 实际迁移清单、验证与限制：[MIGRATION.md](docs/MIGRATION.md)
+
+
+## 采集保存使用独显（2026-11-03）
+
+本机已将`config/environments.json`指定的`D:/Conda/envs/mujoco_repro/python.exe`设置为当前Windows用户的高性能图形应用。新启动的采集/快照保存进程已验证使用NVIDIA RTX5090 OpenGL；无需修改帧率、相机或数据格式。相同1107帧整段重放核显36.79/39.44秒，正式解释器切独显后4.49秒；两份视频均完整解码1107帧，状态/动作一致。此耗时不含人手会话日志导出及完整网页请求过程，下一次真人保存用于确认端到端体验。设置、备份、恢复和更换电脑说明见`docs/RUN_PIPELINE.md`末尾同名节；工程证据在`.local/checks/collection-nvidia-20261103/`。
