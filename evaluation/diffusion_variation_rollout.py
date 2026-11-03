@@ -39,6 +39,7 @@ from evaluation.act_variation_rollout import (  # noqa: E402
 )
 from simulation.mujoco.record_mujoco_panda import parse_args as recorder_args  # noqa: E402
 from simulation.mujoco.render_workers import _training_cameras  # noqa: E402
+from training.Diffusion.diffusion_runtime import install_temporal_padding  # noqa: E402
 
 DEFAULT_CHECKPOINT = PROJECT_ROOT / "outputs/diffusion_variation_baseline/checkpoints/last/pretrained_model"
 
@@ -48,6 +49,7 @@ def load_policy(checkpoint: Path, device: str, action_steps: int | None = None):
     if not all((checkpoint / name).is_file() for name in required):
         raise ValueError(f"Incomplete LeRobot checkpoint: {checkpoint}")
 
+    install_temporal_padding()
     config = DiffusionConfig.from_pretrained(str(checkpoint), local_files_only=True)
     config.device = device
     config.pretrained_backbone_weights = None

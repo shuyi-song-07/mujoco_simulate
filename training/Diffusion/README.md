@@ -22,6 +22,29 @@
 
 三个入口默认将训练图像缩放为宽 640、高 480。`--image-size` 按“高 宽”接收尺寸，例如 `--image-size 480 640`；单个整数仍表示正方形，例如 `--image-size 128`。`--smoke-test` 使用 96×96 图像。
 
+三个入口共用以下完整训练配置，辅助实验只增加各自的监督头和损失：
+
+| 项目 | 默认配置 |
+| --- | --- |
+| 观察历史 | overview 相机的上一帧和当前帧，`n_obs_steps=2` |
+| 动作序列 | `horizon=30`；每次执行当前起的 8 个动作后重新规划 |
+| 网络 | ResNet18 + GroupNorm + SpatialSoftmax + FiLM 条件 1D U-Net |
+| U-Net 通道 | `[256, 512, 1024]` |
+| 优化器 | AdamW，LR `1e-4`，betas `[0.95, 0.999]`，weight decay `1e-6` |
+| 学习率调度 | warmup 500 步 + cosine，最终 LR 为峰值的 10%（默认 `1e-5`） |
+| 扩散 | 100 步训练加噪、epsilon 预测，10 步 DDIM 推理 |
+| 动作损失 | 按有效动作坐标数归一化的噪声 MSE，忽略 episode 补齐动作 |
+| 状态/动作归一化 | 仅用训练集拟合 min-max，验证集沿用训练集统计量 |
+| 训练与保存 | 40000 步，batch size 4，每 1000 步验证并保存，开启模型权重 EMA |
+
+输入输出沿用当前 Panda 数据定义：S9/A7，动作爪控制量为 0–255；本次配置调整不转换为双臂 S16/A14 或米制爪动作。数据为 30 FPS 时，每次执行 8 步约为 0.267 秒。LeRobot 的 `horizon=30` 包含与观察历史对齐的动作索引 `[-1, 0, ..., 28]`。
+
+GroupNorm 使用从头训练的 ResNet18，不加载 BatchNorm 预训练权重。`--no-pretrained-backbone` 作为兼容参数保留。
+
+长度 30 的序列在 U-Net 内临时复制尾部补齐到 32，网络输出裁回 30；数据集序列、扩散采样和损失仍使用原始长度 30。训练入口及 `evaluation/diffusion_variation_rollout.py` 共用 `diffusion_runtime.install_temporal_padding()`。如果使用其他 Python 入口加载这些 checkpoint，应先调用这个适配器，再加载配置和模型。底层 LeRobot 包不需要修改。
+
+Linux 环境安装训练依赖时，在项目根目录执行 `python -m pip install -r requirements.txt`；其中包含 LeRobot 的 `training` 和 `diffusion` 扩展。`--smoke-test` 仍使用缩小后的网络、图像及动作序列，只检查一个训练步。
+
 ## 合并 Pick-and-place 数据集
 
 将 10-22 采集的四份兼容数据合并为独立训练集（原始目录不修改）。合并前会校验 feature schema、episode 元数据、每集三路检查视频和 `hand_trajectories`；输出同时保留重新编号后的手轨迹与布局清单。

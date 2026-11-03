@@ -10,9 +10,15 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import math
 import os
 from pathlib import Path
 import sys
+
+try:
+    from .diffusion_runtime import install_temporal_padding
+except ImportError:
+    from diffusion_runtime import install_temporal_padding
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -123,16 +129,19 @@ def make_parser(auxiliary: bool = False, motion: bool = False) -> argparse.Argum
     parser.add_argument("--eval-split", type=float, default=0.1)
     parser.add_argument("--eval-steps", type=int, default=1000)
     parser.add_argument("--save-freq", type=int, default=1000)
-    parser.add_argument("--horizon", type=int, default=32)
+    parser.add_argument("--horizon", type=int, default=30)
     parser.add_argument("--n-obs-steps", type=int, default=2)
-    parser.add_argument("--n-action-steps", type=int, default=16)
+    parser.add_argument("--n-action-steps", type=int, default=8)
     parser.add_argument(
         "--image-size", type=int, nargs="+", default=(480, 640), metavar="N",
         help="Target height and width (default: 480 640); one value uses a square image",
     )
     parser.add_argument("--seed", type=int, default=1000)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
-    parser.add_argument("--no-pretrained-backbone", action="store_true")
+    parser.add_argument(
+        "--no-pretrained-backbone", action="store_true", default=True,
+        help="Kept for compatibility; GroupNorm uses a backbone trained from scratch",
+    )
     parser.add_argument("--smoke-test", action="store_true", help="One small offline training step")
     parser.add_argument("--print-command", action="store_true", help="Validate and print LeRobot arguments")
     if auxiliary:
@@ -165,21 +174,21 @@ def build_cli(args, *, auxiliary: bool) -> list[str]:
         raise ValueError("Invalid steps, batch size, horizon, observation/action steps, workers, or image size")
     if not 0 <= args.eval_split < 1 or n_action_steps > horizon - n_obs_steps + 1:
         raise ValueError("Invalid eval split or n_action_steps exceeds available horizon")
-    if horizon % (4 if args.smoke_test else 8):
-        raise ValueError("Horizon must be divisible by the Diffusion U-Net downsampling factor")
+    if not math.isfinite(args.learning_rate) or args.learning_rate <= 0:
+        raise ValueError("Learning rate must be finite and positive")
     if output.exists() and not args.print_command:
         raise ValueError(f"Output already exists: {output}")
-    down_dims = "[32,64]" if args.smoke_test else "[128,256,512]"
+    down_dims = "[32,64]" if args.smoke_test else "[256,512,1024]"
     return [
         "--ema.enable=true",
-"--ema.inv_gamma=1.0",
-"--ema.power=0.75",
-"--ema.max_decay=0.9999",
+        "--ema.inv_gamma=1.0",
+        "--ema.power=0.75",
+        "--ema.max_decay=0.9999",
         f"--dataset.repo_id={repo_id}", f"--dataset.root={root}",
         "--dataset.video_backend=pyav", "--dataset.use_imagenet_stats=true",
         f"--dataset.eval_split={args.eval_split}", "--policy.type=diffusion",
         f"--policy.device={args.device}", "--policy.vision_backbone=resnet18",
-        f"--policy.pretrained_backbone_weights={'null' if args.no_pretrained_backbone or args.smoke_test else 'ResNet18_Weights.IMAGENET1K_V1'}",
+        "--policy.use_group_norm=true", "--policy.pretrained_backbone_weights=null",
         f"--policy.n_obs_steps={n_obs_steps}", f"--policy.horizon={horizon}",
         f"--policy.n_action_steps={n_action_steps}",
         # Keep every current frame, including episode tails. The padded future
@@ -187,8 +196,17 @@ def build_cli(args, *, auxiliary: bool) -> list[str]:
         "--policy.drop_n_last_frames=0",
         f"--policy.resize_shape=[{image_h},{image_w}]",
         "--policy.crop_ratio=1.0", "--policy.use_separate_rgb_encoder_per_camera=false",
+        "--policy.use_film_scale_modulation=true",
         f"--policy.down_dims={down_dims}", "--policy.do_mask_loss_for_padding=true",
-        f"--policy.optimizer_lr={args.learning_rate}", "--policy.push_to_hub=false",
+        "--policy.noise_scheduler_type=DDIM", "--policy.num_train_timesteps=100",
+        "--policy.num_inference_steps=10", "--policy.prediction_type=epsilon",
+        "--policy.push_to_hub=false",
+        "--use_policy_training_preset=false", "--optimizer.type=adamw",
+        f"--optimizer.lr={args.learning_rate}", "--optimizer.betas=[0.95,0.999]",
+        "--optimizer.weight_decay=1e-6",
+        "--scheduler.type=cosine_decay_with_warmup", "--scheduler.num_warmup_steps=500",
+        f"--scheduler.num_decay_steps={steps}", f"--scheduler.peak_lr={args.learning_rate}",
+        f"--scheduler.decay_lr={args.learning_rate * 0.1}",
         f"--seed={args.seed}", f"--batch_size={batch_size}",
         f"--num_workers={0 if args.smoke_test else args.num_workers}",
         "--persistent_workers=false", f"--steps={steps}",
@@ -223,6 +241,7 @@ def run(args, *, auxiliary: bool = False, install_auxiliary=None) -> None:
     if args.print_command:
         return
     os.environ.setdefault("HF_HOME", str(PROJECT_ROOT / ".cache/huggingface"))
+    install_temporal_padding()
     from lerobot.scripts import lerobot_train
 
     install_input_filter(lerobot_train)
