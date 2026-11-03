@@ -117,16 +117,19 @@ def make_parser(auxiliary: bool = False, motion: bool = False) -> argparse.Argum
     )
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--device", choices=("cuda", "cpu", "mps"), default="cuda")
-    parser.add_argument("--steps", type=int, default=100_000)
+    parser.add_argument("--steps", type=int, default=40_000)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--eval-split", type=float, default=0.1)
-    parser.add_argument("--eval-steps", type=int, default=5000)
-    parser.add_argument("--save-freq", type=int, default=10_000)
+    parser.add_argument("--eval-steps", type=int, default=1000)
+    parser.add_argument("--save-freq", type=int, default=1000)
     parser.add_argument("--horizon", type=int, default=32)
     parser.add_argument("--n-obs-steps", type=int, default=2)
     parser.add_argument("--n-action-steps", type=int, default=16)
-    parser.add_argument("--image-size", type=int, default=128)
+    parser.add_argument(
+        "--image-size", type=int, nargs="+", default=(480, 640), metavar="N",
+        help="Target height and width (default: 480 640); one value uses a square image",
+    )
     parser.add_argument("--seed", type=int, default=1000)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--no-pretrained-backbone", action="store_true")
@@ -154,9 +157,11 @@ def build_cli(args, *, auxiliary: bool) -> list[str]:
     horizon = 8 if args.smoke_test else args.horizon
     n_obs_steps = 2 if args.smoke_test else args.n_obs_steps
     n_action_steps = 4 if args.smoke_test else args.n_action_steps
-    image_size = 96 if args.smoke_test else args.image_size
+    if len(args.image_size) not in (1, 2):
+        raise ValueError("--image-size expects one square size or two values: HEIGHT WIDTH")
+    image_h, image_w = (96, 96) if args.smoke_test else (args.image_size[0], args.image_size[-1])
     eval_steps = 0 if args.smoke_test else args.eval_steps
-    if min(steps, batch_size, horizon, n_obs_steps, n_action_steps, image_size) < 1 or args.num_workers < 0:
+    if min(steps, batch_size, horizon, n_obs_steps, n_action_steps, image_h, image_w) < 1 or args.num_workers < 0:
         raise ValueError("Invalid steps, batch size, horizon, observation/action steps, workers, or image size")
     if not 0 <= args.eval_split < 1 or n_action_steps > horizon - n_obs_steps + 1:
         raise ValueError("Invalid eval split or n_action_steps exceeds available horizon")
@@ -166,6 +171,10 @@ def build_cli(args, *, auxiliary: bool) -> list[str]:
         raise ValueError(f"Output already exists: {output}")
     down_dims = "[32,64]" if args.smoke_test else "[128,256,512]"
     return [
+        "--ema.enable=true",
+"--ema.inv_gamma=1.0",
+"--ema.power=0.75",
+"--ema.max_decay=0.9999",
         f"--dataset.repo_id={repo_id}", f"--dataset.root={root}",
         "--dataset.video_backend=pyav", "--dataset.use_imagenet_stats=true",
         f"--dataset.eval_split={args.eval_split}", "--policy.type=diffusion",
@@ -176,7 +185,7 @@ def build_cli(args, *, auxiliary: bool) -> list[str]:
         # Keep every current frame, including episode tails. The padded future
         # action positions are excluded by do_mask_loss_for_padding below.
         "--policy.drop_n_last_frames=0",
-        f"--policy.resize_shape=[{image_size},{image_size}]",
+        f"--policy.resize_shape=[{image_h},{image_w}]",
         "--policy.crop_ratio=1.0", "--policy.use_separate_rgb_encoder_per_camera=false",
         f"--policy.down_dims={down_dims}", "--policy.do_mask_loss_for_padding=true",
         f"--policy.optimizer_lr={args.learning_rate}", "--policy.push_to_hub=false",

@@ -1348,6 +1348,12 @@ class MujocoPandaRecorder:
         ))
         grasp_xy_tolerance = min(0.07, cube_half_size + GRIPPER_CUBE_XY_MARGIN)
         grasp_vertical_velocity = float(self.data.cvel[self.hand_id][5])
+        # Push-T starts closed without a close command or a finite timestamp.
+        grasp_close_elapsed_s = 0.0
+        if self.gripper_closed and np.isfinite(self.grasp_close_started_at):
+            grasp_close_elapsed_s = max(
+                0.0, float(self.data.time) - self.grasp_close_started_at
+            )
         return {
             "task_mode": self.args.task_mode,
             "session": self.session,
@@ -1372,7 +1378,7 @@ class MujocoPandaRecorder:
             "gripper_yaw_rad": self.gripper_yaw,
             "gripper_yaw_locked": self.gripper_orientation_locked,
             "pointing_arm_locked": self.pointing_arm_qpos is not None,
-            "grasp_close_elapsed_s": max(0.0, float(self.data.time) - self.grasp_close_started_at) if self.gripper_closed else 0.0,
+            "grasp_close_elapsed_s": grasp_close_elapsed_s,
             "grasp_ready": self.gripper_ready_to_grasp(),
             "grasp_xy_error_m": round(grasp_xy_error, 4),
             "grasp_xy_tolerance_m": round(grasp_xy_tolerance, 4),

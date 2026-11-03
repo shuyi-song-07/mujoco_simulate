@@ -20,6 +20,8 @@
 
 策略图像输入固定为 `observation.images.overview`，并与 9 维机器人状态共同使用；数据集中的其他相机视频保留用于检查，不参与训练。
 
+三个入口默认将训练图像缩放为宽 640、高 480。`--image-size` 按“高 宽”接收尺寸，例如 `--image-size 480 640`；单个整数仍表示正方形，例如 `--image-size 128`。`--smoke-test` 使用 96×96 图像。
+
 ## 合并 Pick-and-place 数据集
 
 将 10-22 采集的四份兼容数据合并为独立训练集（原始目录不修改）。合并前会校验 feature schema、episode 元数据、每集三路检查视频和 `hand_trajectories`；输出同时保留重新编号后的手轨迹与布局清单。
