@@ -34,6 +34,7 @@ import torch.nn.functional as F
 from torchvision.models import resnet18
 
 from .schedule import CosineDiffusionSchedule
+from training.gesture_auxiliary import masked_gesture_loss
 
 
 @dataclass(frozen=True)
@@ -52,8 +53,15 @@ class DiffusionConfig:
     inference_steps: int = 10
     clip_sample: bool = True
     backbone_weights: str | None = None
+    variant: str = "baseline"
+    gesture_weight: float = 0.1
 
     def __post_init__(self) -> None:
+        if self.variant not in ("baseline", "gesture"):
+            raise ValueError("Diffusion variant must be baseline or gesture")
+        if (isinstance(self.gesture_weight, bool) or not isinstance(self.gesture_weight, (int, float))
+                or not math.isfinite(self.gesture_weight) or self.gesture_weight < 0):
+            raise ValueError("gesture_weight must be finite and nonnegative")
         for name in ("state_dim", "action_dim", "observation_horizon", "prediction_horizon",
                      "action_horizon", "feature_dim", "spatial_keypoints", "time_dim", "diffusion_steps", "inference_steps"):
             value = getattr(self, name)
@@ -237,6 +245,12 @@ class DiffusionPolicy(nn.Module):
         self.noise_scheduler = CosineDiffusionSchedule(c.diffusion_steps, c.clip_sample)
         self.register_buffer("image_mean", torch.tensor([.485, .456, .406]).reshape(1, 3, 1, 1))
         self.register_buffer("image_std", torch.tensor([.229, .224, .225]).reshape(1, 3, 1, 1))
+        if c.variant == "gesture":
+            # Append only after every shared parameter has been initialized.
+            # Preserve global RNG so the same seed also yields identical later
+            # diffusion-noise draws in baseline and auxiliary experiments.
+            with torch.random.fork_rng(devices=[]):
+                self.gesture_head = nn.Linear(c.observation_horizon * (c.feature_dim + c.state_dim), 6)
 
     def encode_observations(self, images: Tensor, state: Tensor) -> Tensor:
         """Encode only chronological RGB and state; no target/label argument."""
@@ -267,7 +281,9 @@ class DiffusionPolicy(nn.Module):
         return torch.cat((features, state), dim=-1).flatten(1)
 
     def compute_loss(self, images: Tensor, state: Tensor, action: Tensor,
-                     is_pad: Tensor | None, generator: torch.Generator | None = None) -> dict[str, Tensor]:
+                     is_pad: Tensor | None, generator: torch.Generator | None = None, *,
+                     gesture: Tensor | None = None,
+                     gesture_mask: Tensor | None = None) -> dict[str, Tensor]:
         """Masked epsilon MSE; padded target values never enter the denoiser.
 
         Padding may contain NaNs. Clear it before any arithmetic, and exclude
@@ -296,7 +312,19 @@ class DiffusionPolicy(nn.Module):
         squared_error = (prediction.float() - noise.float()).square().masked_fill(is_pad.unsqueeze(-1), 0)
         count = (~is_pad).sum() * c.action_dim
         loss = squared_error.sum() / count.clamp_min(1)
-        return {"loss": loss, "noise_mse": loss.detach()}
+        result = {"loss": loss, "noise_mse": loss.detach()}
+        if c.variant == "gesture" and (gesture is not None or gesture_mask is not None or self.training):
+            if gesture is None or gesture_mask is None:
+                raise ValueError("Gesture training requires explicit current-anchor labels and masks")
+            # Reads RGB/state only: no noisy actions, epsilon, timestep or future.
+            # The six independent rows are two separate three-way classifiers.
+            logits = self.gesture_head(condition).reshape(batch, 2, 3)
+            auxiliary = masked_gesture_loss(logits, gesture, gesture_mask)
+            result.update(loss=loss + c.gesture_weight * auxiliary["loss"],
+                          gesture_loss=auxiliary["loss"], gesture_count=auxiliary["count"],
+                          gesture_sum=auxiliary["sum"], gesture_confusion=auxiliary["confusion"],
+                          gesture_logits=logits)
+        return result
 
     @torch.no_grad()
     def predict_action(self, images: Tensor, state: Tensor,

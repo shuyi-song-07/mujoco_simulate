@@ -108,7 +108,9 @@ ACT 使用原有 ResNet18 + Transformer + CVAE；Baseline 保持 L1+KL；Gesture
 
 完整 checkpoint 保留 model、optimizer、scheduler、sampler、RNG、当前步数、最佳验证值和 provenance。`best` 按验证 z=0 的动作误差选择，`last` 用于恢复；不根据测试成功率挑 best。模型在模拟中的闭环表现必须单独评估，离线 Loss 下降不等于成功。
 
-DP 入口为 `python -m training.diffusion --task ... --pack ...`，默认 `config/training_diffusion.json`。独立使用 ResNet18（GN）和带 FiLM 的 conditional 1D U-Net，通道 `[256,512,1024]`、卷积核3、100步cosine扩散、epsilon MSE，验证采样用10步DDIM；2帧观察、动作预测30帧、`action_horizon=8`，本轮不增加手势头。`action_horizon` 是后续滚动执行配置，不表示已经接入现有 ACT Rollout。
+DP 入口为 `python -m training.diffusion --task ... --variant baseline|gesture --pack ...`，Baseline默认 `config/training_diffusion.json`，Gesture显式使用 `config/training_diffusion_gesture.json`。独立使用 ResNet18（GN）和带 FiLM 的 conditional 1D U-Net，通道 `[256,512,1024]`、卷积核3、100步cosine扩散、epsilon MSE，默认采样用10步DDIM；2帧观察、动作预测30帧、`action_horizon=8`。每个30Hz观察都更新H2，默认查询帧为0、8、16……，首个动作不增加To-1偏移。
+
+Gesture两组均采用权重0.1的左右三分类CE，只有有效手实例参与均值。标签是Pack当前锚点关联的识别类别，并非控制器已确认意图；Unknown不补成类别、不删除其机器人动作帧。ACT头只读取观察encoder，DP头只读取H2观察条件，均不读取未来动作或扩散噪声；推理不用手势。DP Baseline公共参数及随机初始化不因增加可选头改变。细节与覆盖统计见 `GESTURE_AUXILIARY_EXPERIMENT.md`。
 
 ACT与DP正式默认均为单oblique、640×480、30Hz模型动作、K30、batch16和40,000次更新；ACT历史为1帧，DP历史为2帧。各自Baseline/Gesture固定同Pack、split、相机、历史及预算；跨ACT/DP比较必须披露历史差异，若要求相同输入信息，另做DP-H1对照。之后修改历史长度、分辨率、网络宽度或预算须记录为新实验。
 
@@ -116,7 +118,7 @@ DP run 为 `outputs/training/<task>/diffusion/<run_id>/`，冻结 `config.json`�
 
 ## Rollout 与场景一致性
 
-入口 `python -m rollout` 当前仅支持 ACT Baseline/Gesture，读取 run 冻结的 task与Pack；当前 Task不匹配直接拒绝。与采集共用 XML factory、initial_state/reset、物理资产和控制器，单 oblique 相机及图像预处理与训练一致。模型预测经现有双臂物理执行器，记录原预测、接受目标和保护干预。DP checkpoint 不兼容该执行入口，需后续独立接入历史缓存、DDIM预测和滚动执行后才能评估闭环成功率。
+入口 `python -m rollout` 支持ACT和DP各自的Baseline/Gesture，通过run格式选择适配器并读取冻结的task与Pack；当前 Task不匹配直接拒绝。与采集共用 XML factory、initial_state/reset、物理资产和控制器，单 oblique 相机及图像预处理与训练一致。模型预测经现有双臂物理执行器，记录原预测、接受目标和保护干预。DP通过 `rollout/diffusion_policy.py` 加载EMA权重及训练集min-max归一化，独立维护H2历史和逐episode随机种子，仍共用原物理执行器。DP显式使用评估配置；推理步数或动作执行长度的显式覆盖必须记录选择理由和实际值，不修改checkpoint冻结训练配置。不同执行配置使用独立协议，但50个seed与实际初态、成功判据保持一致。同算法Baseline/Gesture比较时冻结相同执行设置。
 
 托盘任务默认30Hz观察与模型动作、60Hz控制、500Hz物理；每个模型目标执行2个控制tick，使用K30 temporal ensemble（现有系数0.01）、60秒预算。正式成功采用已存在的半开释放评估协议。具体任务成功及 preflight 可由 Task替换，不修改共享 ACT。静态几何检查不等于动态成功。
 

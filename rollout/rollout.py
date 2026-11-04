@@ -21,6 +21,7 @@ import math
 import multiprocessing
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -35,6 +36,49 @@ VERSION = "papera-closed-loop-run-v2"
 
 def read_json(path):
     return json.loads(Path(path).read_text(encoding="utf-8-sig"))
+
+
+def training_loss_summary(run_path, policy):
+    """Report logged objectives without treating validation as training loss."""
+    diffusion = policy.get('algorithm') == 'diffusion_policy'
+    gesture = policy.get('training_variant') == 'gesture' or policy.get('variant') == 'diffusion_gesture'
+    train_key = ('total_loss' if gesture else 'noise_mse') if diffusion else 'total'
+    validation_key = 'noise_mse' if diffusion else 'prior_action_l1'
+    summary = {'training_metric': train_key,
+               'validation_metric': 'ema_noise_mse' if diffusion else validation_key,
+               'last_logged_training': None, 'checkpoint_training': None,
+               'checkpoint_validation': None}
+    try:
+        with (Path(run_path) / 'metrics.jsonl').open(encoding='utf-8-sig') as stream:
+            for line in stream:
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(row, dict) or type(row.get('step')) is not int:
+                    continue
+                event, step = row.get('event'), row['step']
+                key = train_key if event == 'train' else validation_key
+                value = row.get(key)
+                if type(value) not in (float, int) or not math.isfinite(value):
+                    continue
+                sample = {'step': step, 'value': float(value)}
+                if event == 'train':
+                    component_keys = ('noise_mse', 'gesture_loss', 'gesture_weight') if diffusion else (
+                        'action', 'kl', 'gesture', 'skeleton', 'stage')
+                    sample['components'] = {name: float(row[name]) for name in component_keys
+                        if type(row.get(name)) in (float, int) and math.isfinite(row[name])}
+                    previous = summary['last_logged_training']
+                    if previous is None or step >= previous['step']:
+                        summary['last_logged_training'] = sample
+                    if step == policy.get('checkpoint_step'):
+                        summary['checkpoint_training'] = sample
+                elif event == 'validation' and step == policy.get('checkpoint_step'):
+                    summary['checkpoint_validation'] = sample
+    except (OSError, UnicodeError):
+        # Older runs may have checkpoints without the optional metrics log.
+        pass
+    return summary
 
 
 def write_json(path, value):
@@ -243,7 +287,7 @@ def render_camera_names(metadata, settings):
 
 def initialize_worker(run_path, checkpoint, scene, settings, device, allow_overfit=False):
     import torch
-    from rollout.policy import Policy
+    from rollout.policy import load_policy
     from simulation.mujoco.dual_arm.task_controller import DualArmTaskController
     from simulation.mujoco.dual_arm.render_workers import MultiCameraRenderer
     torch.set_num_threads(settings["cpu_threads_per_worker"])
@@ -251,10 +295,13 @@ def initialize_worker(run_path, checkpoint, scene, settings, device, allow_overf
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
     torch.backends.cuda.matmul.allow_tf32 = False
-    policy = Policy(run_path, checkpoint=checkpoint, device=device, verify_cache=False,
-                    allow_overfit=allow_overfit)
-    if settings.get("chunk_size", policy.model.config.chunk_size) != policy.model.config.chunk_size:
+    policy = load_policy(run_path, checkpoint=checkpoint, device=device, verify_cache=False,
+                         allow_overfit=allow_overfit)
+    if policy.metadata.get('algorithm') == 'diffusion_policy':
+        policy.configure_inference(settings)
+    if settings.get("chunk_size", policy.metadata['chunk_size']) != policy.metadata['chunk_size']:
         raise ValueError("Evaluation chunk_size differs from the frozen model")
+    validate_policy_settings(policy.metadata, settings)
     controller = DualArmTaskController(config=scene)
     camera_names = render_camera_names(policy.metadata, settings)
     if policy.metadata["cameras"] == ["oblique"]:
@@ -277,6 +324,83 @@ def initialize_worker(run_path, checkpoint, scene, settings, device, allow_overf
         "media_mode": settings.get('media_mode', 'all_views')}
     print(f'Render cameras: {camera_names}; OpenGL: {gl_info["renderer"]}; inference: {runtime["gpu"]}', flush=True)
     _WORKER.update(policy=policy, controller=controller, renderer=renderer, settings=settings, runtime=runtime)
+
+
+def validate_policy_settings(metadata, settings):
+    """Freeze each algorithm's existing execution semantics, sharing physics."""
+    diffusion = metadata.get('algorithm') == 'diffusion_policy'
+    if diffusion:
+        if any(key in settings for key in ('diffusion_inference_steps', 'diffusion_action_horizon')):
+            from rollout.diffusion_policy import inference_metadata
+            metadata = inference_metadata(metadata, settings)
+        if (settings.get('policy_algorithm') != 'diffusion_policy'
+                or settings.get('execution') != 'chunked'
+                or settings.get('n_action_steps') != metadata['action_horizon']
+                or settings.get('checkpoint_selection') not in ('best_validation_ema_noise_mse', 'fixed_last_training_step')):
+            raise ValueError('DP needs its explicit evaluation config: chunked execution, audited action_horizon and EMA checkpoint selection')
+        validate_batch_checkpoint_selection(settings)
+    elif settings.get('policy_algorithm') == 'diffusion_policy':
+        raise ValueError('ACT cannot use the DP evaluation config')
+    elif any(key in settings for key in ('diffusion_inference_steps', 'diffusion_action_horizon')):
+        raise ValueError('ACT cannot use DP inference overrides')
+
+
+def checkpoint_argument(value):
+    """Only explicit supported names, never a path or an arbitrary .pt file."""
+    if value in ('best', 'last') or (re.fullmatch(r'step_[0-9]{6}', value) and int(value[5:]) > 0):
+        return value
+    raise argparse.ArgumentTypeError('checkpoint must be best, last, or retained ACT step_NNNNNN')
+
+
+def validate_batch_checkpoint_selection(settings, checkpoint=None, policy=None):
+    """Bind formal batches to a predeclared selection rule, not a filename swap.
+
+    Called by the formal prepare/batch CLI only. Diagnostic worker APIs can
+    still compare saved checkpoints without claiming a frozen benchmark.
+    """
+    diffusion = settings.get('policy_algorithm') == 'diffusion_policy'
+    best_rule = ('best_validation_ema_noise_mse' if diffusion
+                 else 'best_validation_prior_action_l1')
+    rule = settings.get('checkpoint_selection', best_rule)
+    if rule == best_rule:
+        selected = 'best'
+        reason = ('Minimum validation EMA noise MSE' if diffusion
+                  else 'Minimum validation prior action L1')
+        expected_step = None
+        if 'expected_checkpoint_step' in settings:
+            raise ValueError('expected_checkpoint_step is only valid for a fixed training-step selection')
+    elif rule in ('fixed_last_training_step', 'fixed_retained_training_step'):
+        if rule == 'fixed_retained_training_step' and diffusion:
+            raise ValueError('Retained candidate selection currently supports ACT only')
+        reason = settings.get('checkpoint_selection_reason')
+        expected_step = settings.get('expected_checkpoint_step')
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError(f'{rule} requires checkpoint_selection_reason')
+        if type(expected_step) is not int or expected_step <= 0:
+            raise ValueError(f'{rule} requires a positive integer expected_checkpoint_step')
+        selected = 'last' if rule == 'fixed_last_training_step' else f'step_{expected_step:06d}'
+        checkpoint_argument(selected)
+        reason = reason.strip()
+    else:
+        raise ValueError(f'Unsupported formal checkpoint_selection: {rule}')
+    if checkpoint is not None and checkpoint != selected:
+        raise ValueError(f'Frozen checkpoint_selection requires --checkpoint {selected}; got {checkpoint}')
+    record = {'checkpoint': selected, 'rule': rule, 'reason': reason,
+              'expected_step': expected_step}
+    if policy is not None:
+        if (policy.get('algorithm') == 'diffusion_policy') != diffusion:
+            raise ValueError('Loaded checkpoint algorithm differs from the frozen selection')
+        if rule == 'fixed_retained_training_step' and policy.get('selected_by') != 'training/retained_candidate':
+            raise ValueError('Retained checkpoint requires verified candidate index provenance')
+        actual_step = policy.get('checkpoint_step')
+        if type(actual_step) is not int or actual_step <= 0:
+            raise ValueError('Checkpoint metadata is missing a valid training step')
+        if expected_step is not None and actual_step != expected_step:
+            raise ValueError(f'Frozen checkpoint step {expected_step} differs from loaded step {actual_step}')
+        if Path(policy['checkpoint']).name != f'{selected}.pt':
+            raise ValueError('Loaded checkpoint file differs from the frozen selection')
+        record.update(actual_step=actual_step, path=policy['checkpoint'])
+    return record
 
 
 def restore_demonstration_start(controller, start):
@@ -422,6 +546,8 @@ def run_case(job):
     output.mkdir(parents=True, exist_ok=False)
     started = time.perf_counter()
     c.reset(seed=seed)
+    if hasattr(policy, 'reset'):
+        policy.reset(seed)
     initial_state = c.initial_state.copy()
     executor = PolicyExecutor(c)
     if job.get("demonstration_start"):
@@ -505,6 +631,8 @@ def run_case(job):
                 observation_time = float(c.data.time)
                 video_times.append(observation_time)
                 robot_state = np.asarray(c.state_vector(), dtype=np.float32)
+                if hasattr(policy, 'observe'):
+                    policy.observe({name: images[name] for name in policy_cameras}, robot_state)
                 if frame_index == 0:
                     np.savez_compressed(output/'first_observation.npz', state=robot_state, **images)
                     if job.get("initial_reference_directory"):
@@ -711,6 +839,9 @@ def summarize(output, metadata, rows, errors=None):
         "failure_reasons": failures, "infrastructure_errors": errors or [], "run": str(output.resolve()),
         "checkpoint": metadata["checkpoint"], "protocol_signature": metadata.get("protocol_signature"),
         "human_quality_review": "pending", "formal_paper_result": False}
+    losses = metadata.get('training_loss')
+    if losses is not None:
+        summary['training_loss'] = losses
     write_json(output / "summary.json", summary)
     fields = ("seed","success","failure_reason","sim_seconds","wall_seconds","observations","control_steps",
               "final_xy_error_m","final_orientation_error_rad","final_z_error_m","collision_count","contact_loss_count","rejected_actions","intervention_steps",
@@ -732,15 +863,38 @@ def summarize(output, metadata, rows, errors=None):
                     f'<td>{html.escape(r["failure_reason"])}</td><td>{r["sim_seconds"]:.2f}</td><td>{1000*r["final_xy_error_m"]:.1f}</td>'
                     f'<td>{r["intervention_fraction"]:.1%}</td><td><a href="episodes/seed_{r["seed"]}/{html.escape(Path(r["video"]).name, quote=True)}">播放视频</a></td></tr>' for r in rows)
     open_fraction = metadata.get('settings', {}).get('success_open_fraction', 1.)
+    minimum_lift_m = metadata.get('settings', {}).get('minimum_lift_m')
+    if minimum_lift_m is None:
+        recorded_lifts = {r.get('evidence', {}).get('min_lift_m') for r in rows}
+        recorded_lifts.discard(None)
+        if len(recorded_lifts) == 1:
+            minimum_lift_m = recorded_lifts.pop()
+    lift_text = (f"抬高至少{100*minimum_lift_m:g}厘米" if minimum_lift_m is not None
+                 else "按本次记录的阈值完成抬升")
     opening_text = (f"双爪命令与实测开度均达到各自最大值的{100*open_fraction:g}%"
                     f"（标准Panda最大开度80mm时不低于{80*open_fraction:g}mm）")
+    loss_html = ''
+    if losses:
+        loss_lines = []
+        for field, label, metric in (
+            ('last_logged_training', '最后记录训练 loss', 'training_metric'),
+            ('checkpoint_training', '所选 checkpoint 的训练 loss', 'training_metric'),
+            ('checkpoint_validation', '所选 checkpoint 的验证指标', 'validation_metric'),
+        ):
+            sample = losses.get(field)
+            if sample is not None:
+                loss_lines.append(f'{label}（{html.escape(losses[metric])}，第 {sample["step"]} 步）'
+                                  f'为 {sample["value"]:.8g}')
+        if loss_lines:
+            loss_html = '<p>' + '<br>'.join(loss_lines) + '</p>'
     report = f'''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>{title}</title><style>
 body{{font:16px/1.6 system-ui;margin:32px auto;max-width:1300px;padding:0 24px;color:#183047;background:#f7f9fc}}
 table{{width:100%;border-collapse:collapse;background:white}}td,th{{padding:9px;border-bottom:1px solid #ddd;text-align:left}}
 .card{{background:white;padding:20px;margin:16px 0;border-radius:10px}}select{{font:inherit;padding:5px}}
 </style><h1>{title}</h1><div class="card"><h2>{score}</h2><p>模型：{html.escape(str(metadata['run']))}<br>
 checkpoint：{html.escape(metadata['checkpoint'])} · 30 Hz观察，60 Hz执行，{metadata['max_seconds']:g}秒仿真时间上限。</p>
-<p>成功要求真实双爪抓持并抬高至少2厘米、到达目标、{html.escape(opening_text)}、脱离手指接触并支撑停稳。未经人工干预；单个训练种子的探索结果。</p>
+{loss_html}
+<p>成功要求真实双爪抓持并{html.escape(lift_text)}、到达目标、{html.escape(opening_text)}、脱离手指接触并支撑停稳。未经人工干预；单个训练种子的探索结果。</p>
 <p>新单视角模式仅保存oblique；历史三视图依次为顶视、内侧近景、侧视。视频是实际模型执行；目标误差不是预测离线误差。
 干预率统计拒绝指令，或限速／投影后任一位置、爪宽变化达到0.1毫米、角度达到0.001弧度的控制步；角度等价表示不重复计数。不是人工接管。失败、视频与轨迹全部保留。</p>
 <p>{html.escape(camera_note)}</p></div>
@@ -879,7 +1033,7 @@ def main(argv=None):
     parser.add_argument('--mode',choices=('check','prepare','preview','batch','summarize'),default='preview',
                         help='check只查来源；prepare固定50初态；preview单次仿真；batch跑50次；summarize重建汇总')
     parser.add_argument('--run',type=Path,help='本次训练目录，包含run.json和checkpoints；不是.pt文件，也不是评估输出目录')
-    parser.add_argument('--checkpoint',choices=('best','last'),default='best', help='默认best按验证误差选模；batch只用best')
+    parser.add_argument('--checkpoint',type=checkpoint_argument,default='best', help='best、last或ACT step_NNNNNN；固定训练步数选择须在评估配置记录步数与原因')
     parser.add_argument('--output',type=Path, help='新评估输出目录；summarize时指已有评估目录')
     parser.add_argument('--protocol',type=Path, help='固定50次清单；默认读取配置中的protocol_path')
     parser.add_argument('--workers',type=int,default=1, help='batch并行进程数1至4；不是任务次数，preview固定1')
@@ -897,7 +1051,8 @@ def main(argv=None):
                     protocol_path=f'outputs/rollout/{task.id}/protocols/default/protocol.json',
                     output_root=f'outputs/rollout/{task.id}')
     if args.run:
-        frozen_run=read_json(resolve(args.run)/'run.json')['provenance']
+        from rollout.policy import read_run_identity
+        frozen_run=read_run_identity(resolve(args.run))
         if frozen_run.get('task_id')!=task.id or frozen_run.get('task_binding')!=task.binding():
             raise ValueError('Checkpoint/task mismatch')
         settings['pack']=frozen_run['pack']
@@ -911,6 +1066,10 @@ def main(argv=None):
     if args.engineering and args.mode=='preview' and (args.max_seconds is None or args.max_seconds>10):
         parser.error('engineering preview requires --max-seconds <=10')
     validate_settings(settings)
+    batch_selection = None
+    if args.mode in ('prepare', 'batch'):
+        batch_selection = validate_batch_checkpoint_selection(
+            settings, args.checkpoint if args.mode == 'batch' else None)
     if args.continue_from and (args.resume or args.mode != 'batch'):
         parser.error('--continue-from requires a new batch, not --resume')
     if args.mode=='prepare':
@@ -919,6 +1078,8 @@ def main(argv=None):
         if args.output is None:parser.error('summarize requires --output')
         output=resolve(args.output);metadata=read_json(output/'run.json')
         if metadata['settings'].get('task_id')!=task.id:raise ValueError('Cross-task evaluation summary rejected')
+        if 'training_loss' not in metadata:
+            metadata['training_loss'] = training_loss_summary(metadata['run'], metadata.get('policy', {}))
         rows=[read_json(p) for p in (output/'episodes').glob('seed_*/result.json')]
         errors = read_json(output/'status.json').get('errors', []) if (output/'status.json').exists() else []
         print(json.dumps(summarize(output,metadata,rows,errors),ensure_ascii=False,indent=2));return 0
@@ -926,8 +1087,6 @@ def main(argv=None):
     if args.mode=='preview' and args.workers!=1:parser.error('Preview uses one worker')
     if args.mode=='batch' and (args.seed is not None or args.max_seconds is not None):
         parser.error('Batch seeds and timeout come from the frozen protocol')
-    if args.mode=='batch' and args.checkpoint!='best':
-        parser.error('This frozen comparison selects best by validation loss, not last or rollout performance')
     if args.mode=='check' and (args.output or args.resume or args.seed is not None or args.max_seconds is not None):
         parser.error('check只检查模型与来源，不接受仿真seed、时长或输出/续跑目录')
     with evaluation_lock():
@@ -946,12 +1105,20 @@ def main(argv=None):
                                  '再运行 --mode batch --run "本次训练目录"。') from None
             raise
         print('Checking checkpoint, frozen training inputs and cache hashes ...',flush=True)
-        frozen=read_json(run_path/'run.json')['provenance']
+        from rollout.policy import read_run_identity
+        frozen=read_run_identity(run_path)
         if frozen.get('task_id')!=task.id or frozen.get('task_binding')!=task.binding():
             raise ValueError('Checkpoint/task mismatch')
         evaluation_output_root=f"outputs/rollout/{task.id}/{frozen['variant']}"
         if args.engineering:evaluation_output_root=f".local/checks/rollout/{task.id}/{frozen['variant']}"
         provenance=verify_run_provenance(run_path,args.checkpoint,verify_cache=True,allow_overfit=args.engineering)
+        if provenance.get('algorithm') == 'diffusion_policy':
+            from rollout.diffusion_policy import inference_metadata
+            provenance = inference_metadata(provenance, settings)
+        validate_policy_settings(provenance, settings)
+        if args.mode == 'batch':
+            batch_selection = validate_batch_checkpoint_selection(settings, args.checkpoint, provenance)
+        losses = training_loss_summary(run_path, provenance)
         # A new single-view model binds its own explicit Pack. The old default
         # evaluation JSON describes a historical three-view Pack and is not a
         # valid source override for check/preview. Formal batches still require
@@ -972,18 +1139,23 @@ def main(argv=None):
             print(json.dumps({'checked': True, 'run': str(run_path),
                               'variant': provenance.get('variant'),
                               'checkpoint': args.checkpoint, 'checkpoint_step': provenance.get('checkpoint_step'),
+                              'training_loss': losses,
                               'pack': str(source_manifest.parent),
                               'verified_cache_files': provenance.get('verified_cache_files'),
                               'simulations_started': 0, 'training_started': False}, ensure_ascii=False, indent=2))
             print('模型与场景来源核验通过；没有运行仿真或训练。下一步可运行 --mode preview。', flush=True)
             return 0
+        print('Training loss from metrics.jsonl: ' + json.dumps(losses, ensure_ascii=False), flush=True)
         seeds=protocol['seeds'] if protocol else [args.seed if args.seed is not None else settings['engineering_seeds'][0]]
         max_seconds=settings['max_seconds'] if args.max_seconds is None else args.max_seconds
         if not math.isfinite(max_seconds) or max_seconds<=0:parser.error('Invalid preview duration')
         metadata={'version':VERSION,'created_at':now(),'mode':args.mode,'run':str(run_path),'checkpoint':args.checkpoint,
             'policy':provenance,'settings':settings,'scene':source['config'],'seeds':seeds,'max_seconds':max_seconds,
             'code':implementation_hashes(),'git_commit':git_commit(),'protocol_signature':protocol['signature'] if protocol else None,
-            'workers':args.workers,'device':args.device,'human_quality_review':'pending','training_seed_count':1}
+            'workers':args.workers,'device':args.device,'human_quality_review':'pending','training_seed_count':1,
+            'training_loss':losses}
+        if batch_selection is not None:
+            metadata['checkpoint_selection'] = batch_selection
         if args.resume:
             output=resolve(args.resume);old=read_json(output/'run.json')
             for key in ('version','mode','run','checkpoint','settings','scene','seeds','max_seconds','code','protocol_signature','device','workers'):

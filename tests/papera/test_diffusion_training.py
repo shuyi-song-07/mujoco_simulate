@@ -4,12 +4,15 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
+import numpy as np
 import torch
 
 from tests.papera.test_safe_stitch_data import make_pack
 from training.diffusion.train import ROOT, EMA, run, validate_config
 from training.diffusion.inference import load_policy
+from training.diffusion.data import DiffusionDataset
 
 
 class DiffusionTrainingTests(unittest.TestCase):
@@ -72,6 +75,36 @@ class DiffusionTrainingTests(unittest.TestCase):
             config[key] = value
             with self.subTest(key=key), self.assertRaises(ValueError):
                 validate_config(config)
+
+    def test_gesture_training_records_masked_metrics_and_candidate(self):
+        config = copy.deepcopy(self.config)
+        config.update(steps=2, variant='gesture', candidate_save_every=2)
+        config['model']['variant'] = 'gesture'
+        original_getitem = DiffusionDataset.__getitem__
+        def labelled_engineering_item(dataset, index):
+            item = original_getitem(dataset, index)
+            # The scripted physical fixture has no human records. Inject known
+            # synthetic labels at the dataset seam to test trainer plumbing.
+            item['gesture'] = np.array([index % 3, (index+1) % 3], dtype=np.int64)
+            item['gesture_mask'] = np.array([True, index % 2 == 0], dtype=bool)
+            return item
+        with patch.object(DiffusionDataset, '__getitem__', labelled_engineering_item):
+            output = run(config, self.pack, 'tray_transfer', output=self.root/'gesture', engineering=True)
+        saved = torch.load(output/'checkpoints/last.pt', map_location='cpu', weights_only=False)
+        self.assertTrue(any(key.startswith('gesture_head.') for key in saved['ema']))
+        self.assertTrue((output/'checkpoints/step_0000002.pt').is_file())
+        self.assertIn('training/gesture_auxiliary.py', saved['source_sha256'])
+        metrics = [json.loads(line) for line in (output/'metrics.jsonl').read_text().splitlines()]
+        validation = [row for row in metrics if row['event'] == 'validation'][-1]
+        self.assertGreater(validation['gesture_valid_hands'], 0)
+        self.assertEqual(sum(sum(sum(row) for row in side) for side in validation['gesture_confusion']),
+                         validation['gesture_valid_hands'])
+        self.assertGreater(validation['gesture_loss'], 0)
+        model, _, _ = load_policy(output/'checkpoints/best.pt')
+        with torch.no_grad():
+            action = model.predict_action(torch.zeros(1,1,1,3,48,64), torch.zeros(1,1,16),
+                generator=torch.Generator().manual_seed(12))
+        self.assertEqual(action.shape, (1,30,14))
 
 
 if __name__ == '__main__':

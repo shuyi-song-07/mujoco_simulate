@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 from dataclasses import asdict
 from datetime import datetime
 import json
@@ -44,6 +45,12 @@ def write_json(path, value):
 
 
 def validate_config(config):
+    variant = config.get('variant', config['model'].get('variant', 'baseline'))
+    if variant not in ('baseline', 'gesture') or config['model'].get('variant', variant) != variant:
+        raise ValueError('Diffusion variant must be consistent: baseline or gesture')
+    candidate_every = config.get('candidate_save_every')
+    if candidate_every is not None and (type(candidate_every) is not int or candidate_every < 1):
+        raise ValueError('candidate_save_every must be null or a positive integer')
     for name in ('steps', 'batch_size', 'cpu_threads', 'validation_every', 'save_every', 'log_every'):
         if type(config[name]) is not int or config[name] < 1:
             raise ValueError(f'{name} must be a positive integer')
@@ -116,18 +123,25 @@ def validate(model, loader, normalizer, device, config):
     sampled_physical = {'position_abs_m': 0., 'rotation_abs_rad': 0., 'aperture_abs_m': 0.}
     physical_counts = dict.fromkeys(sampled_physical, 0)
     batches = 0
+    gesture_sum, gesture_count = 0., 0
+    gesture_confusion = torch.zeros(2, 3, 3, dtype=torch.long)
     for i, batch in enumerate(loader):
         if config['validation_batches'] is not None and i >= config['validation_batches']:
             break
         b = move_batch(batch, device)
         count = int((~b['is_pad']).sum()) * 14
         with precision_context(device, config['precision']):
-            losses = model.compute_loss(b['images'], b['state'], b['action'], b['is_pad'], generator=noise_rng)
+            losses = model.compute_loss(b['images'], b['state'], b['action'], b['is_pad'],
+                generator=noise_rng, **gesture_arguments(model, b))
             if i < config['validation_sample_batches']:
                 prediction = model.predict_action(b['images'], b['state'], generator=sample_rng)
         squared_error += float(losses['noise_mse']) * count
         valid_elements += count
         batches += 1
+        if 'gesture_count' in losses:
+            gesture_sum += float(losses['gesture_sum'])
+            gesture_count += int(losses['gesture_count'])
+            gesture_confusion += losses['gesture_confusion'].cpu()
         if i < config['validation_sample_batches']:
             mask = (~b['is_pad'])[..., None].expand_as(prediction)
             absolute_error += float((prediction.float() - b['action']).abs()[mask].sum())
@@ -151,6 +165,11 @@ def validate(model, loader, normalizer, device, config):
     if sample_elements:
         result['sample_action_l1_normalized'] = absolute_error / sample_elements
         result.update({key: value / physical_counts[key] for key, value in sampled_physical.items()})
+    if model.config.variant == 'gesture':
+        result.update(gesture_loss=gesture_sum/max(1, gesture_count),
+            gesture_valid_hands=gesture_count, gesture_confusion=gesture_confusion.tolist(),
+            gesture_accuracy=float(gesture_confusion.diagonal(dim1=1, dim2=2).sum())/max(1, gesture_count),
+            gesture_weight=model.config.gesture_weight)
     if not all(math.isfinite(value) for value in result.values() if isinstance(value, float)):
         raise FloatingPointError('Nonfinite validation metric')
     return result
@@ -158,10 +177,32 @@ def validate(model, loader, normalizer, device, config):
 
 def model_config(config):
     values = dict(config['model'])
+    values['variant'] = config.get('variant', values.get('variant', 'baseline'))
     if values.get('backbone_weights'):
         values['backbone_weights'] = str(resolve(values['backbone_weights']))
     values['down_dims'] = tuple(values['down_dims'])
     return DiffusionConfig(**values)
+
+
+def gesture_arguments(model, batch):
+    """Labels enter only the training auxiliary loss, never predict_action."""
+    if model.config.variant == 'gesture':
+        return {'gesture': batch['gesture'], 'gesture_mask': batch['gesture_mask']}
+    return {}
+
+
+def snapshot_sources(output):
+    paths = [ROOT/'training/diffusion'/name for name in ('model.py', 'data.py', 'train.py', 'schedule.py')]
+    paths += [ROOT/'training/gesture_auxiliary.py']
+    hashes = {}
+    for path in paths:
+        relative = path.relative_to(ROOT)
+        target = output/'source_snapshot'/relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        content = path.read_bytes()
+        target.write_bytes(content)
+        hashes[relative.as_posix()] = hashlib.sha256(content).hexdigest()
+    return hashes
 
 
 def data_config(config):
@@ -242,6 +283,7 @@ def run(config, pack, task_id, *, output=None, resume=None, engineering=False,
             elapsed_offset = checkpoint.get('elapsed_s', 0.)
             output = resolve(resume).parent.parent
             reconcile_resume_logs(output, step)
+            sources = checkpoint.get('source_sha256', {})
         else:
             output = resolve(output) if output else resolve(config['output_root']) / task_id / 'diffusion' / datetime.now().strftime('%Y%m%d_%H%M%S_%f')
             if engineering and not output.resolve().is_relative_to((ROOT / '.local/checks').resolve()):
@@ -251,11 +293,13 @@ def run(config, pack, task_id, *, output=None, resume=None, engineering=False,
                     raise ValueError('Engineering outputs must be inside .local/checks')
             output.mkdir(parents=True, exist_ok=False)
             (output / 'checkpoints').mkdir()
+            sources = snapshot_sources(output)
             write_json(output / 'config.json', config)
             write_json(output / 'data_binding.json', dict(binding))
             write_json(output / 'run.json', {'algorithm': 'diffusion_policy', 'version': CHECKPOINT_VERSION,
                 'task_id': task_id, 'pack_path': str(pack), 'engineering': engineering,
                 'model_config': asdict(mc), 'config': config, 'contract': contract,
+                'variant': mc.variant, 'source_sha256': sources,
                 'runtime': {'python': sys.version, 'executable': sys.executable,
                     'torch': str(torch.__version__), 'device': str(device),
                     'gpu': torch.cuda.get_device_name() if device.type == 'cuda' else None},
@@ -295,6 +339,7 @@ def run(config, pack, task_id, *, output=None, resume=None, engineering=False,
                 'task_id': task_id, 'pack_path': str(pack), 'config': config,
                 'data_binding': dict(binding), 'model_config': asdict(mc),
                 'engineering': engineering, 'step': step, 'best_noise_mse': best,
+                'source_sha256': sources,
                 'model': model.state_dict(), 'ema': ema.model.state_dict(), 'ema_updates': ema.updates,
                 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(),
                 'sampler': sampler.state_dict(), 'rng': rng_state(),
@@ -308,7 +353,8 @@ def run(config, pack, task_id, *, output=None, resume=None, engineering=False,
                 batch = move_batch(next(iterator), device)
                 optimizer.zero_grad(set_to_none=True)
                 with precision_context(device, config['precision']):
-                    losses = model.compute_loss(batch['images'], batch['state'], batch['action'], batch['is_pad'])
+                    losses = model.compute_loss(batch['images'], batch['state'], batch['action'], batch['is_pad'],
+                        **gesture_arguments(model, batch))
                 loss = losses['loss']
                 if not torch.isfinite(loss):
                     raise FloatingPointError('Nonfinite diffusion loss')
@@ -324,6 +370,9 @@ def run(config, pack, task_id, *, output=None, resume=None, engineering=False,
                               'lr': optimizer.param_groups[0]['lr'], 'gradient_norm': float(norm),
                               'epoch': sampler.state_dict()['epoch'],
                               'elapsed_s': elapsed_offset + time.perf_counter() - start}
+                    if 'gesture_count' in losses:
+                        values.update(total_loss=float(loss.detach()), gesture_loss=float(losses['gesture_loss'].detach()),
+                            gesture_valid_hands=int(losses['gesture_count']), gesture_weight=mc.gesture_weight)
                     append_metrics(output, writer, 'train', step, values)
                     print(f"step {step}/{config['steps']} noise_mse={values['noise_mse']:.6f}", flush=True)
                 final_update = (step == config['steps'] or stop_requested
@@ -337,6 +386,8 @@ def run(config, pack, task_id, *, output=None, resume=None, engineering=False,
                     print(f"validation step={step} EMA noise_mse={metrics['noise_mse']:.6f} best={best:.6f}", flush=True)
                 if step % config['save_every'] == 0 or final_update:
                     save('last.pt')
+                if config.get('candidate_save_every') and step % config['candidate_save_every'] == 0:
+                    save(f'step_{step:07d}.pt')
                 if final_update:
                     break
             status = ('complete' if step >= config['steps'] else 'interrupted' if stop_requested
@@ -363,8 +414,8 @@ def run(config, pack, task_id, *, output=None, resume=None, engineering=False,
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--task', required=True)
-    parser.add_argument('--variant', choices=('baseline', 'gesture'), default='baseline',
-                        help='baseline 已实现；gesture 为后续手势辅助监督实验预留')
+    parser.add_argument('--variant', choices=('baseline', 'gesture'),
+                        help='Optional training-only gesture auxiliary head; inference remains RGB/state only')
     parser.add_argument('--pack', type=Path, help='Explicit formal Training Pack directory; never a Raw/merged export')
     parser.add_argument('--config', type=Path)
     parser.add_argument('--steps', type=int, help='Total optimizer updates for a new run')
@@ -375,8 +426,6 @@ def main(argv=None):
     parser.add_argument('--check-only', action='store_true', help='Check data tensors and sequence interfaces; no training')
     parser.add_argument('--stop-after', type=int, help='Stop after N additional updates and save; budget unchanged')
     args = parser.parse_args(argv)
-    if args.variant == 'gesture':
-        parser.error('DP + 手势辅助监督尚未实现：目前只有 DP Baseline。该入口不会启动训练，也不会替换为 Baseline。')
     if args.resume:
         if args.output or args.steps is not None or args.config:
             parser.error('--resume reads its frozen config; do not combine with --output/--steps/--config')
@@ -386,6 +435,8 @@ def main(argv=None):
         if saved.get('version') != CHECKPOINT_VERSION:
             parser.error('Not a Diffusion Policy checkpoint')
         config, pack = saved['config'], Path(saved['pack_path'])
+        if args.variant and args.variant != model_config(config).variant:
+            parser.error('--variant differs from the frozen checkpoint')
         if args.pack and resolve(args.pack) != pack:
             parser.error('--pack differs from the checkpoint')
         engineering = bool(saved['engineering'])
@@ -394,6 +445,9 @@ def main(argv=None):
         if args.pack is None:
             parser.error('--pack is required for a new run')
         config = json.loads(resolve(args.config or 'config/training_diffusion.json').read_text(encoding='utf-8-sig'))
+        if args.variant:
+            config['variant'] = args.variant
+            config['model']['variant'] = args.variant
         if args.steps is not None:
             config['steps'] = args.steps
         pack, engineering = args.pack, args.engineering

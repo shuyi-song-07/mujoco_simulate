@@ -9,6 +9,7 @@ MODULES=[
     'tests.test_dataset_navigation',
     'tests.test_recorded_collection',
     'tests.test_native_source_paths',
+    'tests.test_baseline_campaign',
     *['tests.task3.'+n for n in (
         'test_sequence_stitching','test_adjacent_stationarity','test_wait_compression',
         'test_height_protection','test_terminal_tail','test_frame_evidence',
@@ -19,8 +20,11 @@ MODULES=[
         'test_level_gripper_control','test_operator_view','test_training_camera','test_raised_placement',
         'test_highwall_platform','test_platform_success')],
     *['tests.papera.'+n for n in ('test_safe_stitch_data','test_act_model','test_action_chunks',
-        'test_policy_executor','test_training_loop','test_check_training_pack','test_diffusion_model',
-        'test_diffusion_data','test_diffusion_training')]
+        'test_policy_executor','test_training_loop','test_checkpoint_candidates','test_check_training_pack','test_diffusion_model',
+        'test_diffusion_data','test_diffusion_training','test_diffusion_rollout',
+        'test_rollout_collection_sources','test_rollout_checkpoint_selection',
+        'test_rollout_candidates','test_gesture_auxiliary','test_gesture_continuation',
+        'test_loss_reporting','test_policy_comparison','test_smoke_continuation_guard','test_rollout_reporting')]
 ]
 if __name__=='__main__':
     import json

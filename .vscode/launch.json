@@ -15,6 +15,8 @@
         "${input:task}",
         "--variant",
         "baseline",
+        "--config",
+        "config/training_baseline.json",
         "--pack",
         "${input:pack}"
       ],
@@ -38,6 +40,8 @@
         "${input:task}",
         "--variant",
         "baseline",
+        "--config",
+        "config/training_diffusion.json",
         "--pack",
         "${input:pack}"
       ],
@@ -61,6 +65,8 @@
         "${input:task}",
         "--variant",
         "gesture",
+        "--config",
+        "config/training_act_gesture.json",
         "--pack",
         "${input:pack}"
       ],
@@ -71,7 +77,7 @@
       }
     },
     {
-      "name": "DP + 手势辅助监督训练（待实现）",
+      "name": "DP + 手势辅助监督训练",
       "type": "debugpy",
       "request": "launch",
       "module": "training.diffusion",
@@ -84,6 +90,8 @@
         "${input:task}",
         "--variant",
         "gesture",
+        "--config",
+        "config/training_diffusion_gesture.json",
         "--pack",
         "${input:pack}"
       ],
@@ -99,7 +107,7 @@
       "id": "task",
       "type": "promptString",
       "description": "Registered task_id (python -m collection list)",
-      "default": "tray_transfer"
+      "default": "tray_to_platform"
     },
     {
       "id": "pack",

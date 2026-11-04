@@ -7,6 +7,7 @@ occlusion. No policy weights, predictions, or outcomes enter case selection.
 from __future__ import annotations
 
 import copy
+from contextlib import nullcontext
 import hashlib
 import itertools
 import json
@@ -18,6 +19,16 @@ ROOT = Path(__file__).resolve().parents[1]
 PROTOCOL_VERSION = "papera-rollout-physical-success-v1"
 FULL_OPEN_SUCCESS_CRITERION = "papera-physical-full-open-v1"
 HALF_OPEN_SUCCESS_CRITERION = "papera-physical-half-open-v1"
+# Git 139e5a5 adds only the four-line optional left_close_score_min range
+# validator to 22510a7's config.py. These exact byte versions change neither
+# loaded values nor scene/camera construction. Unreviewed versions still fail.
+CONFIG_VALIDATION_RENDER_COMPATIBILITY = {
+    'rule': 'optional-left-close-confidence-validation-only',
+    'path': 'simulation/mujoco/dual_arm/config.py',
+    'recorded_sha256': 'a8dfea92d2a4f2f69ad3540a05afca531a38d16f6748f38b916c91e3a5aaab7b',
+    'current_sha256': 'a3a5fbc62a871b3402b2d7758a00d7ddcf4b262bce2c030d5cce396d4d646dca',
+    'audited_commits': ['139e5a5', '22510a7'],
+}
 
 
 def _read(path):
@@ -45,7 +56,7 @@ def episode_source_records(episode):
     return episode.get("source_fingerprints", episode.get("raw_source_fingerprints", []))
 
 
-def verify_oblique_camera(episode, metadata):
+def verify_oblique_camera(episode, metadata, *, collection_union=None):
     """Resolve the recorded oblique renderer, including the audited rename proof.
 
     Original episode configs predate oblique. Derived RGB carries its own frozen
@@ -60,15 +71,45 @@ def verify_oblique_camera(episode, metadata):
     else:
         config = metadata["config"]
         identity = metadata.get("render_identity")
-        if not identity or "training_camera" not in config or identity != render_identity(config):
+        current = render_identity(config)
+        if not identity or "training_camera" not in config:
             raise ValueError("Native oblique source lacks a matching recorded render identity")
+        compatibility = []
+        if identity != current:
+            if collection_union is None:
+                raise ValueError("Native oblique source lacks a matching recorded render identity")
+            expected = copy.deepcopy(current)
+            recorded_sources = identity.get('source_files_sha256', {})
+            source_name = 'config/collection.json'
+            recorded_collection = config['task_binding']['sources'][source_name]
+            if recorded_sources.get(source_name) != recorded_collection:
+                raise ValueError('Recorded camera collection source differs from its original task binding')
+            if recorded_collection != expected['source_files_sha256'].get(source_name):
+                compatibility.append({'rule': 'verified-collection-confidence-only', 'path': source_name,
+                    'recorded_sha256': recorded_collection,
+                    'current_sha256': expected['source_files_sha256'][source_name]})
+                expected['source_files_sha256'][source_name] = recorded_collection
+            rule = CONFIG_VALIDATION_RENDER_COMPATIBILITY
+            if recorded_sources.get(rule['path']) != expected['source_files_sha256'].get(rule['path']):
+                if (recorded_sources.get(rule['path']) != rule['recorded_sha256']
+                        or expected['source_files_sha256'].get(rule['path']) != rule['current_sha256']):
+                    raise ValueError('Unreviewed rendering configuration source change')
+                compatibility.append(copy.deepcopy(rule))
+                expected['source_files_sha256'][rule['path']] = rule['recorded_sha256']
+            payload = {key: value for key, value in expected.items() if key != 'identity_sha256'}
+            expected['identity_sha256'] = _digest(payload)
+            if identity != expected:
+                raise ValueError('Recorded render camera/physics/assets differ beyond verified collection compatibility')
         camera = identity["camera"]
         source_root = episode["source_ref"]["dataset_root"]
-        proof = {"mode": "native_recorded_identity", "verified": True}
+        proof = {"mode": "native_recorded_identity", "verified": True,
+                 "source_compatibility": compatibility,
+                 "recorded_identity_sha256": identity['identity_sha256'],
+                 "current_identity_sha256": current['identity_sha256']}
     if camera != training_camera_metadata(config):
         raise ValueError("Recorded oblique camera differs from the live renderer")
     return {"camera": camera, "render_identity": identity,
-            "current_render_identity": current if matches else identity,
+            "current_render_identity": current,
             "compatibility": proof, "source_dataset_root": str(source_root)}
 
 
@@ -87,6 +128,16 @@ def load_scene_provenance(pack_dir, raw_root=None):
     if not manifest.get("complete") or not manifest.get("episodes"):
         raise ValueError("Training pack must be complete and nonempty")
     single_view = manifest.get("version") == "papera-single-view-training-pack-v2"
+    from dataset.task3 import training_pack
+    from tasks.registry import validate_binding
+    from tasks.recorded_collection import configuration_equivalence, recorded_collection_scope
+    collection_union = None
+    if training_pack._has_source_provenance(manifest):
+        # Reuse the official small-metadata gate. Do not reinterpret or relax
+        # the source ledger here, or rehash every RGB cache for each worker.
+        training_pack._validate_pack_contract(pack_dir, manifest, check_hashes=False)
+        validate_binding(manifest.get('task_binding'), manifest.get('task_id'))
+        collection_union = manifest['dataset_collection_compatibility']
     entries, samples = [], []
     cameras, original_roots = {}, set()
     reference = None
@@ -108,12 +159,34 @@ def load_scene_provenance(pack_dir, raw_root=None):
         config = load_config(metadata["config"])
         if config_hash(config) != metadata["config_hash"]:
             raise ValueError(f"Frozen config hash mismatch: {path}")
-        from tasks.registry import validate_binding
-        validate_binding(config.get('task_binding'), manifest.get('task_id'))
-        if metadata.get('task_binding') != manifest.get('task_binding'):
+        binding = episode.get('source_task_binding', manifest.get('task_binding'))
+        context = nullcontext()
+        if collection_union is not None:
+            group = next(item for item in collection_union['groups']
+                         if item['source_task_binding'] == binding)
+            if config != group['frozen_collection_config']:
+                raise ValueError('Raw collection configuration differs from its verified source group')
+            evidence = next(item for item in group['metadata_fingerprints']
+                            if Path(item['path']) == path)
+            if (evidence['sha256'] != source['sha256']
+                    or evidence['size'] != path.stat().st_size):
+                raise ValueError('Raw collection metadata differs from its source ledger')
+            proof = {'metadata_paths': group['metadata_paths'],
+                     'config_differences': group['config_differences'],
+                     'configuration_equivalence': configuration_equivalence(
+                         collection_union['reference_collection_config'], config)}
+            context = recorded_collection_scope(binding, proof)
+        with context:
+            validate_binding(config.get('task_binding'), manifest.get('task_id'))
+        if metadata.get('task_binding') != binding or config.get('task_binding') != binding:
             raise ValueError('Raw/Pack task binding mismatch')
         physical = {key: value for key, value in config.items()
                     if key not in {"version", "gesture_control"}}
+        if collection_union is not None:
+            # Collection-only digest differences have already been checked by
+            # the official union/scoped validators. Keep all physical settings
+            # and the canonical task/assets identity in the comparison.
+            physical['task_binding'] = manifest['task_binding']
         if reference is None:
             reference = physical
         elif physical != reference:
@@ -123,16 +196,18 @@ def load_scene_provenance(pack_dir, raw_root=None):
             # every episode in the same collection session.
             root = episode["source_ref"]["dataset_root"]
             if root not in cameras:
-                cameras[root] = verify_oblique_camera(episode, metadata)
+                cameras[root] = verify_oblique_camera(episode, metadata, collection_union=collection_union)
             original_roots.add(str(Path(cameras[root]["source_dataset_root"]).parent))
         elif episode.get("cameras") != config["scene"]["cameras"]:
             raise ValueError(f"Pack/source camera mismatch: {episode['key']}")
         entries.append({"episode": episode["key"], "path": str(path), "sha256": source["sha256"],
                         "config_hash": metadata["config_hash"], "seed": int(metadata["seed"]),
-                        "controller_version": config["version"], "config": config})
+                        "controller_version": config["version"], "config": config,
+                        "task_binding": binding})
         samples.append(sample_initial_state(config, int(metadata["seed"])))
     entries.sort(key=lambda entry: entry["episode"])
-    frozen = copy.deepcopy(entries[-1]["config"])
+    frozen = copy.deepcopy(collection_union['reference_collection_config']
+                           if collection_union is not None else entries[-1]["config"])
     if raw_root is None:
         # .../datasets/session/research/episode_snapshots/episode_metadata.json
         if single_view and len(original_roots) != 1:
@@ -166,6 +241,9 @@ def load_scene_provenance(pack_dir, raw_root=None):
                                      "object_yaw_min_rad": float(yaw.min()),
                                      "object_yaw_max_rad": float(yaw.max())},
             "quality_review": manifest.get("quality_review"),
+            "source_task_bindings": copy.deepcopy(manifest.get('source_task_bindings', [manifest.get('task_binding')])),
+            "runtime_scene_source": ('verified_collection_union_reference' if collection_union is not None
+                                     else 'frozen_recorded_source'),
             "scope": "exploratory same-scene evaluation; new seeds do not imply held-out scene/generalization"}
 
 

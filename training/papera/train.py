@@ -259,6 +259,47 @@ def atomic_checkpoint(path, payload):
     os.replace(temporary, path)
 
 
+def candidate_due(config, step):
+    """Retention is optional I/O; old frozen configurations keep it disabled."""
+    every = config.get("candidate_save_every", 0)
+    return bool(every and (step % every == 0 or step == config["steps"]))
+
+
+def retain_candidate(output, save, config, step, signature, validation=None):
+    """Keep a complete checkpoint without changing best/last selection or math.
+
+    Validation is attached only when it describes this exact update. Saving a
+    candidate never schedules additional validation or borrows older metrics.
+    The caller commits last.pt first, so exact resume cannot repeat this step.
+    """
+    if not candidate_due(config, step):
+        return None
+    if validation is not None and validation.get("step") != step:
+        raise ValueError("Candidate validation must describe its saved step")
+    directory = Path(output) / "checkpoints"
+    name = f"step_{step:06d}.pt"
+    if (directory / name).exists():
+        raise ValueError(f"Candidate checkpoint already exists: {directory / name}")
+    index_path = directory / "candidates.json"
+    index = (json.loads(index_path.read_text(encoding="utf-8")) if index_path.exists()
+             else {"version": "papera-act-checkpoint-candidates-v1",
+                   "run_signature": signature, "candidates": []})
+    if (index.get("version") != "papera-act-checkpoint-candidates-v1"
+            or index.get("run_signature") != signature):
+        raise ValueError("Candidate index belongs to a different run")
+    save(name)  # Same complete payload as best.pt/last.pt, including resume state.
+    entry = {"checkpoint": name, "step": step, "saved_step": step,
+             "validation_step": step if validation is not None else None,
+             "validation_scope": validation.get("validation_scope") if validation is not None else None,
+             "validation_source": "metrics.jsonl:validation" if validation is not None else None,
+             "validation": copy.deepcopy(validation), "selection": "not_selected"}
+    index["candidates"].append(entry)
+    temporary = index_path.with_suffix(".writing")
+    json_write(temporary, index)
+    os.replace(temporary, index_path)
+    return entry
+
+
 def load_checkpoint(path, expected_signature):
     checkpoint = torch.load(path, map_location="cpu", weights_only=True)
     if checkpoint.get("version") != CHECKPOINT_VERSION:
@@ -291,7 +332,7 @@ def checkpoint_elapsed(checkpoint, run_dir):
 
 
 def load_extension_source(checkpoint_path, target_steps):
-    """Read a completed baseline last.pt for a new, lineage-tracked run."""
+    """Read a completed ACT last.pt for a same-variant, lineage-tracked run."""
     checkpoint_path = Path(checkpoint_path).resolve()
     if checkpoint_path.name != "last.pt" or checkpoint_path.parent.name != "checkpoints":
         raise ValueError("--continue-from must name a run's checkpoints/last.pt")
@@ -312,8 +353,8 @@ def load_extension_source(checkpoint_path, target_steps):
     frozen_config = provenance.get("config")
     if not isinstance(frozen_config, dict) or frozen_config.get("steps") is None:
         raise ValueError("Source run has no frozen training configuration")
-    if provenance.get("variant") != "baseline" or provenance.get("engineering_overfit"):
-        raise ValueError("Only a completed full-data ACT baseline can be extended")
+    if provenance.get("variant") not in EXPERIMENTS or provenance.get("engineering_overfit"):
+        raise ValueError("Only a completed full-data ACT baseline or gesture run can be extended")
     if file_sha256(source_run / "config.json") != json_file_hash(frozen_config):
         raise ValueError("Source config.json differs from the run's frozen provenance")
     for filename, value in (("pack_binding.json", provenance.get("pack_binding")),
@@ -327,6 +368,9 @@ def load_extension_source(checkpoint_path, target_steps):
             or checkpoint.get("provenance") != provenance):
         raise ValueError("Source last.pt does not match its frozen run provenance")
     completion = json.loads((source_run / "completion.json").read_text(encoding="utf-8"))
+    if any(record.get("engineering_smoke", False) is not False
+           for record in (run_doc.get("runtime", {}), completion, checkpoint)):
+        raise ValueError("A completed smoke run cannot be promoted to full-data continuation")
     if (completion.get("completed") is not True
             or completion.get("step") != checkpoint.get("step")
             or completion.get("step") != frozen_config["steps"]
@@ -363,14 +407,21 @@ def validate_extension_config(config, source, target_steps):
     expected.setdefault("_help", {})["steps"] = (
         f"从已完成的{source['checkpoint']['step']}步 last.pt 延续，累计目标{target_steps}步；"
         "续训阶段保持checkpoint中的最低学习率，不重启升高。")
+    # An explicitly requested retention cadence only adds complete checkpoint
+    # files; it cannot change optimizer, loss, data, or the learning-rate phase.
+    if "candidate_save_every" in config:
+        expected["candidate_save_every"] = config["candidate_save_every"]
     if config != expected:
-        raise ValueError("Continuation may change only total steps and the explicit hold-at-checkpoint-LR schedule")
+        raise ValueError("Continuation may change only total steps, checkpoint retention and the explicit hold-at-checkpoint-LR schedule")
 
 
 def validate_config(config):
     for key in ("steps", "batch_size", "validation_every", "validation_stride", "save_every", "log_every", "cpu_threads"):
         if type(config.get(key)) is not int or config[key] < 1:
             raise ValueError(f"{key} must be a positive integer")
+    candidate_every = config.get("candidate_save_every", 0)
+    if type(candidate_every) is not int or candidate_every < 0:
+        raise ValueError("candidate_save_every must be a nonnegative integer (0 disables retention)")
     workers = config.get("num_workers")
     if type(workers) is not int or not 0 <= workers <= 8:
         raise ValueError("num_workers must be an integer in [0,8]")
@@ -487,9 +538,11 @@ def run(config, variant="baseline", output=None, resume=None, smoke=False, stop_
     if resume is not None and continue_from is not None:
         raise ValueError("Use either exact --resume or new-run --continue-from, not both")
     if continue_from is not None:
-        if resume is not None or smoke or overfit_episodes is not None or variant != "baseline":
-            raise ValueError("Checkpoint extension is only supported for a full-data single-view baseline")
+        if resume is not None or smoke or overfit_episodes is not None:
+            raise ValueError("Checkpoint extension is only supported for a full-data single-view ACT run")
         extension_source = extension_source or load_extension_source(continue_from, config.get("steps"))
+        if variant != extension_source["run_doc"]["provenance"]["variant"]:
+            raise ValueError("Continuation cannot change the source ACT variant")
         validate_extension_config(config, extension_source, config.get("steps"))
     is_overfit = overfit_episodes is not None
     safe_stitch = "pack_path" in config
@@ -771,6 +824,7 @@ def run(config, variant="baseline", output=None, resume=None, smoke=False, stop_
                 norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config["gradient_clip_norm"], error_if_nonfinite=True)
                 optimizer.step(); scheduler.step(); step += 1
                 sampler.mark_consumed()
+                validation_metrics = None
                 if step % config["log_every"] == 0 or step == 1:
                     record = {"step": step, "epoch": sampler.state_dict()["epoch"], "event": "train",
                         **{k: float(v.detach().cpu()) for k, v in losses.items()},
@@ -789,6 +843,7 @@ def run(config, variant="baseline", output=None, resume=None, smoke=False, stop_
                     metrics.update(step=step, event="validation", smoke_subset=smoke,
                                    validation_scope=provenance["validation_scope"],
                                    engineering_overfit=is_overfit)
+                    validation_metrics = metrics
                     with (output / "metrics.jsonl").open("a", encoding="utf-8") as stream:
                         stream.write(json.dumps(metrics, allow_nan=False) + "\n")
                     for key, value in metrics.items():
@@ -802,8 +857,9 @@ def run(config, variant="baseline", output=None, resume=None, smoke=False, stop_
                     print(f"prior horizon XYZ: {horizon_text}", flush=True)
                     if metrics["prior_action_l1"] < best:
                         best = metrics["prior_action_l1"]; save("best.pt")
-                if step % config["save_every"] == 0 or step == config["steps"]:
+                if step % config["save_every"] == 0 or step == config["steps"] or candidate_due(config, step):
                     save("last.pt")
+                retain_candidate(output, save, config, step, signature, validation_metrics)
                 if stop_after is not None and step - starting_step >= stop_after:
                     save("last.pt"); break
         except KeyboardInterrupt:
@@ -844,6 +900,8 @@ def make_parser():
     parser.add_argument("--output", type=Path)
     parser.add_argument("--seed", type=int)
     parser.add_argument("--steps", type=int, help="最大参数更新次数；不是完整数据集遍历轮数")
+    parser.add_argument("--candidate-save-every", type=int,
+                        help="新运行/续训每N步保留完整候选权重，0关闭；精确resume沿用冻结配置")
     parser.add_argument("--smoke-test", action="store_true")
     parser.add_argument("--overfit-episodes", type=int, choices=(1, 2),
                         help="工程诊断：只拟合 N 条训练示范并在同一子集重建验证；须指定 --steps 1..3000")
@@ -872,8 +930,8 @@ def main(argv=None):
             f"从已完成的{extension_source['checkpoint']['step']}步 last.pt 延续，"
             f"累计目标{args.steps}步；续训阶段保持checkpoint中的最低学习率，不重启升高。")
         args.variant = extension_source["run_doc"]["provenance"]["variant"]
-        if args.variant != "baseline":
-            parser.error("当前只允许延续单视角Baseline")
+        if args.variant not in EXPERIMENTS:
+            parser.error("只允许延续单视角ACT Baseline或Gesture")
     elif args.config is not None:
         config = json.loads(args.config.read_text(encoding="utf-8"))
     elif args.resume is not None:
@@ -885,6 +943,10 @@ def main(argv=None):
         args.smoke_test = previous["runtime"].get("engineering_smoke", False)
     else:
         config = json.loads((ROOT / "config/training_baseline.json").read_text(encoding="utf-8"))
+    if args.candidate_save_every is not None:
+        if args.resume is not None:
+            parser.error("--resume 沿用冻结候选保存配置；不要传 --candidate-save-every")
+        config["candidate_save_every"] = args.candidate_save_every
     from tasks.registry import get
     task = get(args.task)
     if args.resume or args.continue_from:

@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from dataclasses import asdict
 import json
 from pathlib import Path
+import re
 
 import av
 import numpy as np
@@ -52,9 +53,14 @@ def _hash_check(path, expected):
 
 def verify_inference_sources(provenance):
     from training.papera.source_compatibility import verify_training_sources
-    verify_training_sources(provenance)
-    current=tuple(file_sha256(ROOT/'training/papera'/name) for name,_ in _source_pairs(provenance))
-    return 'exact-current-training-sources',current,current
+    checked = verify_training_sources(provenance)
+    pairs = _source_pairs(provenance)
+    current = tuple(checked['sha256'][name] for name, _ in pairs)
+    historical = tuple(provenance[key] for _, key in pairs)
+    compatibility = ('exact-current-training-sources'
+                     if checked['compatibility'] == 'exact-current-sources'
+                     else checked['compatibility'])
+    return compatibility, current, historical
 
 
 def _source_pairs(provenance):
@@ -131,15 +137,47 @@ def _verify_single_pack(run_dir, provenance, verify_cache):
     return pack, manifest, split, stats, hashes, camera_configs, count
 
 
+def candidate_record(run_dir, checkpoint, signature, config):
+    """Accept only a retained, indexed update from this completed run."""
+    if checkpoint in ("best", "last"):
+        return None
+    if not isinstance(checkpoint, str) or re.fullmatch(r"step_[0-9]{6}", checkpoint) is None:
+        raise ValueError("checkpoint must be best, last, or an indexed step_NNNNNN candidate")
+    step = int(checkpoint[5:])
+    every = config.get("candidate_save_every", 0)
+    if (type(every) is not int or every <= 0 or step <= 0 or step > config["steps"]
+            or (step % every and step != config["steps"])):
+        raise ValueError("Candidate step is outside the frozen retention schedule")
+    index = _read(Path(run_dir) / "checkpoints/candidates.json")
+    if (index.get("version") != "papera-act-checkpoint-candidates-v1"
+            or index.get("run_signature") != signature):
+        raise ValueError("Candidate index belongs to a different run")
+    records = [row for row in index.get("candidates", [])
+               if row.get("checkpoint") == f"{checkpoint}.pt"]
+    if len(records) != 1:
+        raise ValueError("Candidate requires exactly one matching index entry")
+    record = records[0]
+    if record.get("step") != step or record.get("saved_step") != step:
+        raise ValueError("Candidate name and indexed saved step differ")
+    validation = record.get("validation")
+    if validation is None:
+        if record.get("validation_step") is not None or record.get("validation_source") is not None:
+            raise ValueError("Candidate has inconsistent validation evidence")
+    elif (record.get("validation_step") != step or validation.get("step") != step
+          or validation.get("event") != "validation"
+          or record.get("validation_source") != "metrics.jsonl:validation"):
+        raise ValueError("Candidate validation must describe its saved step")
+    return record
+
+
 def _verify(run_dir, checkpoint, verify_cache, allow_overfit=False):
     run_dir = Path(run_dir).resolve()
-    if checkpoint not in ("best", "last"):
-        raise ValueError("checkpoint must be 'best' or 'last'; no arbitrary unverified checkpoint")
     run = _read(run_dir / "run.json")
     provenance = run["provenance"]
     if canonical_hash(provenance) != run["signature"]:
         raise ValueError("Run signature mismatch")
     config = provenance["config"]
+    candidate = candidate_record(run_dir, checkpoint, run["signature"], config)
     single_view = provenance.get("data_contract") == "papera-safe-stitch-act-v1"
     if not single_view: raise ValueError('Use the original project for historical three-view checkpoints')
     completion = _read(run_dir / "completion.json")
@@ -249,7 +287,11 @@ def _verify(run_dir, checkpoint, verify_cache, allow_overfit=False):
     if not validations or any(not np.isfinite(row["prior_action_l1"]) for row in validations):
         raise ValueError("Missing/nonfinite validation selection evidence")
     best = min(validations, key=lambda row: row["prior_action_l1"])
-    expected_step = best["step"] if checkpoint == "best" else completion["step"]
+    expected_step = (candidate["saved_step"] if candidate is not None else
+                     best["step"] if checkpoint == "best" else completion["step"])
+    if (candidate is not None and candidate.get("validation") is not None
+            and candidate["validation"] not in validations):
+        raise ValueError("Candidate validation differs from the frozen metric history")
     if ckpt["step"] != expected_step:
         raise ValueError("Selected checkpoint step does not match the frozen selection rule")
     if not np.isclose(completion["best_prior_action_l1"], best["prior_action_l1"], rtol=0, atol=1e-12):
@@ -261,7 +303,9 @@ def _verify(run_dir, checkpoint, verify_cache, allow_overfit=False):
         "version": "papera-exploratory-inference-v1", "run_dir": str(run_dir),
         "run_signature": run["signature"], "variant": provenance["variant"],
         "checkpoint": str(ckpt_path), "checkpoint_sha256": before_hash,
-        "checkpoint_step": int(ckpt["step"]), "selected_by": "validation/prior_action_l1",
+        "checkpoint_step": int(ckpt["step"]),
+        "selected_by": ("training/retained_candidate" if candidate is not None else
+                        "validation/prior_action_l1" if checkpoint == "best" else "training/completed_step"),
         "pack": str(pack), "checked_hashes": hashes, "verified_cache_files": cache_count,
         "full_cache_verified": bool(verify_cache), "training_precision": config["precision"],
         "cameras": ["oblique"] if single_view else list(CAMERAS), "training_camera_configs": camera_configs,
@@ -291,8 +335,35 @@ def _verify(run_dir, checkpoint, verify_cache, allow_overfit=False):
 
 def verify_run_provenance(run_dir, checkpoint="best", *, verify_cache=True, allow_overfit=False):
     """Parent performs full cache verification once; worker loaders can omit it."""
+    if _read(Path(run_dir) / 'run.json').get('algorithm') == 'diffusion_policy':
+        from rollout.diffusion_policy import verify_run
+        return verify_run(run_dir, checkpoint, verify_cache=verify_cache,
+                          allow_engineering=allow_overfit)[0]
     metadata, _, _ = _verify(run_dir, checkpoint, verify_cache, allow_overfit)
     return metadata
+
+
+def read_run_identity(run_dir):
+    """Normalize only task/Pack routing; the selected adapter verifies the run."""
+    run_dir = Path(run_dir).resolve()
+    run = _read(run_dir / 'run.json')
+    if run.get('algorithm') == 'diffusion_policy':
+        binding = _read(run_dir / 'data_binding.json')
+        variant = run['config'].get('variant', run['config']['model'].get('variant', 'baseline'))
+        if variant not in ('baseline', 'gesture'):
+            raise ValueError('Unknown Diffusion Policy training variant')
+        return {'task_id': run['task_id'], 'task_binding': binding['task_binding'],
+                'pack': run['pack_path'], 'variant': 'diffusion_gesture' if variant == 'gesture' else 'diffusion',
+                'training_variant': variant, 'algorithm': 'diffusion_policy'}
+    return run['provenance']
+
+
+def load_policy(run_dir, checkpoint='best', device='cuda', *, verify_cache=False, allow_overfit=False):
+    if read_run_identity(run_dir).get('algorithm') == 'diffusion_policy':
+        from rollout.diffusion_policy import DiffusionRolloutPolicy
+        return DiffusionRolloutPolicy(run_dir, checkpoint, device,
+            verify_cache=verify_cache, allow_engineering=allow_overfit)
+    return Policy(run_dir, checkpoint, device, verify_cache=verify_cache, allow_overfit=allow_overfit)
 
 
 def prepare_observation(images, state, normalizer, *, cameras=CAMERAS, image_size=(320, 240)):
