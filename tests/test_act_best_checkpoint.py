@@ -95,7 +95,7 @@ class BestCheckpointTests(unittest.TestCase):
         from lerobot.common.train_utils import save_checkpoint
         from lerobot.configs.default import DatasetConfig
         from lerobot.configs.policies import PolicyFeature
-        from lerobot.configs.train import TrainPipelineConfig
+        from training.ACT.act_training_config import ACTTrainPipelineConfig
         from lerobot.configs.types import FeatureType
         from lerobot.policies.act.configuration_act import ACTConfig
         from lerobot.policies.act.modeling_act import ACTPolicy
@@ -123,7 +123,7 @@ class BestCheckpointTests(unittest.TestCase):
             loss, _ = policy.forward(batch)
         policy.train()
         with tempfile.TemporaryDirectory() as root:
-            cfg = TrainPipelineConfig(
+            cfg = ACTTrainPipelineConfig(
                 dataset=DatasetConfig(repo_id="local/test"), policy=config,
                 output_dir=Path(root), steps=2, eval_steps=2,
             )
@@ -132,6 +132,7 @@ class BestCheckpointTests(unittest.TestCase):
                 optimizer=torch.optim.AdamW(policy.parameters()),
             )
             best = Path(root) / "best/pretrained_model"
+            self.assertNotIn("ema", json.loads((best / "train_config.json").read_text()))
             loaded = ACTPolicy.from_pretrained(str(best), local_files_only=True, strict=True)
             for key, value in policy.state_dict().items():
                 torch.testing.assert_close(loaded.state_dict()[key], value)

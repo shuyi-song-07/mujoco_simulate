@@ -223,7 +223,12 @@ def run(args, *, auxiliary: bool = False, install_auxiliary=None) -> None:
         return
     os.environ.setdefault("HF_HOME", str(PROJECT_ROOT / ".cache/huggingface"))
     from lerobot.scripts import lerobot_train
+    try:
+        from .act_training_config import install_act_training_config
+    except ImportError:
+        from act_training_config import install_act_training_config
 
+    install_act_training_config(lerobot_train)
     install_input_filter(lerobot_train)
     install_training_only_stats(lerobot_train)
     if install_auxiliary is not None:
