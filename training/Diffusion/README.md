@@ -45,6 +45,8 @@ GroupNorm 使用从头训练的 ResNet18，不加载 BatchNorm 预训练权重�
 
 Linux 环境安装训练依赖时，在项目根目录执行 `python -m pip install -r requirements.txt`；其中包含 LeRobot 的 `training` 和 `diffusion` 扩展。`--smoke-test` 仍使用缩小后的网络、图像及动作序列，只检查一个训练步。
 
+LeRobot 依赖固定为官方源码提交 `128d3324e3202ce1fca1340fb8d7941edecce9d3`。源码版本号为 `0.6.2`，不是可通过 `==0.6.2` 安装的 PyPI 发行版。PyPI `0.6.1` 的 DP 网络配置可用，但其训练入口没有 `--ema.*` 参数，不能直接运行本项目启用 EMA 的配置。安装环境使用 Python 3.12。
+
 ## 合并 Pick-and-place 数据集
 
 将 10-22 采集的四份兼容数据合并为独立训练集（原始目录不修改）。合并前会校验 feature schema、episode 元数据、每集三路检查视频和 `hand_trajectories`；输出同时保留重新编号后的手轨迹与布局清单。

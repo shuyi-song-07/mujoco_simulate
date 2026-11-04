@@ -89,7 +89,9 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-训练代码依赖 LeRobot。可将本项目与 LeRobot 放在同一级目录，或通过环境变量指定 LeRobot 路径。
+训练代码依赖 LeRobot。`requirements.txt` 从官方 GitHub 仓库安装已验证的固定提交 `128d3324e3202ce1fca1340fb8d7941edecce9d3`，并包含 `training` 和 `diffusion` 扩展。该源码标记为 `0.6.2`，不通过 PyPI 的 `==0.6.2` 安装；安装时需要能够访问 GitHub。
+
+PyPI 的 LeRobot `0.6.1` 支持当前 DP 网络和图像配置，但没有训练脚本使用的 `--ema.*` 参数。运行这套启用 EMA 的训练入口时，应使用上述固定源码提交。
 
 ## 启动遥操作网页
 

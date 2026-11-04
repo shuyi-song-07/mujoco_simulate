@@ -70,8 +70,10 @@ def install_auxiliary(train_module, gesture_weight: float,
     def make_gesture_datasets(cfg):
         original_resolve = dataset_factory.resolve_delta_timestamps
 
-        def resolve_with_gesture(policy_cfg, ds_meta):
-            offsets = original_resolve(policy_cfg, ds_meta) or {}
+        def resolve_with_gesture(cfg, ds_meta, *args, **kwargs):
+            # Newer LeRobot versions also pass rename_map; older versions use
+            # only cfg and ds_meta. Preserve whichever arguments the caller uses.
+            offsets = original_resolve(cfg, ds_meta, *args, **kwargs) or {}
             if GESTURE_KEY not in ds_meta.features or "action" not in offsets:
                 raise ValueError("Dataset must contain gesture labels and action chunk timestamps")
             # The same offsets give one gesture target per predicted action frame.

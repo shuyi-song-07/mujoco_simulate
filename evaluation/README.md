@@ -30,6 +30,16 @@ python evaluation/validate_multicam_dataset.py datasets/act_50eps
 
 ## Pick and place variation ACT baseline rollout
 
+ACT 的 baseline、gesture 和 filtered hand-delta 训练入口默认开启 `--save-best`：每次验证后，在对应的数字 checkpoint 完整保存后，将 `checkpoints/best` 指向历史验证损失最低的一次。`checkpoints/best.json` 记录步数和损失，`checkpoints/validation_losses.jsonl` 记录每次验证结果。`--eval-steps` 必须是正数 `--save-freq` 的整数倍，推荐都设为 1000；未启用验证时不会生成 best。用 `--no-save-best` 可关闭。这里的 best 按验证总损失选取，gesture/hand-delta 版本包含辅助损失，并不保证 rollout 成功率最高。
+
+例如，对新训练的 30 帧 ACT baseline 使用 best：
+
+```bash
+python evaluation/act_variation_rollout.py \
+  --checkpoint outputs/act_baseline_save1k/checkpoints/best/pretrained_model \
+  --action-steps 30 --episodes 50
+```
+
 在项目根目录运行，默认加载 `outputs/act_variation_baseline/checkpoints/last/pretrained_model`，按 50 个不同随机种子测试，每次最多运行 **120 秒仿真时间**（30 FPS、最多 3600 次策略动作）：
 
 ```bash

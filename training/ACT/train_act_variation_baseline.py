@@ -125,6 +125,10 @@ def make_parser(auxiliary: bool = False, motion: bool = False) -> argparse.Argum
     parser.add_argument("--eval-split", type=float, default=0.1)
     parser.add_argument("--eval-steps", type=int, default=1000)
     parser.add_argument("--save-freq", type=int, default=1000)
+    parser.add_argument(
+        "--save-best", action=argparse.BooleanOptionalAction, default=True,
+        help="Track lowest validation loss in checkpoints/best (default: enabled)",
+    )
     parser.add_argument("--chunk-size", type=int, default=30)
     parser.add_argument("--seed", type=int, default=1000)
     parser.add_argument("--learning-rate", type=float, default=1e-5)
@@ -158,6 +162,13 @@ def build_cli(args, *, auxiliary: bool) -> list[str]:
     eval_steps = 0 if args.smoke_test else args.eval_steps
     if min(steps, batch_size, chunk_size) < 1 or args.num_workers < 0 or not 0 <= args.eval_split < 1:
         raise ValueError("Invalid steps, batch size, chunk size, workers, or eval split")
+    if args.save_best and eval_steps > 0 and args.eval_split > 0:
+        if args.save_freq <= 0 or eval_steps % args.save_freq:
+            raise ValueError(
+                "--save-best requires each validation step to be saved: "
+                "--eval-steps must be a multiple of positive --save-freq. "
+                "Use equal frequencies, or --no-save-best."
+            )
     if output.exists() and not args.print_command:
         raise ValueError(f"Output already exists: {output}")
     return [
@@ -218,6 +229,12 @@ def run(args, *, auxiliary: bool = False, install_auxiliary=None) -> None:
     if install_auxiliary is not None:
         install_auxiliary(lerobot_train, args.gesture_weight,
                           hand_delta_weight, hand_delta_scale)
+    if args.save_best and not args.smoke_test and args.eval_steps > 0 and args.eval_split > 0:
+        try:
+            from .best_checkpoint import install_best_checkpoint
+        except ImportError:
+            from best_checkpoint import install_best_checkpoint
+        install_best_checkpoint(lerobot_train)
     sys.argv = [str(Path(__file__)), *cli]
     lerobot_train.main()
 
