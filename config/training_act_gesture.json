@@ -1,5 +1,5 @@
 {
-  "version": "papera-single-oblique-act-gesture-1",
+  "version": "papera-single-oblique-act-official-v2",
   "pack_path": null,
   "image_size": [
     640,
@@ -11,13 +11,13 @@
   "steps": 40000,
   "batch_size": 16,
   "num_workers": 0,
-  "learning_rate": 0.0001,
+  "learning_rate": 1e-05,
   "backbone_learning_rate": 1e-05,
   "weight_decay": 0.0001,
-  "warmup_steps": 500,
-  "minimum_lr_fraction": 0.1,
-  "gradient_clip_norm": 1.0,
-  "precision": "bf16",
+  "warmup_steps": 0,
+  "minimum_lr_fraction": 0.0,
+  "gradient_clip_norm": null,
+  "precision": "fp32",
   "validation_every": 1000,
   "validation_stride": 1,
   "save_every": 1000,
@@ -29,11 +29,11 @@
     "action_dim": 14,
     "num_cameras": 1,
     "chunk_size": 30,
-    "hidden_dim": 256,
+    "hidden_dim": 512,
     "heads": 8,
-    "feedforward_dim": 1024,
+    "feedforward_dim": 3200,
     "encoder_layers": 4,
-    "decoder_layers": 4,
+    "decoder_layers": 7,
     "posterior_layers": 4,
     "latent_dim": 32,
     "dropout": 0.1,
@@ -43,5 +43,6 @@
     "action": 1.0,
     "kl": 10.0,
     "gesture": 0.1
-  }
+  },
+  "lr_scheduler": "constant"
 }

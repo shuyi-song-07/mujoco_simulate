@@ -1,4 +1,4 @@
-"""Fast CPU tests for action boundaries, missing labels and posterior leakage."""
+"""Task adapter checks around the fixed official ACT model."""
 from dataclasses import replace
 import unittest
 
@@ -80,6 +80,20 @@ class ACTModelTests(unittest.TestCase):
             torch.testing.assert_close(first[key], second[key], rtol=0, atol=0)
         self.assertFalse(torch.equal(first["mu"], second["mu"]))
 
+    def test_auxiliary_gradient_reaches_observed_image_features_without_posterior(self):
+        model = ACTPolicy(replace(self.config, variant="gesture")).train()
+        output = model(self.images, self.state, self.actions, self.is_pad)
+        losses = compute_loss(output, {"action": self.actions,
+            "gesture": torch.tensor([[0, 1], [2, 0]])},
+            {"action": ~self.is_pad, "gesture": torch.ones(2, 2, dtype=torch.bool)})
+        losses["gesture"].backward()
+        self.assertGreater(model.backbone['conv1'].weight.grad.abs().sum().item(), 0)
+        self.assertGreater(model.model.input_proj.weight.grad.abs().sum().item(), 0)
+        self.assertGreater(model.gesture_head.weight.grad.abs().sum().item(), 0)
+        for module in (model.model.encoder, model.model.encoder_action_proj,
+                       model.model.latent_proj, model.model.transformer):
+            self.assertTrue(all(parameter.grad is None for parameter in module.parameters()))
+
     def test_predict_uses_only_robot_observations_and_restores_training(self):
         model = ACTPolicy(replace(self.config, dropout=.2)).train()
         first = model.predict(self.images, self.state)
@@ -119,7 +133,7 @@ class ACTModelTests(unittest.TestCase):
                 self.assertTrue(torch.isfinite(losses["total"]))
                 losses["total"].backward()
                 self.assertTrue(all(torch.isfinite(p.grad).all() for p in model.parameters() if p.grad is not None))
-                self.assertIsNotNone(model.backbone[0].weight.grad)
+                self.assertIsNotNone(model.backbone['conv1'].weight.grad)
                 if variant == "baseline":
                     self.assertEqual(losses["gesture_count"].item(), 0)
                     self.assertIsNone(model.gesture_head.weight.grad)
@@ -143,7 +157,7 @@ class ACTModelTests(unittest.TestCase):
         losses["total"].backward()
         self.assertTrue(all(torch.isfinite(p.grad).all() for p in model.parameters() if p.grad is not None))
 
-    def test_masked_coordinate_normalization_is_not_batch_or_padding_dependent(self):
+    def test_official_action_mean_and_valid_coordinate_diagnostic_are_distinct(self):
         model = ACTPolicy(replace(self.config, variant="gesture_skeleton")).eval()
         output = model(self.images, self.state)
         target_action = output["action"].detach() + 2
@@ -151,7 +165,10 @@ class ACTModelTests(unittest.TestCase):
         target_skeleton[0, 1] = float("nan")
         losses = compute_loss(output, {"action": target_action, "skeleton": target_skeleton},
                               {"action": ~self.is_pad, "skeleton": torch.tensor([[True, False], [True, True]])})
-        self.assertAlmostEqual(losses["action"].item(), 2, places=6)
+        # Official ACT zeros padded error then averages B*K*D coordinates.
+        # Seven of ten action ticks are real in this batch.
+        self.assertAlmostEqual(losses["action"].item(), 2 * 7 / 10, places=6)
+        self.assertAlmostEqual(losses["action_valid_l1"].item(), 2, places=6)
         self.assertAlmostEqual(losses["skeleton"].item(), 1.5, places=6)
 
     def test_invalid_contract_or_targets_fail_explicitly(self):

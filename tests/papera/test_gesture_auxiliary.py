@@ -57,7 +57,8 @@ class GestureAuxiliaryTests(unittest.TestCase):
     def models(self):
         config = DiffusionConfig(observation_horizon=2, feature_dim=16, time_dim=16,
                                  down_dims=(16, 32), prediction_horizon=7,
-                                 action_horizon=3, diffusion_steps=12, inference_steps=3)
+                                 action_horizon=3, diffusion_steps=12, inference_steps=3,
+                                 image_size=(64,64), crop_shape=(56,56))
         torch.manual_seed(19)
         baseline = DiffusionPolicy(config)
         rng = torch.get_rng_state().clone()
@@ -75,7 +76,9 @@ class GestureAuxiliaryTests(unittest.TestCase):
     def test_shared_initialization_rng_noise_loss_and_sampling_unchanged(self):
         baseline, gesture = self.models()
         images, state, action, pad = self.inputs()
+        crop_rng = torch.get_rng_state()
         first = baseline.compute_loss(images, state, action, pad, torch.Generator().manual_seed(13))
+        torch.set_rng_state(crop_rng)
         second = gesture.compute_loss(images, state, action, pad, torch.Generator().manual_seed(13),
             gesture=torch.tensor([[0, 1], [2, -1]]),
             gesture_mask=torch.tensor([[True, True], [True, False]]))
@@ -94,7 +97,9 @@ class GestureAuxiliaryTests(unittest.TestCase):
         images, state, action, pad = self.inputs()
         kwargs = dict(gesture=torch.tensor([[0, 1], [2, -1]]),
                       gesture_mask=torch.tensor([[True, True], [True, False]]))
+        crop_rng = torch.get_rng_state()
         first = model.compute_loss(images, state, action, pad, torch.Generator().manual_seed(13), **kwargs)
+        torch.set_rng_state(crop_rng)
         second = model.compute_loss(images, state, action + 500, pad, torch.Generator().manual_seed(26), **kwargs)
         torch.testing.assert_close(first["gesture_logits"], second["gesture_logits"], rtol=0, atol=0)
         first["gesture_loss"].backward()

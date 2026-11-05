@@ -1,0 +1,11 @@
+# Install with the existing paperA_train interpreter, then install
+# robomimic==0.2.0 with --no-deps (see docs/RUN_PIPELINE.md).
+# The model-only use of robomimic does not need its Linux EGL probe package.
+diffusers==0.32.2
+huggingface-hub==0.36.2
+einops==0.8.2
+h5py==3.16.0
+termcolor==3.3.0
+tensorboardX==2.6.5
+imageio==2.38.1
+imageio-ffmpeg==0.8.1

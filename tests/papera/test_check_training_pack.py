@@ -27,7 +27,7 @@ class TrainingPackCheckTests(unittest.TestCase):
         cls.act['model'].update(hidden_dim=32, heads=4, feedforward_dim=64,
             encoder_layers=1, decoder_layers=1, posterior_layers=1, latent_dim=8)
         cls.dp['model'].update(feature_dim=16, time_dim=16, down_dims=[16, 32], observation_horizon=2,
-            diffusion_steps=8, inference_steps=2)
+            diffusion_steps=8, inference_steps=2, crop_shape=[42,56])
 
     @classmethod
     def tearDownClass(cls):

@@ -135,9 +135,12 @@ def log_figures(run, directory, manifest, context=None, max_step=None):
     fig, axes = plt.subplots(2, 2, figsize=(12, 8.2), layout="constrained")
     suffix = f", through step {max_step:,}" if max_step is not None else ""
     fig.suptitle(f"ACT {variant}: offline learning curves (one seed{suffix})")
-    line(axes[0, 0], train, "action", label="Train: posterior, one logged minibatch", linewidth=.6)
+    official = run_info["provenance"].get("model_implementation", "").startswith("official-act-")
+    train_label = ("Train: posterior, full B*K*A mean" if official
+                   else "Train: posterior, one logged minibatch")
+    line(axes[0, 0], train, "action", label=train_label, linewidth=.6)
     line(axes[0, 0], validation, "prior_action_l1", color=ORANGE,
-         label=f"{label}: prior z=0, {context['population']}", marker="o")
+         label=f"{label}: prior z=0, valid coordinates", marker="o")
     axes[0, 0].set(title="A  Normalized action L1: different protocols", ylabel="Mean absolute z-score error")
     axes[0, 0].legend(loc="upper right")
     fields = [(axes[0, 1], "xyz_error_mm", f"B  {label} XYZ", "Mean command XYZ Euclidean error (mm)"),
@@ -166,16 +169,22 @@ def log_figures(run, directory, manifest, context=None, max_step=None):
         shown = [dict(row, **{key: row[key] if row[key] > 0 else np.nan}) for row in train]
         line(ax, shown, key, linewidth=.75)
         ax.set(title=title, ylabel=ylabel, yscale="log")
-    axes[1, 0].axhline(config["gradient_clip_norm"], color=ORANGE, linestyle="--",
-                      label=f"Clip limit = {config['gradient_clip_norm']:g}")
-    axes[1, 0].legend()
+    clip_limit = config.get("gradient_clip_norm")
+    if clip_limit is not None:
+        axes[1, 0].axhline(clip_limit, color=ORANGE, linestyle="--",
+                          label=f"Clip limit = {clip_limit:g}")
+        axes[1, 0].legend()
+    else:
+        axes[1, 0].set_title("C  Gradient norm (clipping disabled)")
     line(axes[1, 1], train, "lr", color=GREEN)
     axes[1, 1].set(title="D  Main learning rate", ylabel="Learning rate after scheduler update", ylim=(0, None))
     axes[1, 1].ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
     fig.supxlabel(f"One record every {config['log_every']} steps plus step 1; unsaved minibatches cannot be diagnosed from this log.", fontsize=9)
     save_figure(fig, directory, "02_optimization_diagnostics",
         "Raw training objective, latent KL, pre-clipping global gradient norm, and main learning rate. "
-        "First three panels use logarithmic y scales. Large pre-clipping values are not unclipped updates. "
+        "First three panels use logarithmic y scales. "
+        + ("Gradient clipping is disabled. " if clip_limit is None
+           else "Large pre-clipping values are not unclipped updates. ") +
         "KL near zero alone cannot establish whether useful latent information is retained.", manifest)
 
 

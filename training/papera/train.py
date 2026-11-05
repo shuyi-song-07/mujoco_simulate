@@ -27,11 +27,11 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Sampler
 
-from training.papera.act_model import ACTConfig, ACTPolicy, compute_loss
+from training.papera.act_model import ACTConfig, ACTPolicy, compute_loss, IMPLEMENTATION
 from training.papera.data import file_sha256
 
 ROOT = Path(__file__).resolve().parents[2]
-CHECKPOINT_VERSION = "papera-act-offline-checkpoint-v1"
+CHECKPOINT_VERSION = "papera-act-official-checkpoint-v2"
 EXPERIMENTS = ("baseline", "gesture")
 
 
@@ -141,6 +141,12 @@ def lr_multiplier(step, config):
             # when the cumulative budget is extended.
             return 1.0
         raise ValueError(f"Unsupported learning-rate schedule: {continuation['kind']}")
+    # The authors' ACT example uses a constant AdamW learning rate.  Cosine is
+    # an explicit experiment setting, not an implicit change to the baseline.
+    # Missing fields retain the callable's historical diagnostic convention;
+    # they do not authorize resuming incompatible old model checkpoints.
+    if config.get("lr_scheduler", "cosine") == "constant":
+        return 1.0
     warmup = config["warmup_steps"]
     if warmup and step < warmup:
         return (step + 1) / warmup
@@ -172,6 +178,7 @@ def validate(model, loader, normalizer, device, precision="bf16", max_batches=No
     model.eval()
     sums, counts = {}, {}
     xyz_sum = grip_sum = angle_sum = 0.; physical_count = 0
+    valid_action_sum = 0.; valid_action_coordinates = 0
     horizons = {}
     confusion = np.zeros((2, 3, 3), dtype=np.int64)
     stage_correct = stage_count = 0
@@ -185,12 +192,16 @@ def validate(model, loader, normalizer, device, precision="bf16", max_batches=No
                 targets, masks = targets_masks(b)
                 losses = compute_loss(out, targets, masks, variant=model.config.variant)
             for key in ("action", "gesture", "skeleton", "stage"):
-                count = float(losses[key + "_count"].detach().cpu())
+                count = (out["action"].numel() if key == "action"
+                         else float(losses[key + "_count"].detach().cpu()))
                 value = float(losses[key].detach().cpu())
                 if not math.isfinite(value):
                     raise FloatingPointError(f"Validation {key} is not finite")
                 sums[key] = sums.get(key, 0.) + value * count
                 counts[key] = counts.get(key, 0.) + count
+            supported = (~b["is_pad"])[..., None].expand_as(out["action"])
+            valid_action_sum += float((out["action"].float()[supported] - b["action"].float()[supported]).abs().sum())
+            valid_action_coordinates += int(supported.sum())
             pred = normalizer.decode_action(out["action"].float().cpu().numpy())
             actual = normalizer.decode_action(b["action"].float().cpu().numpy())
             valid = (~b["is_pad"]).cpu().numpy()
@@ -221,13 +232,17 @@ def validate(model, loader, normalizer, device, precision="bf16", max_batches=No
                     confusion[side, int(true), int(estimated)] += 1
             stage_correct += int((out["stage_logits"].argmax(-1) == b["stage"]).sum().cpu())
             stage_count += len(b["stage"])
-        if counts.get("action", 0.) <= 0:
+        if valid_action_coordinates <= 0:
             raise ValueError("Validation has no valid action targets; cannot select a checkpoint")
-        result = {"prior_action_l1": sums.get("action", 0.) / counts["action"],
+        prior_valid_l1 = valid_action_sum / valid_action_coordinates
+        result = {"prior_action_l1": prior_valid_l1,
+            "prior_valid_action_l1": prior_valid_l1,
+            "official_action_l1": sums.get("action", 0.) / counts["action"],
+            "optimization_action_reduction": "masked_mean_over_batch_chunk_action_dimensions",
             "xyz_error_mm": xyz_sum / max(1, physical_count) * 1000,
             "gripper_error_mm": grip_sum / max(1, physical_count) * 1000,
             "rpy_mae_degrees": angle_sum / max(1, physical_count * 3) * 180 / np.pi,
-            "valid_action_coordinates": counts.get("action", 0.), "prior_only": True,
+            "valid_action_coordinates": valid_action_coordinates, "prior_only": True,
             "success_rate": None}
         for h, row in horizons.items():
             arms = row["samples"] * 2
@@ -303,7 +318,7 @@ def retain_candidate(output, save, config, step, signature, validation=None):
 def load_checkpoint(path, expected_signature):
     checkpoint = torch.load(path, map_location="cpu", weights_only=True)
     if checkpoint.get("version") != CHECKPOINT_VERSION:
-        raise ValueError("Not a compatible Paper A checkpoint; legacy Task3 checkpoints cannot resume")
+        raise ValueError("Not a compatible official-core ACT checkpoint; legacy local ACT/Task3 weights require a new run")
     if checkpoint.get("signature") != expected_signature:
         raise ValueError("Resume rejected: data/split/normalization/model/config/variant differs")
     return checkpoint
@@ -344,6 +359,9 @@ def load_extension_source(checkpoint_path, target_steps):
     if missing:
         raise ValueError(f"Cannot extend an incomplete or unfrozen source run; missing: {missing}")
     run_doc = json.loads((source_run / "run.json").read_text(encoding="utf-8"))
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True, mmap=True)
+    if checkpoint.get("version") != CHECKPOINT_VERSION:
+        raise ValueError("Legacy local ACT checkpoint cannot continue into the official-core network; start a new run")
     provenance = run_doc.get("provenance", {})
     signature = run_doc.get("signature")
     if not signature or canonical_hash(provenance) != signature:
@@ -362,7 +380,6 @@ def load_extension_source(checkpoint_path, target_steps):
                             ("stats.json", provenance.get("pack_binding", {}).get("stats"))):
         if value is None or file_sha256(source_run / filename) != json_file_hash(value):
             raise ValueError(f"Source run frozen file differs: {filename}")
-    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
     if (checkpoint.get("version") != CHECKPOINT_VERSION
             or checkpoint.get("signature") != signature
             or checkpoint.get("provenance") != provenance):
@@ -443,11 +460,18 @@ def validate_config(config):
         raise ValueError("seed must be an integer in [0, 2**32)")
     if not 0 <= config["warmup_steps"] < config["steps"]:
         raise ValueError("warmup_steps must be nonnegative and less than steps")
-    for key in ("learning_rate", "backbone_learning_rate", "weight_decay", "gradient_clip_norm"):
-        if not math.isfinite(config[key]) or config[key] <= 0:
+    for key in ("learning_rate", "backbone_learning_rate", "weight_decay"):
+        if type(config[key]) not in (int, float) or not math.isfinite(config[key]) or config[key] <= 0:
             raise ValueError(f"{key} must be positive and finite")
-    if not 0 < config["minimum_lr_fraction"] <= 1:
-        raise ValueError("minimum_lr_fraction must be in (0,1]")
+    clip = config.get("gradient_clip_norm")
+    if clip is not None and (type(clip) not in (int, float) or not math.isfinite(clip) or clip <= 0):
+        raise ValueError("gradient_clip_norm must be null or positive and finite")
+    if config.get("lr_scheduler", "cosine") not in ("constant", "cosine"):
+        raise ValueError("lr_scheduler must be constant or cosine")
+    if config.get("lr_scheduler") == "constant" and config["warmup_steps"]:
+        raise ValueError("Official constant learning rate requires warmup_steps=0")
+    if not 0 <= config["minimum_lr_fraction"] <= 1:
+        raise ValueError("minimum_lr_fraction must be in [0,1]")
     lr_schedule = config.get("lr_schedule")
     if lr_schedule is not None:
         if not isinstance(lr_schedule, dict) or lr_schedule.get("kind") != "constant_checkpoint_lr":
@@ -465,6 +489,24 @@ def validate_config(config):
 def json_file_hash(value):
     """Hash the exact UTF-8 bytes written by json_write, including the newline."""
     return hashlib.sha256((json.dumps(value, indent=2, ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8")).hexdigest()
+
+
+def official_source_hashes():
+    """Freeze only the small vendored sources, not data caches or libraries."""
+    folder = Path(__file__).with_name("official")
+    return {path.relative_to(Path(__file__).parent).as_posix(): file_sha256(path)
+            for path in sorted(folder.rglob("*"))
+            if path.is_file() and (path.suffix in (".py", ".json") or path.name.startswith("LICENSE"))}
+
+
+def snapshot_sources(output):
+    files = [Path(__file__), Path(__file__).with_name("act_model.py"),
+             Path(__file__).with_name("pack_data.py"), Path(__file__).with_name("data.py")]
+    files.extend(Path(__file__).parent / name for name in official_source_hashes())
+    for path in files:
+        target = Path(output) / "source_snapshot" / path.relative_to(ROOT)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(path, target)
 
 
 def reconcile_resume_logs(output, step):
@@ -537,6 +579,11 @@ def run(config, variant="baseline", output=None, resume=None, smoke=False, stop_
         raise ValueError(f"本轮只提供 ACT baseline 和 ACT + gesture，收到：{variant}")
     if resume is not None and continue_from is not None:
         raise ValueError("Use either exact --resume or new-run --continue-from, not both")
+    if resume is not None:
+        header = torch.load(resume, map_location="cpu", weights_only=True, mmap=True)
+        if header.get("version") != CHECKPOINT_VERSION:
+            raise ValueError("Legacy local ACT checkpoint cannot resume into the official-core network; start a new run")
+        del header
     if continue_from is not None:
         if resume is not None or smoke or overfit_episodes is not None:
             raise ValueError("Checkpoint extension is only supported for a full-data single-view ACT run")
@@ -591,6 +638,8 @@ def run(config, variant="baseline", output=None, resume=None, smoke=False, stop_
         "model_source_sha256": file_sha256(Path(__file__).with_name("act_model.py")),
         "reader_source_sha256": file_sha256(Path(__file__).with_name("pack_data.py" if binding else "data.py")),
         "trainer_source_sha256": file_sha256(Path(__file__)),
+        "model_implementation": IMPLEMENTATION,
+        "official_sources_sha256": official_source_hashes(),
         "task_id": config["task_id"], "task_binding": config["task_binding"],
         "config": config, "variant": variant, "model": asdict(model_config),
         "exploratory": True, "human_quality_review": "pending", "offline_only": True,
@@ -679,8 +728,8 @@ def run(config, variant="baseline", output=None, resume=None, smoke=False, stop_
         model = ACTPolicy(model_config).to(device)
         backbone_ids = {id(p) for p in model.backbone.parameters()}
         optimizer = torch.optim.AdamW([
-            {"params": [p for p in model.parameters() if id(p) not in backbone_ids], "lr": config["learning_rate"]},
-            {"params": list(model.backbone.parameters()), "lr": config["backbone_learning_rate"]}],
+            {"params": [p for p in model.parameters() if p.requires_grad and id(p) not in backbone_ids], "lr": config["learning_rate"]},
+            {"params": [p for p in model.backbone.parameters() if p.requires_grad], "lr": config["backbone_learning_rate"]}],
             weight_decay=config["weight_decay"])
         sampler = StatefulBatchSampler(len(train), config["batch_size"], config["seed"], prefetch_safe=safe_stitch)
         loader_generator = torch.Generator().manual_seed(config["seed"] + 1)
@@ -735,6 +784,8 @@ def run(config, variant="baseline", output=None, resume=None, smoke=False, stop_
             output.mkdir(parents=True, exist_ok=False)
             (output / "checkpoints").mkdir()
             runtime = {"python": sys.version, "executable": sys.executable, "torch": str(torch.__version__),
+                "model_implementation": IMPLEMENTATION,
+                "official_commit": json.loads((Path(__file__).with_name("official") / "SOURCE.json").read_text(encoding="utf-8"))["commit"],
                 "cuda_runtime": torch.version.cuda, "gpu": torch.cuda.get_device_name(),
                 "train_windows": len(train), "validation_windows": len(heldout),
                 "parameters": sum(p.numel() for p in model.parameters()), "engineering_smoke": smoke,
@@ -755,6 +806,7 @@ def run(config, variant="baseline", output=None, resume=None, smoke=False, stop_
             except (OSError, subprocess.CalledProcessError):
                 runtime["git_commit"] = None
             json_write(output / "run.json", {"signature": signature, "provenance": provenance, "runtime": runtime})
+            snapshot_sources(output)
             if binding:
                 json_write(output / "pack_binding.json", binding)
                 json_write(output / "stats.json", binding["stats"])
@@ -821,7 +873,11 @@ def run(config, variant="baseline", output=None, resume=None, smoke=False, stop_
                 if not torch.isfinite(loss):
                     raise FloatingPointError("Nonfinite loss; stopping before optimizer update")
                 loss.backward()
-                norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config["gradient_clip_norm"], error_if_nonfinite=True)
+                if config["gradient_clip_norm"] is None:
+                    norm = torch.nn.utils.get_total_norm(
+                        [p.grad for p in model.parameters() if p.grad is not None], error_if_nonfinite=True)
+                else:
+                    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config["gradient_clip_norm"], error_if_nonfinite=True)
                 optimizer.step(); scheduler.step(); step += 1
                 sampler.mark_consumed()
                 validation_metrics = None

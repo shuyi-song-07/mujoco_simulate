@@ -166,7 +166,7 @@ def engineering_updates(algorithm, dataset, config, output, *, updates, device='
             model = DiffusionPolicy(model_config(config)).to(device).train()
             optimizer = torch.optim.AdamW(model.parameters(), lr=config['learning_rate'],
                 betas=tuple(config['betas']), weight_decay=config['weight_decay'])
-            multiplier, ema = learning_rate_factor, EMA(model, config['ema_decay'])
+            multiplier, ema = learning_rate_factor, EMA(model, config['ema'])
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda step: multiplier(step, config))
         sampler = StatefulBatchSampler(len(dataset), batch_size, config['seed'], prefetch_safe=True)
         return model, optimizer, scheduler, sampler, ema
@@ -184,7 +184,9 @@ def engineering_updates(algorithm, dataset, config, output, *, updates, device='
                 loss = model.compute_loss(batch['images'], batch['state'], batch['action'], batch['is_pad'])['loss']
         require(bool(torch.isfinite(loss)), 'Nonfinite engineering loss')
         loss.backward()
-        gradient = torch.nn.utils.clip_grad_norm_(model.parameters(), config['gradient_clip_norm'], error_if_nonfinite=True)
+        limit = config['gradient_clip_norm']
+        gradient = torch.nn.utils.clip_grad_norm_(model.parameters(),
+            float('inf') if limit is None else limit, error_if_nonfinite=True)
         optimizer.step()
         scheduler.step()
         if ema is not None:
@@ -201,7 +203,7 @@ def engineering_updates(algorithm, dataset, config, output, *, updates, device='
             'sampler': sampler.state_dict(), 'rng': rng_state(),
             'deployable': False, 'formal_trainer_checkpoint': False}
         if ema is not None:
-            value.update(ema=ema.model.state_dict(), ema_updates=ema.updates)
+            value.update(ema=ema.model.state_dict(), ema_updates=ema.updates, ema_state=ema.state_dict())
         return value
 
     output.mkdir(parents=True, exist_ok=False)
@@ -224,8 +226,9 @@ def engineering_updates(algorithm, dataset, config, output, *, updates, device='
     sampler.load_state_dict(checkpoint['sampler'])
     if ema is not None:
         ema.model.load_state_dict(checkpoint['ema'])
-        ema.updates = checkpoint['ema_updates']
+        ema.load_state_dict(checkpoint['ema_state'])
         _same_state(ema.model.state_dict(), checkpoint['ema'])
+        _same_state(ema.state_dict(), checkpoint['ema_state'])
     restore_rng(checkpoint['rng'])
     for actual, saved in ((model.state_dict(), checkpoint['model']),
                           (optimizer.state_dict(), checkpoint['optimizer']),

@@ -1,0 +1,30 @@
+{
+  "repository": "https://github.com/tonyzhaozh/act",
+  "commit": "742c753c0d4a5d87076c8f69e5628c79a8cc5488",
+  "files": {
+    "detr_vae.py": "detr/models/detr_vae.py",
+    "transformer.py": "detr/models/transformer.py",
+    "backbone.py": "detr/models/backbone.py",
+    "position_encoding.py": "detr/models/position_encoding.py",
+    "misc.py": "detr/util/misc.py"
+  },
+  "source_changes": [
+    "Package-local util.misc imports made relative",
+    "Unused IPython interactive-debug imports removed"
+  ],
+  "adapter_changes_outside_vendor": [
+    "Construct ResNet18 with local weights only; original BackboneBase and Joiner retained",
+    "S16 qpos replaces two14D input projections; A14 unchanged",
+    "Optional latent_dim capacity configuration replaces latent projection shapes only; default32",
+    "NaN padding sanitized before original posterior; invalid action Loss masked",
+    "Evaluation wrapper omits actions to force original z=0 inference path",
+    "Auxiliary heads use pooled pre-posterior projected image features and robot state; no main-graph changes"
+  ],
+  "unchanged_quirks": [
+    "Original build_transformer return_intermediate_dec=True and DETRVAE first intermediate decoder output are preserved"
+  ],
+  "licenses": {
+    "LICENSE": "upstream ACT MIT",
+    "LICENSE-DETR": "vendored DETR Apache-2.0"
+  }
+}

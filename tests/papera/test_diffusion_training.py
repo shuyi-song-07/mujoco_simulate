@@ -10,7 +10,10 @@ import numpy as np
 import torch
 
 from tests.papera.test_safe_stitch_data import make_pack
-from training.diffusion.train import ROOT, EMA, run, validate_config
+from training.diffusion.train import (ROOT, EMA, DEFAULT_EMA, CHECKPOINT_VERSION,
+                                     learning_rate_factor, run, validate_config)
+from training.diffusion.official.ema_model import EMAModel
+from diffusers.optimization import get_cosine_schedule_with_warmup
 from training.diffusion.inference import load_policy
 from training.diffusion.data import DiffusionDataset
 
@@ -28,7 +31,8 @@ class DiffusionTrainingTests(unittest.TestCase):
             validation_batches=1, validation_sample_batches=1, save_every=2,
             log_every=1, image_size=[64,48])
         cls.config['model'].update(feature_dim=16, time_dim=16, down_dims=[16,32],
-            diffusion_steps=8, inference_steps=2, backbone_weights=None, observation_horizon=1)
+            diffusion_steps=8, inference_steps=2, backbone_weights=None, observation_horizon=1,
+            crop_shape=[42,56])
 
     @classmethod
     def tearDownClass(cls):
@@ -40,7 +44,12 @@ class DiffusionTrainingTests(unittest.TestCase):
         initial = torch.load(b / 'checkpoints/last.pt', map_location='cpu', weights_only=False)
         self.assertEqual(initial['step'], 2)
         self.assertEqual(initial['ema_updates'], 2)
-        self.assertTrue(any(not torch.equal(initial['model'][key], value)
+        self.assertEqual(initial['version'], CHECKPOINT_VERSION)
+        self.assertEqual(initial['ema_state']['optimization_step'], 2)
+        self.assertEqual(initial['ema_state']['config'], self.config['ema'])
+        # The original official EMA copies the first two parameter updates.
+        self.assertEqual(initial['ema_state']['decay'], 0.)
+        self.assertTrue(all(torch.equal(initial['model'][key], value)
                             for key, value in initial['ema'].items()))
         run(self.config, self.pack, 'tray_transfer', resume=b / 'checkpoints/last.pt', engineering=True)
         full = torch.load(a / 'checkpoints/last.pt', map_location='cpu', weights_only=False)
@@ -51,9 +60,11 @@ class DiffusionTrainingTests(unittest.TestCase):
             for key in full[section]:
                 torch.testing.assert_close(full[section][key], resumed[section][key], rtol=0, atol=0)
         self.assertEqual(resumed['scheduler'], full['scheduler'])
+        self.assertEqual(resumed['ema_state'], full['ema_state'])
         self.assertEqual(json.loads((b / 'completion.json').read_text())['status'], 'complete')
         self.assertTrue((b / 'tensorboard').is_dir())
         self.assertTrue((b / 'checkpoints/best.pt').is_file())
+        self.assertIn('training/diffusion/official/ema_model.py', full['source_sha256'])
         policy, normalizer, metadata = load_policy(b / 'checkpoints/best.pt')
         self.assertEqual(metadata['task_id'], 'tray_transfer')
         with torch.no_grad():
@@ -70,11 +81,50 @@ class DiffusionTrainingTests(unittest.TestCase):
 
     def test_config_rejects_invalid_budget_and_nonfinite_optimizer_values(self):
         for key, value in (('steps', 0), ('num_workers', -1), ('learning_rate', float('nan')),
-                           ('ema_decay', 1.), ('betas', [.9, 1.])):
+                           ('ema', dict(DEFAULT_EMA, max_value=1.)), ('betas', [.9, 1.]),
+                           ('gradient_clip_norm', 0.), ('gradient_clip_norm', True)):
             config = copy.deepcopy(self.config)
             config[key] = value
             with self.subTest(key=key), self.assertRaises(ValueError):
                 validate_config(config)
+
+    def test_official_ema_updates_and_scheduler_state_restore_match_reference(self):
+        model = torch.nn.Linear(3, 2)
+        ema = EMA(model, DEFAULT_EMA)
+        reference = EMAModel(copy.deepcopy(model), **DEFAULT_EMA)
+        for index in range(20):
+            with torch.no_grad():
+                for parameter in model.parameters():
+                    parameter.add_(.1 * (index + 1))
+            ema.update(model)
+            reference.step(model)
+            self.assertEqual(ema.decay, reference.decay)
+            self.assertEqual(ema.updates, reference.optimization_step)
+            for actual, expected in zip(ema.model.parameters(), reference.averaged_model.parameters()):
+                torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+            if index == 8:
+                restored = EMA(model, DEFAULT_EMA)
+                restored.model.load_state_dict(ema.model.state_dict())
+                restored.load_state_dict(ema.state_dict())
+                ema = restored
+
+    def test_lr_uses_original_diffusers_warmup_and_zero_terminal_lr(self):
+        config = dict(steps=40000, warmup_steps=500)
+        optimizer = torch.optim.SGD([torch.zeros((), requires_grad=True)], lr=1.)
+        schedule = get_cosine_schedule_with_warmup(optimizer, 500, 40000)
+        for step in (0,1,499,500,1000,20000,39999,40000):
+            self.assertEqual(learning_rate_factor(step, config), schedule.lr_lambdas[0](step))
+        self.assertEqual(learning_rate_factor(0, config), 0.)
+        self.assertEqual(learning_rate_factor(40000, config), 0.)
+
+    def test_old_local_checkpoint_and_config_are_rejected_explicitly(self):
+        old = self.root/'legacy_local.pt'
+        torch.save({'version':'papera-diffusion-checkpoint-v1', 'task_id':'tray_transfer'}, old)
+        with self.assertRaisesRegex(ValueError, 'older local DP'):
+            run(self.config, self.pack, 'tray_transfer', resume=old, engineering=True)
+        for name, value in (('ema_decay', .999), ('minimum_lr_fraction', .1)):
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, 'Legacy local DP'):
+                validate_config(dict(self.config, **{name:value}))
 
     def test_gesture_training_records_masked_metrics_and_candidate(self):
         config = copy.deepcopy(self.config)

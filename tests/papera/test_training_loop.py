@@ -291,6 +291,10 @@ class TrainingLoopTests(unittest.TestCase):
         self.assertAlmostEqual(result["rpy_mae_degrees"], .2 / 3 * 180 / np.pi, places=4)
         direct_l1 = (predicted - data["action"]).abs()[~data["is_pad"]].mean().item()
         self.assertAlmostEqual(result["prior_action_l1"], direct_l1, places=6)
+        self.assertAlmostEqual(result["prior_valid_action_l1"], direct_l1, places=6)
+        # Official optimization divides masked errors by all B*K*D positions;
+        # best-selection diagnostics retain a separately named valid L1.
+        self.assertAlmostEqual(result["official_action_l1"], direct_l1 * .5, places=6)
         self.assertEqual(result["gesture_support"], 3)
         self.assertAlmostEqual(result["gesture_accuracy"], 2 / 3)
         self.assertEqual(result["skeleton_coordinate_count"], 3 * 21 * 3)
@@ -317,13 +321,27 @@ class TrainingLoopTests(unittest.TestCase):
     def test_schedule_and_invalid_config(self):
         config = json.loads((Path(__file__).resolve().parents[2] / "config/training_baseline.json").read_text())
         validate_config(config)
-        self.assertAlmostEqual(lr_multiplier(0, config), 1 / config["warmup_steps"])
-        self.assertAlmostEqual(lr_multiplier(config["warmup_steps"], config), 1.)
-        self.assertAlmostEqual(lr_multiplier(config["steps"], config), config["minimum_lr_fraction"])
+        self.assertEqual(config["lr_scheduler"], "constant")
+        self.assertIsNone(config["gradient_clip_norm"])
+        for tick in (0, 1, 500, config["steps"]):
+            self.assertEqual(lr_multiplier(tick, config), 1.)
+        cosine = {**config, "lr_scheduler": "cosine", "warmup_steps": 2,
+                  "minimum_lr_fraction": .1}
+        self.assertEqual(lr_multiplier(0, cosine), .5)
+        self.assertEqual(lr_multiplier(2, cosine), 1.)
+        self.assertAlmostEqual(lr_multiplier(config["steps"], cosine), .1)
         for key, value in (("num_workers", 9), ("steps", 0), ("batch_size", 0),
-                           ("precision", "fp16"), ("allow_exploratory", False), ("seed", -1)):
+                           ("precision", "fp16"), ("allow_exploratory", False), ("seed", -1),
+                           ("gradient_clip_norm", 0), ("lr_scheduler", "unregistered")):
             with self.subTest(key=key), self.assertRaises(ValueError):
                 validate_config({**config, key: value})
+
+    def test_legacy_local_model_checkpoint_cannot_resume(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "last.pt"
+            atomic_checkpoint(path, {"version": "papera-act-offline-checkpoint-v1", "signature": "old"})
+            with self.assertRaisesRegex(ValueError, "legacy"):
+                load_checkpoint(path, "old")
 
 
 if __name__ == "__main__":

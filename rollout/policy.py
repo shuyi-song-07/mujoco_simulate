@@ -91,6 +91,9 @@ def _verify_single_pack(run_dir, provenance, verify_cache):
     pack = Path(provenance["pack"]).resolve()
     binding = provenance.get("pack_binding", {})
     config = provenance["config"]
+    if config.get('version') in ('papera-single-oblique-act-baseline-1',
+                                  'papera-single-oblique-act-gesture-1'):
+        raise ValueError('Legacy local ACT model: the official-core network requires a new training run; historical weights and results are unchanged')
     if (provenance.get("data_contract") != pack_data.VERSION
             or provenance.get("action_alignment") != training_pack.ALIGNMENT
             or binding.get("version") != pack_data.VERSION

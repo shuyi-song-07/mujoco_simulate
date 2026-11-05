@@ -11,6 +11,8 @@ import copy
 import hashlib
 from dataclasses import asdict
 from datetime import datetime
+from functools import lru_cache
+from importlib.metadata import version as package_version
 import json
 import math
 from pathlib import Path
@@ -22,14 +24,18 @@ import time
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
+from diffusers.optimization import get_cosine_schedule_with_warmup
 
 from training.papera.train import (StatefulBatchSampler, atomic_checkpoint,
     move_batch, precision_context, rng_state, restore_rng, reconcile_resume_logs)
-from training.diffusion.model import DiffusionConfig, DiffusionPolicy
+from training.diffusion.model import DiffusionConfig, DiffusionPolicy, IMPLEMENTATION
 from training.diffusion.data import DiffusionDataset, prepare_data, restore_data
+from training.diffusion.official.ema_model import EMAModel
 
 ROOT = Path(__file__).resolve().parents[2]
-CHECKPOINT_VERSION = 'papera-diffusion-checkpoint-v1'
+CHECKPOINT_VERSION = 'papera-diffusion-official-checkpoint-v2'
+DEFAULT_EMA = {'update_after_step': 0, 'inv_gamma': 1.0, 'power': .75,
+               'min_value': 0.0, 'max_value': .9999}
 
 
 def resolve(path):
@@ -62,14 +68,17 @@ def validate_config(config):
         raise ValueError('validation_batches must be null (all) or a positive integer')
     if limit is not None and config['validation_sample_batches'] > limit:
         raise ValueError('validation_sample_batches cannot exceed validation_batches')
-    for name in ('learning_rate', 'gradient_clip_norm'):
-        if not math.isfinite(config[name]) or config[name] <= 0:
-            raise ValueError(f'{name} must be finite and positive')
+    if not math.isfinite(config['learning_rate']) or config['learning_rate'] <= 0:
+        raise ValueError('learning_rate must be finite and positive')
+    clip = config['gradient_clip_norm']
+    if clip is not None and (isinstance(clip, bool) or not isinstance(clip, (int, float))
+                            or not math.isfinite(clip) or clip <= 0):
+        raise ValueError('gradient_clip_norm must be null (official default) or finite and positive')
     if not math.isfinite(config['weight_decay']) or config['weight_decay'] < 0:
         raise ValueError('weight_decay must be finite and nonnegative')
-    for name in ('ema_decay', 'minimum_lr_fraction'):
-        if not math.isfinite(config[name]) or not 0 <= config[name] < 1:
-            raise ValueError(f'{name} must be finite in [0,1)')
+    if 'ema_decay' in config or 'minimum_lr_fraction' in config:
+        raise ValueError('Legacy local DP config: use the official ema object and cosine schedule to zero')
+    validate_ema_config(config.get('ema'))
     if len(config['betas']) != 2 or any(not math.isfinite(b) or not 0 <= b < 1 for b in config['betas']):
         raise ValueError('AdamW betas must contain two values in [0,1)')
     if config['precision'] not in ('fp32', 'bf16') or config['device'] not in ('cpu', 'cuda'):
@@ -79,21 +88,56 @@ def validate_config(config):
     return config
 
 
-class EMA:
-    """Warm-started exponential moving average, including saved update count."""
-    def __init__(self, model, decay):
-        self.model = copy.deepcopy(model).eval().requires_grad_(False)
-        self.decay = float(decay)
-        self.updates = 0
+def validate_ema_config(values):
+    if not isinstance(values, dict) or set(values) != set(DEFAULT_EMA):
+        raise ValueError(f'ema must contain exactly {sorted(DEFAULT_EMA)}')
+    if type(values['update_after_step']) is not int or values['update_after_step'] < 0:
+        raise ValueError('ema.update_after_step must be a nonnegative integer')
+    for name in ('inv_gamma', 'power', 'min_value', 'max_value'):
+        if (isinstance(values[name], bool) or not isinstance(values[name], (int, float))
+                or not math.isfinite(values[name])):
+            raise ValueError(f'ema.{name} must be finite')
+    if values['inv_gamma'] <= 0 or values['power'] <= 0:
+        raise ValueError('ema.inv_gamma and ema.power must be positive')
+    if not 0 <= values['min_value'] <= values['max_value'] < 1:
+        raise ValueError('ema requires 0 <= min_value <= max_value < 1')
+    return dict(values)
 
-    @torch.no_grad()
+
+class EMA(EMAModel):
+    """Official EMA math with explicit, fully resumable scheduler state.
+
+    The upstream class owns the update implementation unchanged. Model weights
+    remain in the checkpoint's separate ``ema`` field.
+    """
+    def __init__(self, model, config=None):
+        self.config = validate_ema_config(DEFAULT_EMA if config is None else config)
+        super().__init__(copy.deepcopy(model), **self.config)
+
+    @property
+    def model(self):
+        return self.averaged_model
+
+    @property
+    def updates(self):
+        return self.optimization_step
+
     def update(self, model):
-        self.updates += 1
-        decay = min(self.decay, (1 + self.updates) / (10 + self.updates))
-        for average, value in zip(self.model.parameters(), model.parameters()):
-            average.lerp_(value.detach(), 1 - decay)
-        for average, value in zip(self.model.buffers(), model.buffers()):
-            average.copy_(value)
+        self.step(model)
+
+    def state_dict(self):
+        return {'config': dict(self.config), 'optimization_step': self.optimization_step,
+                'decay': self.decay}
+
+    def load_state_dict(self, state):
+        if state.get('config') != self.config:
+            raise ValueError('Official EMA checkpoint configuration differs')
+        step, decay = state.get('optimization_step'), state.get('decay')
+        if (type(step) is not int or step < 0 or isinstance(decay, bool)
+                or not isinstance(decay, (int, float)) or not math.isfinite(decay)
+                or not 0 <= decay <= self.config['max_value']):
+            raise ValueError('Invalid official EMA scheduler state')
+        self.optimization_step, self.decay = step, float(decay)
 
 
 def seed(seed_value):
@@ -104,12 +148,16 @@ def seed(seed_value):
         torch.cuda.manual_seed_all(seed_value)
 
 
+@lru_cache(maxsize=16)
+def _official_lr_callback(warmup_steps, steps):
+    # Expose the actual library callback for the shared diagnostic entry. The
+    # training optimizer below uses the official scheduler directly.
+    optimizer = torch.optim.SGD([torch.zeros((), requires_grad=True)], lr=1.)
+    return get_cosine_schedule_with_warmup(optimizer, warmup_steps, steps).lr_lambdas[0]
+
+
 def learning_rate_factor(step, config):
-    if step < config['warmup_steps']:
-        return (step + 1) / max(1, config['warmup_steps'])
-    progress = (step - config['warmup_steps']) / max(1, config['steps'] - config['warmup_steps'])
-    return config['minimum_lr_fraction'] + (1 - config['minimum_lr_fraction']) * (
-        1 + math.cos(math.pi * min(1., max(0., progress)))) / 2
+    return _official_lr_callback(config['warmup_steps'], config['steps'])(step)
 
 
 @torch.no_grad()
@@ -177,6 +225,7 @@ def validate(model, loader, normalizer, device, config):
 
 def model_config(config):
     values = dict(config['model'])
+    values['image_size'] = tuple(config['image_size'])
     values['variant'] = config.get('variant', values.get('variant', 'baseline'))
     if values.get('backbone_weights'):
         values['backbone_weights'] = str(resolve(values['backbone_weights']))
@@ -194,6 +243,9 @@ def gesture_arguments(model, batch):
 def snapshot_sources(output):
     paths = [ROOT/'training/diffusion'/name for name in ('model.py', 'data.py', 'train.py', 'schedule.py')]
     paths += [ROOT/'training/gesture_auxiliary.py']
+    paths += sorted(path for path in (ROOT/'training/diffusion/official').rglob('*')
+                    if path.is_file() and '__pycache__' not in path.parts
+                    and path.suffix != '.pyc')
     hashes = {}
     for path in paths:
         relative = path.relative_to(ROOT)
@@ -229,7 +281,7 @@ def run(config, pack, task_id, *, output=None, resume=None, engineering=False,
     if resume:
         checkpoint = torch.load(resolve(resume), map_location='cpu', weights_only=False)
         if checkpoint.get('version') != CHECKPOINT_VERSION or checkpoint.get('task_id') != task_id:
-            raise ValueError('Checkpoint is not a compatible Diffusion Policy for this task')
+            raise ValueError('Checkpoint requires the official-core DP v2 architecture; older local DP weights cannot resume')
         if (checkpoint['config'] != config or Path(checkpoint['pack_path']) != pack
                 or bool(checkpoint['engineering']) != bool(engineering)):
             raise ValueError('Resume requires the frozen config, Pack path and data scope')
@@ -257,10 +309,10 @@ def run(config, pack, task_id, *, output=None, resume=None, engineering=False,
         seed(config['seed'])
         mc = model_config(config)
         model = DiffusionPolicy(mc).to(device)
-        ema = EMA(model, config['ema_decay'])
+        ema = EMA(model, config['ema'])
         optimizer = torch.optim.AdamW(model.parameters(), lr=config['learning_rate'],
             betas=tuple(config['betas']), weight_decay=config['weight_decay'])
-        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda t: learning_rate_factor(t, config))
+        scheduler = get_cosine_schedule_with_warmup(optimizer, config['warmup_steps'], config['steps'])
         sampler = StatefulBatchSampler(len(train), config['batch_size'], config['seed'], prefetch_safe=True)
         loader_rng = torch.Generator().manual_seed(config['seed'] + 1)
         options = {'num_workers': config['num_workers'], 'pin_memory': device.type == 'cuda', 'generator': loader_rng}
@@ -274,7 +326,9 @@ def run(config, pack, task_id, *, output=None, resume=None, engineering=False,
         if resume:
             model.load_state_dict(checkpoint['model'])
             ema.model.load_state_dict(checkpoint['ema'])
-            ema.updates = checkpoint['ema_updates']
+            ema.load_state_dict(checkpoint['ema_state'])
+            if ema.updates != checkpoint['step'] or checkpoint['ema_updates'] != ema.updates:
+                raise ValueError('Official EMA update count differs from the optimizer checkpoint')
             optimizer.load_state_dict(checkpoint['optimizer'])
             scheduler.load_state_dict(checkpoint['scheduler'])
             sampler.load_state_dict(checkpoint['sampler'])
@@ -302,6 +356,9 @@ def run(config, pack, task_id, *, output=None, resume=None, engineering=False,
                 'variant': mc.variant, 'source_sha256': sources,
                 'runtime': {'python': sys.version, 'executable': sys.executable,
                     'torch': str(torch.__version__), 'device': str(device),
+                    'implementation': IMPLEMENTATION,
+                    'official_commit': json.loads((ROOT/'training/diffusion/official/SOURCE.json').read_text(encoding='utf-8'))['commit'],
+                    'packages': {name: package_version(name) for name in ('diffusers', 'robomimic', 'einops')},
                     'gpu': torch.cuda.get_device_name() if device.type == 'cuda' else None},
                 'best_selection': 'EMA validation noise MSE with fixed random draws',
                 'closed_loop_verified': False})
@@ -341,6 +398,7 @@ def run(config, pack, task_id, *, output=None, resume=None, engineering=False,
                 'engineering': engineering, 'step': step, 'best_noise_mse': best,
                 'source_sha256': sources,
                 'model': model.state_dict(), 'ema': ema.model.state_dict(), 'ema_updates': ema.updates,
+                'ema_state': ema.state_dict(),
                 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(),
                 'sampler': sampler.state_dict(), 'rng': rng_state(),
                 'loader_generator': loader_rng.get_state(),
@@ -359,7 +417,11 @@ def run(config, pack, task_id, *, output=None, resume=None, engineering=False,
                 if not torch.isfinite(loss):
                     raise FloatingPointError('Nonfinite diffusion loss')
                 loss.backward()
-                norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config['gradient_clip_norm'], error_if_nonfinite=True)
+                if config['gradient_clip_norm'] is None:
+                    norm = torch.nn.utils.get_total_norm(
+                        [p.grad for p in model.parameters() if p.grad is not None], error_if_nonfinite=True)
+                else:
+                    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config['gradient_clip_norm'], error_if_nonfinite=True)
                 optimizer.step()
                 scheduler.step()
                 ema.update(model)
@@ -433,7 +495,7 @@ def main(argv=None):
             parser.error('Resume from checkpoints/last.pt; best.pt is intended for inference')
         saved = json.loads((resolve(args.resume).parent.parent / 'run.json').read_text(encoding='utf-8'))
         if saved.get('version') != CHECKPOINT_VERSION:
-            parser.error('Not a Diffusion Policy checkpoint')
+            parser.error('Expected official-core DP v2; historical local DP weights cannot resume in this model')
         config, pack = saved['config'], Path(saved['pack_path'])
         if args.variant and args.variant != model_config(config).variant:
             parser.error('--variant differs from the frozen checkpoint')

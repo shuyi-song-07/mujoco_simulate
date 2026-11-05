@@ -53,7 +53,7 @@ Task Binding 含 task_id、task_version、scene_id、Manifest SHA、Schema、七
 | 夹爪 | 连续米制宽度，0为闭；当前每爪最大约0.08m，以冻结配置为准；不是0/255 |
 | Raw RGB / Pack | oblique RGB uint8，640×480×3；不透明机器人 |
 | ACT 模型 RGB | 单帧单相机 `[B,1,3,480,640]`，全画面、float32/255，模型内部沿用原ImageNet归一化 |
-| DP 模型观察 | 当前正式配置使用同一 oblique 的过去至当前2帧，RGB `[B,2,1,3,480,640]`、State `[B,2,16]`，`observation_horizon=2`；模型内部ImageNet归一化 |
+| DP 模型观察 | 同一oblique的过去至当前2帧，RGB `[B,2,1,3,480,640]`、State `[B,2,16]`；内部RGB映射 `[-1,1]`，按高宽472×632训练随机裁剪、验证/推理中心裁剪，配置可调整，Pack仍为640×480 |
 | 物理/控制/图像与动作 | 500Hz物理（2ms步）；60Hz控制；固定相位30Hz图像锚点和30Hz模型动作，每个模型目标执行2个控制tick；控制步离散化可造成小幅间隔差异 |
 
 无效数值、Schema、相机或单位不匹配会拒绝；不同机器人的维度不能仅改 manifest 宣称兼容。
@@ -98,23 +98,27 @@ Training 的 `training/papera/pack_data.py::SafeStitchDataset` 只负责训练�
 
 DP 的 `training/diffusion/data.py::prepare_data` 默认用 `verify(..., check_hashes=False)` 检查 Pack 文件存在与尺寸、Pack/内嵌Prepared冻结的 task/schema/工程身份、会话 split、逐帧证据、S16/A14有限值、next-control因果关系及 Safe Stitch 证明。不访问外部 Raw/Prepared，不重算大文件哈希或当前任务源码哈希；`--full-verify` 才启用原完整校验。默认检查只能确认格式与接口，不能替代文件内容审计。入口只接受正式 Pack，不能把缺少原始控制/来源日志的 HF merged 数据直接视为 Pack 或在训练时修复。
 
-`DiffusionDataset` 根据运行配置取历史；当前正式配置返回2帧观察、30帧未来动作与有效Mask。历史只在同一合法虚拟序列内取值，开头不足2帧时重复该序列首帧。动作仍从当前原始观察后下一合法控制tick开始，与ACT使用同一因果标签；不能照搬作者含过去动作序列的 `To-1` 偏移。输出 action `[B,30,14]`、is_pad `[B,30]`，硬边界之后的目标 padding 并从 epsilon MSE 排除。状态和动作按 train split 拟合 min-max，将训练集范围映射到 `[-1,1]`；RPY先按训练集角度参考处理周期，验证使用同一统计，不重新拟合、不裁切，超出训练范围的值可以超出 `[-1,1]`。冻结绑定保存 Pack 路径、Manifest元数据摘要、task_binding、工程属性、split、episode/合法序列与窗口数量、2/30/8及640×480图像规格、归一化。该摘要只覆盖小型元数据，不冒充整包内容哈希。类/函数的历史默认值仍可供既有检查点复现，正式新训练以JSON配置为准。
+`DiffusionDataset` 根据运行配置取历史；当前正式配置返回2帧观察、30帧未来动作与有效Mask。历史只在同一合法虚拟序列内取值，开头不足2帧时重复该序列首帧。动作仍从当前原始观察后下一合法控制tick开始，与ACT使用同一因果标签；不能照搬作者含过去动作序列的 `To-1` 偏移。输出 action `[B,30,14]`、is_pad `[B,30]`，硬边界之后的目标 padding 并从 epsilon MSE 排除。状态和动作按 train split 拟合 min-max，将训练集范围映射到 `[-1,1]`；RPY先按训练集角度参考处理周期，验证使用同一统计，不重新拟合、不裁切，超出训练范围的值可以超出 `[-1,1]`。冻结绑定保存 Pack 路径、Manifest元数据摘要、task_binding、工程属性、split、episode/合法序列与窗口数量、2/30/8及640×480图像规格、归一化。该摘要只覆盖小型元数据，不冒充整包内容哈希。新DP网络替换不重建Pack或改变Safe Stitch；旧网络权重不兼容，按下文版本明确拒绝。
 
 ## 训练与 Checkpoint
 
 正式入口 `python -m training.papera --task ... --variant baseline|gesture --pack ...`。训练冻结 task_binding、Pack绝对路径/manifest SHA、split、来源指纹、模型配置、相机规格、归一化、variant、seed和源码/Git信息。
 
-ACT 使用原有 ResNet18 + Transformer + CVAE；Baseline 保持 L1+KL；Gesture 复用原辅助头。模型类保留原有历史结构分支以避免改写核心，但新正式 CLI 只接受单 oblique 的两组实验；旧三视角完整复现留在只读原工程，没有第二套新正式流程。
+ACT直接复用固定官方组件：DETRVAE、Post-LN/ReLU Transformer、原位置编码与CVAE；`training/papera/official/SOURCE.json`记录提交742c753及原源码和许可证。任务适配只改变两处S16状态输入投影、配置单oblique/K30与必要Padding消毒，A14不变。输入RGB仍为640×480、ImageNet归一化，State/Action仍按训练split拟合z-score和RPY周期。正式参数hidden512/FF3200、encoder4/decoder7/posterior4、latent32，FP32、batch16、40k；AdamW两组LR1e-5、WD1e-4、常量LR、无warmup/无梯度裁剪。固定上游DETRVAE使用第一个intermediate decoder输出的行为保持不变。
 
-完整 checkpoint 保留 model、optimizer、scheduler、sampler、RNG、当前步数、最佳验证值和 provenance。`best` 按验证 z=0 的动作误差选择，`last` 用于恢复；不根据测试成功率挑 best。模型在模拟中的闭环表现必须单独评估，离线 Loss 下降不等于成功。
+ACT优化的Action L1保持官方分母：先屏蔽无效误差，再对B×K×A全部位置取均值，KL按潜变量维求和后按有效样本均值，权重10。训练另记有效坐标L1供诊断。验证z=0，best仍按`prior_action_l1`（等同`prior_valid_action_l1`）的有效坐标误差选择，另报告`official_action_l1`，不按测试成功率挑best。当前checkpoint契约为`papera-act-official-checkpoint-v2`，保存model/optimizer/scheduler/sampler/RNG、归一化、来源及源码快照；包含全部官方小型源码与许可证。旧`papera-act-offline-checkpoint-v1`不可resume/continue或加载，历史权重原样保留。
 
-DP 入口为 `python -m training.diffusion --task ... --variant baseline|gesture --pack ...`，Baseline默认 `config/training_diffusion.json`，Gesture显式使用 `config/training_diffusion_gesture.json`。独立使用 ResNet18（GN）和带 FiLM 的 conditional 1D U-Net，通道 `[256,512,1024]`、卷积核3、100步cosine扩散、epsilon MSE，默认采样用10步DDIM；2帧观察、动作预测30帧、`action_horizon=8`。每个30Hz观察都更新H2，默认查询帧为0、8、16……，首个动作不增加To-1偏移。
+DP入口仍为 `python -m training.diffusion --task ... --variant baseline|gesture --pack ...`，配置路径不变。当前直接使用固定官方组件，来源及许可证见 `training/diffusion/official/SOURCE.json`：robomimic0.2 VisualCore的ResNet18、官方GN规则、32关键点SpatialSoftmax、64维投影及ReLU；原ConditionalUnet1D、FiLM和skip图不重写，通道 `[512,1024,2048]`、卷积核5。100步cosine前向加噪和100步反向DDPM由diffusers执行。S16/A14、H2、K30/A8继续沿用Pack；网络内部K30补到32再截回30只解决长度整除，不增加训练目标。当前`FP32/batch16/40k`，AdamW1e-4、500步warmup后余弦降0、不裁剪梯度、官方幂次EMA。每个30Hz观察都更新H2，查询帧默认0、8、16……，首个动作不增加To-1偏移。
 
-Gesture两组均采用权重0.1的左右三分类CE，只有有效手实例参与均值。标签是Pack当前锚点关联的识别类别，并非控制器已确认意图；Unknown不补成类别、不删除其机器人动作帧。ACT头只读取观察encoder，DP头只读取H2观察条件，均不读取未来动作或扩散噪声；推理不用手势。DP Baseline公共参数及随机初始化不因增加可选头改变。细节与覆盖统计见 `GESTURE_AUXILIARY_EXPERIMENT.md`。
+无效Action先清除非有限值再与完整高斯噪声合成；去噪输入不再把noisy后缀置零，Loss仍只按有效坐标计数。数据硬边界Mask和网络内部补齐的2个位置含义不同。旧本地变体的ImageNet归一化、特征128、核3、DDIM10/20和旧EMA属于历史实现，现有34%结果不能作为新官方核心的结果。
+
+Gesture两组均采用权重0.1的左右三分类CE，只有有效手实例参与均值。标签是当前锚点关联的识别类别，Unknown不补类别、不删除机器人帧。ACT辅助头读原input_proj图像特征的空间/相机均值拼接当前S16，不读取latent、posterior或未来动作；旧本地观察Transformer已撤回。该辅助头是本工程研究扩展，不是官方ACT原有模块，Baseline不计其Loss；两组公共参数初始化一致。DP头仍只读H2观察条件。推理均无需手势，细节见`GESTURE_AUXILIARY_EXPERIMENT.md`。
 
 ACT与DP正式默认均为单oblique、640×480、30Hz模型动作、K30、batch16和40,000次更新；ACT历史为1帧，DP历史为2帧。各自Baseline/Gesture固定同Pack、split、相机、历史及预算；跨ACT/DP比较必须披露历史差异，若要求相同输入信息，另做DP-H1对照。之后修改历史长度、分辨率、网络宽度或预算须记录为新实验。
 
-DP run 为 `outputs/training/<task>/diffusion/<run_id>/`，冻结 `config.json`、`data_binding.json`、`run.json`，记录 `metrics.jsonl`、`tensorboard/`、`completion.json` 和 `checkpoints/{best,last}.pt`。Checkpoint 除模型外保存 EMA/EMA更新数、optimizer、scheduler、sampler、RNG、归一化与数据绑定。`best` 按固定噪声和timestep的 **EMA 验证 noise MSE** 选择，采样动作误差只用于诊断；`last` 恢复原配置、Pack、split和预算。默认恢复比较冻结接口和统计，不重复内容哈希；需要完整审计时加 `--full-verify`。离线误差不能说明任务自主成功率，run/checkpoint 明确记录 `closed_loop_verified=false`。
+DP run为 `outputs/training/<task>/diffusion/<run_id>/`，冻结配置、数据绑定和模型规格，记录指标、TensorBoard、完成状态及best/last。新Checkpoint契约为 `papera-diffusion-official-checkpoint-v2`：保存model、EMA权重与完整EMA状态（配置、optimization_step、decay）、optimizer、scheduler、sampler、RNG、归一化和数据绑定；run同时记录实际diffusers/robomimic/einops版本、官方commit、实现标识及源码快照。旧 `papera-diffusion-checkpoint-v1` 属于不同网络，当前训练/推理明确拒绝，须从同Pack新建训练；不修改历史权重，也不保留第二套正式旧模型入口。
+
+`best` 继续按固定噪声和timestep的 **EMA验证noise MSE** 选择，不照搬官方按测试闭环score选TopK；动作误差仅供诊断。`last`恢复同配置、Pack、split和预算。默认不重复大文件内容哈希，`--full-verify`才做完整审计。离线误差不是自主成功率，短工程验证不能宣称新版已通过Panda50例，run/checkpoint仍记录 `closed_loop_verified=false`。
 
 ## Rollout 与场景一致性
 

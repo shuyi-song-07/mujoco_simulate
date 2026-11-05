@@ -8,8 +8,10 @@ import unittest
 import torch
 from torch import nn
 
-from training.diffusion.model import DiffusionConfig, DiffusionPolicy, SpatialSoftmax
-from training.diffusion.schedule import CosineDiffusionSchedule
+from diffusers import DDPMScheduler
+from robomimic.models.base_nets import SpatialSoftmax
+
+from training.diffusion.model import DiffusionConfig, DiffusionPolicy
 
 
 class DiffusionModelTests(unittest.TestCase):
@@ -26,7 +28,8 @@ class DiffusionModelTests(unittest.TestCase):
         torch.manual_seed(31)
         self.config = DiffusionConfig(observation_horizon=2, feature_dim=16, time_dim=16, down_dims=(16, 32),
                                       prediction_horizon=7, action_horizon=3,
-                                      diffusion_steps=12, inference_steps=3)
+                                      diffusion_steps=12, inference_steps=3,
+                                      image_size=(64, 64), crop_shape=None)
         self.images = torch.rand(2, 2, 1, 3, 64, 64)
         self.state = torch.randn(2, 2, 16)
         self.actions = torch.randn(2, 7, 14)
@@ -45,15 +48,18 @@ class DiffusionModelTests(unittest.TestCase):
         hook = model.denoiser.register_forward_pre_hook(lambda _module, inputs: seen.append(inputs[0].detach().clone()))
         first = model.compute_loss(self.images, self.state, self.actions, self.is_pad, self.generator())
         first["loss"].backward()
-        first_gradient = model.denoiser.output[-1].weight.grad.clone()
+        first_gradient = model.denoiser.network.final_conv[-1].weight.grad.clone()
         model.zero_grad(set_to_none=True)
         second = model.compute_loss(self.images, self.state, altered, self.is_pad, self.generator())
         second["loss"].backward()
         hook.remove()
         torch.testing.assert_close(first["loss"], second["loss"], rtol=0, atol=0)
         torch.testing.assert_close(seen[0], seen[1], rtol=0, atol=0)
-        self.assertEqual(torch.count_nonzero(seen[0][self.is_pad]).item(), 0)
-        torch.testing.assert_close(first_gradient, model.denoiser.output[-1].weight.grad, rtol=0, atol=0)
+        # Masking excludes unavailable targets from loss. It must not expose
+        # the boundary as an exact-zero suffix after forward diffusion.
+        self.assertGreater(torch.count_nonzero(seen[0][self.is_pad]).item(), 0)
+        self.assertTrue(torch.isfinite(seen[0]).all())
+        torch.testing.assert_close(first_gradient, model.denoiser.network.final_conv[-1].weight.grad, rtol=0, atol=0)
         self.assertTrue(all(torch.isfinite(p.grad).all() for p in model.parameters() if p.grad is not None))
 
     def test_loss_is_mean_over_valid_coordinates_and_backprop_updates_network(self):
@@ -66,13 +72,14 @@ class DiffusionModelTests(unittest.TestCase):
         expected = (seen[0] - noise).square()[~self.is_pad].mean()
         torch.testing.assert_close(losses["loss"], expected)
         torch.testing.assert_close(losses["noise_mse"], expected)
-        before = model.denoiser.output[-1].weight.detach().clone()
+        before = model.denoiser.network.final_conv[-1].weight.detach().clone()
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
         losses["loss"].backward()
-        self.assertIsNotNone(model.backbone[0].weight.grad)
-        self.assertGreater(model.backbone[0].weight.grad.abs().sum().item(), 0)
+        first_conv = model.visual_encoder.backbone.nets[0]
+        self.assertIsNotNone(first_conv.weight.grad)
+        self.assertGreater(first_conv.weight.grad.abs().sum().item(), 0)
         optimizer.step()
-        self.assertFalse(torch.equal(before, model.denoiser.output[-1].weight))
+        self.assertFalse(torch.equal(before, model.denoiser.network.final_conv[-1].weight))
 
     def test_all_padding_is_differentiable_zero_even_for_nan_targets(self):
         model = DiffusionPolicy(self.config).train()
@@ -134,14 +141,19 @@ class DiffusionModelTests(unittest.TestCase):
         oracle_result = model.predict_action(self.images, self.state, self.generator(), num_inference_steps=3)
         torch.testing.assert_close(oracle_result, expected, rtol=1e-4, atol=2e-4)
 
-    def test_one_step_inference_uses_terminal_training_timestep(self):
+    def test_one_step_inference_uses_upstream_ddpm_grid(self):
         model = DiffusionPolicy(self.config).eval()
         seen = []
         hook = model.denoiser.register_forward_pre_hook(lambda _module, inputs: seen.append(inputs[1].clone()))
         result = model.predict_action(self.images, self.state, self.generator(), num_inference_steps=1)
         hook.remove()
         self.assertEqual(len(seen), 1)
-        self.assertTrue(torch.equal(seen[0], torch.full((2,), self.config.diffusion_steps - 1)))
+        reference = DDPMScheduler(num_train_timesteps=self.config.diffusion_steps,
+                                  beta_schedule="squaredcos_cap_v2", prediction_type="epsilon")
+        reference.set_timesteps(1)
+        # The upstream U-Net accepts a scalar timestep and expands it per batch.
+        torch.testing.assert_close(seen[0].reshape(-1).expand(2),
+                                   reference.timesteps[0].expand(2), rtol=0, atol=0)
         self.assertTrue(torch.isfinite(result).all())
 
     def test_observation_history_order_is_preserved(self):
@@ -182,37 +194,38 @@ class DiffusionModelTests(unittest.TestCase):
 
 class SpatialSoftmaxTests(unittest.TestCase):
     def test_uniform_maps_have_centered_coordinates_on_rectangular_grid(self):
-        pool = SpatialSoftmax(1, 2)
+        pool = SpatialSoftmax(input_shape=[1, 3, 5], num_kp=2)
         with torch.no_grad():
-            pool.projection.weight.zero_()
-            pool.projection.bias.zero_()
+            pool.nets.weight.zero_()
+            pool.nets.bias.zero_()
         coordinates = pool(torch.ones(3, 1, 3, 5))
-        self.assertEqual(coordinates.shape, (3, 4))
+        self.assertEqual(coordinates.shape, (3, 2, 2))
         torch.testing.assert_close(coordinates, torch.zeros_like(coordinates), atol=1e-7, rtol=0)
 
     def test_equal_average_features_keep_different_locations_and_finite_gradients(self):
-        pool = SpatialSoftmax(1, 1)
+        pool = SpatialSoftmax(input_shape=[1, 3, 5], num_kp=1)
         with torch.no_grad():
-            pool.projection.weight.fill_(1)
-            pool.projection.bias.zero_()
+            pool.nets.weight.fill_(1)
+            pool.nets.bias.zero_()
         features = torch.zeros(2, 1, 3, 5)
         features[0, 0, 1, 0] = 6
         features[1, 0, 1, -1] = 6
         features.requires_grad_()
         torch.testing.assert_close(features[0].mean(), features[1].mean())
         coordinates = pool(features)
-        self.assertLess(coordinates[0, 0].item(), -.9)
-        self.assertGreater(coordinates[1, 0].item(), .9)
-        torch.testing.assert_close(coordinates[:, 1], torch.zeros(2), atol=1e-7, rtol=0)
+        self.assertLess(coordinates[0, 0, 0].item(), -.9)
+        self.assertGreater(coordinates[1, 0, 0].item(), .9)
+        torch.testing.assert_close(coordinates[:, 0, 1], torch.zeros(2), atol=1e-7, rtol=0)
         coordinates.sum().backward()
         self.assertTrue(torch.isfinite(features.grad).all())
         self.assertGreater(features.grad.abs().sum().item(), 0)
-        self.assertTrue(torch.isfinite(pool.projection.weight.grad).all())
+        self.assertTrue(torch.isfinite(pool.nets.weight.grad).all())
 
 
 class DiffusionScheduleTests(unittest.TestCase):
     def test_cosine_coefficients_and_forward_process_match_reference_equation(self):
-        schedule = CosineDiffusionSchedule(100, clip_sample=False)
+        schedule = DDPMScheduler(num_train_timesteps=100, clip_sample=False,
+                                 beta_schedule="squaredcos_cap_v2", prediction_type="epsilon")
         first_alpha = math.cos((.01 + .008) / 1.008 * math.pi / 2) ** 2
         initial_alpha = math.cos(.008 / 1.008 * math.pi / 2) ** 2
         self.assertAlmostEqual(schedule.betas[0].item(), 1 - first_alpha / initial_alpha, places=7)
@@ -225,33 +238,31 @@ class DiffusionScheduleTests(unittest.TestCase):
         expected = alpha.sqrt() * clean + (1 - alpha).sqrt() * noise
         torch.testing.assert_close(schedule.add_noise(clean, noise, timesteps), expected)
 
-    def test_ddim_oracle_reconstructs_clean_at_actual_previous_timestep(self):
-        schedule = CosineDiffusionSchedule(100, clip_sample=False)
+    def test_ddpm_final_step_reconstructs_oracle_clean_actions(self):
+        schedule = DDPMScheduler(num_train_timesteps=100, clip_sample=False,
+                                 beta_schedule="squaredcos_cap_v2", prediction_type="epsilon")
         clean = torch.randn(2, 30, 14)
         noise = torch.randn_like(clean)
-        sample = schedule.add_noise(clean, noise, torch.tensor([99, 99]))
-        for previous in (85, 49, 0, -1):
-            result = schedule.ddim_step(noise, 99, previous, sample)
-            if previous < 0:
-                expected = clean
-            else:
-                expected = schedule.add_noise(clean, noise, torch.tensor([previous, previous]))
-            torch.testing.assert_close(result, expected, rtol=1e-3, atol=2e-4)
+        sample = schedule.add_noise(clean, noise, torch.tensor([0, 0]))
+        schedule.set_timesteps(100)
+        result = schedule.step(noise, 0, sample).prev_sample
+        torch.testing.assert_close(result, clean, rtol=1e-3, atol=2e-4)
 
-    def test_ddim_clips_predicted_clean_actions_by_default(self):
-        schedule = CosineDiffusionSchedule(100)
+    def test_ddpm_clips_predicted_clean_actions_by_default(self):
+        schedule = DDPMScheduler(num_train_timesteps=100, beta_schedule="squaredcos_cap_v2")
+        schedule.set_timesteps(100)
         sample = torch.tensor([[[-30., 0., 30.]]])
-        result = schedule.ddim_step(torch.zeros_like(sample), 99, -1, sample)
+        result = schedule.step(torch.zeros_like(sample), 0, sample).prev_sample
         torch.testing.assert_close(result, torch.tensor([[[-1., 0., 1.]]]))
 
-    def test_trailing_grid_is_strict_and_uses_requested_step_count(self):
-        schedule = CosineDiffusionSchedule(100)
+    def test_upstream_ddpm_grid_is_strict_and_uses_requested_step_count(self):
+        schedule = DDPMScheduler(num_train_timesteps=100, beta_schedule="squaredcos_cap_v2")
         for steps in (1, 3, 7, 10, 99, 100):
-            timesteps = schedule.inference_timesteps(steps)
+            schedule.set_timesteps(steps)
+            timesteps = schedule.timesteps.tolist()
             self.assertEqual(len(timesteps), steps)
-            self.assertEqual(timesteps[0], 99)
             self.assertTrue(all(a > b for a, b in zip(timesteps, timesteps[1:])))
-            self.assertGreaterEqual(timesteps[-1], 0)
+            self.assertEqual(timesteps[-1], 0)
 
 
 if __name__ == "__main__":

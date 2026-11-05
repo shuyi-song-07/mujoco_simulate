@@ -1,4 +1,7 @@
-"""Gesture keeps the Baseline 40k cosine plus 20k checkpoint-LR hold budget."""
+"""Continuation preserves a run's frozen schedule and checkpoint learning rate.
+
+The 40k-cosine fixture is a compatibility case, not the current ACT default.
+"""
 import copy
 from pathlib import Path
 import tempfile

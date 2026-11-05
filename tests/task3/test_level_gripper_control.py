@@ -8,8 +8,7 @@ import numpy as np
 from simulation.mujoco.dual_arm.config import load_config
 from simulation.mujoco.dual_arm.task_controller import DualArmTaskController
 from simulation.mujoco.dual_arm.task_scenes import scenario_config
-from test_gesture_action_control import tick, pump
-from test_recoverable_contact import settle
+from rate_fixture import tick, pump, settle
 
 
 def level_controller(at_handles=False):

@@ -1,5 +1,5 @@
 # Windows CPython 3.12. Install the first two packages from the official CUDA
-# 13.0 index, then install this file; scripts/setup-papera-training.ps1 does so.
+# 13.0 index, then install this file; see docs/RUN_PIPELINE.md for commands.
 torch==2.11.0+cu130
 torchvision==0.26.0+cu130
 numpy==2.2.6

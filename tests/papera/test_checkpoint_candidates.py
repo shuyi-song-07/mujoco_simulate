@@ -8,6 +8,7 @@ from pathlib import Path
 import random
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 import torch
@@ -18,6 +19,7 @@ from training.papera.source_compatibility import (
 from training.papera.train import (
     atomic_checkpoint, candidate_due, make_parser, retain_candidate,
     rng_state, seed_everything, validate_config, validate_extension_config,
+    load_extension_source,
 )
 
 
@@ -130,23 +132,28 @@ class TrainingSourceCompatibilityTests(unittest.TestCase):
     def test_exact_sources_and_only_reviewed_trainer_pair(self):
         current = self.provenance()
         self.assertEqual(verify_training_sources(current)["compatibility"], "exact-current-sources")
-        old, new = next(pair for pair in REVIEWED_TRAINER_PAIRS if pair[1] == current['trainer_source_sha256'])
-        self.assertEqual(current["trainer_source_sha256"], new)
+        # A synthetic interface-only migration tests the allowlist mechanism;
+        # restoring the official network must not be added to that allowlist.
+        old = "synthetic-interface-only-trainer"
         previous = {**current, "trainer_source_sha256": old}
-        self.assertEqual(verify_training_sources(previous)["compatibility"], "reviewed-training-interface-only")
-        self.assertEqual(compatible_resume_provenance(current, previous), previous)
-        for field in current:
-            with self.subTest(field=field), self.assertRaisesRegex(ValueError, "Frozen training source changed"):
-                verify_training_sources({**previous, field: "not-reviewed"})
+        pair = (old, current['trainer_source_sha256'])
+        with patch.dict(REVIEWED_TRAINER_PAIRS, {pair: 'synthetic-reviewed-interface-only-fixture'}):
+            self.assertEqual(verify_training_sources(previous)["compatibility"], "reviewed-training-interface-only")
+            self.assertEqual(compatible_resume_provenance(current, previous), previous)
+            for field in current:
+                with self.subTest(field=field), self.assertRaisesRegex(ValueError, "Frozen training source changed"):
+                    verify_training_sources({**previous, field: "not-reviewed"})
 
-    def test_smoke_guard_preserves_each_reviewed_historical_trainer_identity(self):
+    def test_smoke_guard_interface_fixture_preserves_original_trainer_identity(self):
         current = self.provenance()
         for old in (
-            '6f3725da5e997ba73e524ae017bdf511635c223d39e409a20e57fef23ed690f4',
-            'd8762c00feef82771eff9fc7bc85bf555ef699be7dd9a3a59e7652ea12bb9f1d',
-            'f0f856e53e6d454ff30e48fa577ff294cadb2a1286bc7882d2e83b6de67dc8ff',
+            'synthetic-trainer-before-retention',
+            'synthetic-trainer-before-continuation',
+            'synthetic-trainer-before-smoke-guard',
         ):
-            with self.subTest(historical_trainer=old):
+            pair = (old, current['trainer_source_sha256'])
+            with self.subTest(fixture_trainer=old), patch.dict(REVIEWED_TRAINER_PAIRS,
+                    {pair: 'synthetic-reviewed-smoke-interface-only-fixture'}):
                 previous = {**current, 'trainer_source_sha256': old}
                 report = verify_training_sources(previous)
                 self.assertEqual(report['compatibility'], 'reviewed-training-interface-only')
@@ -155,14 +162,41 @@ class TrainingSourceCompatibilityTests(unittest.TestCase):
 
     def test_reviewed_source_migration_cannot_change_config_data_or_model(self):
         current = self.provenance()
-        old, _ = next(pair for pair in REVIEWED_TRAINER_PAIRS if pair[1] == current['trainer_source_sha256'])
+        old = "synthetic-interface-only-trainer"
         previous = {**current, "trainer_source_sha256": old, "config": {"steps": 40000}, "pack": "A"}
         migrated = {**previous, "trainer_source_sha256": current["trainer_source_sha256"]}
-        self.assertEqual(compatible_resume_provenance(migrated, previous), previous)
-        for changed in ({"config": {"steps": 40001}}, {"pack": "B"},
-                        {"config": {"steps": 40000, "candidate_save_every": 5000}}):
-            with self.subTest(changed=changed), self.assertRaisesRegex(ValueError, "Checkpoint provenance changed"):
-                compatible_resume_provenance({**migrated, **changed}, previous)
+        pair = (old, current['trainer_source_sha256'])
+        with patch.dict(REVIEWED_TRAINER_PAIRS, {pair: 'synthetic-reviewed-interface-only-fixture'}):
+            self.assertEqual(compatible_resume_provenance(migrated, previous), previous)
+            for changed in ({"config": {"steps": 40001}}, {"pack": "B"},
+                            {"config": {"steps": 40000, "candidate_save_every": 5000}},
+                            {"model_source_sha256": "different-network"}):
+                with self.subTest(changed=changed), self.assertRaisesRegex(ValueError, "Checkpoint provenance changed"):
+                    compatible_resume_provenance({**migrated, **changed}, previous)
+
+    def test_historical_trainer_pairs_do_not_authorize_official_core_migration(self):
+        current = self.provenance()
+        self.assertTrue(REVIEWED_TRAINER_PAIRS)
+        self.assertTrue(all(new != current['trainer_source_sha256'] for _, new in REVIEWED_TRAINER_PAIRS))
+        for old in {pair[0] for pair in REVIEWED_TRAINER_PAIRS}:
+            previous = {**current, 'trainer_source_sha256': old}
+            with self.subTest(historical_trainer=old):
+                with self.assertRaisesRegex(ValueError, 'Frozen training source changed'):
+                    verify_training_sources(previous)
+                with self.assertRaisesRegex(ValueError, 'Checkpoint provenance changed'):
+                    compatible_resume_provenance(current, previous)
+
+    def test_legacy_checkpoint_contract_is_rejected_before_provenance_migration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root/'checkpoints').mkdir()
+            for name in ('run', 'config', 'completion', 'pack_binding', 'split', 'stats'):
+                (root/f'{name}.json').write_text('{}', encoding='utf-8')
+            checkpoint = {'version': 'papera-act-offline-checkpoint-v1'}
+            torch.save(checkpoint, root/'checkpoints/last.pt')
+            torch.save(checkpoint, root/'checkpoints/best.pt')
+            with self.assertRaisesRegex(ValueError, 'Legacy local ACT checkpoint'):
+                load_extension_source(root/'checkpoints/last.pt', 60000)
 
 
 if __name__ == "__main__":

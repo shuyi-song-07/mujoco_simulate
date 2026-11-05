@@ -239,6 +239,8 @@ def verify_inputs(run_path, run, binding=None):
 def evaluate(checkpoint_path, run, split, out, include_mean_reference, binding=None):
     started = time.perf_counter()
     ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+    if ckpt.get('version') == 'papera-act-offline-checkpoint-v1':
+        raise ValueError('Legacy local ACT checkpoint: use its historical source for model analysis; official-core ACT requires a new training run')
     if ckpt.get("version") != CHECKPOINT_VERSION or ckpt.get("signature") != run["signature"]:
         raise ValueError("Checkpoint version/signature mismatch")
     if ckpt.get("provenance") != run["provenance"]:

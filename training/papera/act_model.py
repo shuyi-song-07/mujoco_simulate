@@ -1,17 +1,10 @@
-"""Paper A's ACT-style CVAE, implemented for the Task3 data contract.
+"""Pinned official ACT model with the Paper A Pack/task adapter.
 
-Reference: Zhao et al., Learning Fine-Grained Bimanual Manipulation with
-Low-Cost Hardware (ACT), https://tonyzhaozh.github.io/aloha/ . This is a local
-adaptation, not an exact reproduction of the authors' architecture or results.
-
-One oblique image (or three historical camera images) and 16 robot measurements
-are the *only* inference inputs. Camera count is frozen in the model config.
-An observation-only transformer feeds the auxiliary heads. The posterior reads
-training action chunks separately; its latent enters only the action decoder.
-This separation prevents auxiliary supervision from seeing its future actions.
-RGB tensors are float [0, 1]; state/action normalization belongs to the dataset.
+The original DETRVAE, Post-LN/ReLU transformer, positional encodings, image
+backbone graph and latent fusion are imported directly. Task-specific changes
+are S16 input projections, A14 targets, K30/camera configuration, finite padded
+actions, and observation-only auxiliary heads outside the baseline graph.
 """
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -23,9 +16,12 @@ import torch
 from torch import Tensor, nn
 import torch.nn.functional as F
 from torchvision.models import resnet18
-from torchvision.ops.misc import FrozenBatchNorm2d
+from .official.backbone import FrozenBatchNorm2d, BackboneBase, Joiner
+from .official.position_encoding import PositionEmbeddingSine
+from .official.transformer import Transformer, TransformerEncoder, TransformerEncoderLayer
+from .official.detr_vae import DETRVAE
 
-
+IMPLEMENTATION = "official-act-detrvae-papera-v1"
 VARIANTS = ("baseline", "gesture", "gesture_skeleton", "robot_stage")
 
 
@@ -36,18 +32,18 @@ class ACTConfig:
     action_dim: int = 14
     num_cameras: int = 3
     chunk_size: int = 30
-    hidden_dim: int = 256
+    hidden_dim: int = 512
     heads: int = 8
-    feedforward_dim: int = 1024
+    feedforward_dim: int = 3200
     encoder_layers: int = 4
-    decoder_layers: int = 4
+    decoder_layers: int = 7
     posterior_layers: int = 4
     latent_dim: int = 32
     dropout: float = 0.1
     stage_classes: int = 10
     backbone_weights: str | None = None
 
-    def __post_init__(self) -> None:
+    def __post_init__(self):
         if self.variant not in VARIANTS:
             raise ValueError(f"Unknown variant {self.variant!r}; expected {VARIANTS}")
         for name in ("state_dim", "action_dim", "num_cameras", "chunk_size", "hidden_dim",
@@ -56,7 +52,7 @@ class ACTConfig:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"{name} must be a positive integer")
-        if (self.state_dim, self.action_dim) != (16, 14) or self.num_cameras not in (1, 3):
+        if (self.state_dim, self.action_dim) != (16, 14) or self.num_cameras not in (1,3):
             raise ValueError("Task3 requires state=16, action=14, and 1 oblique or 3 historical cameras")
         if self.hidden_dim % self.heads or self.hidden_dim % 4:
             raise ValueError("hidden_dim must be divisible by heads and by 4")
@@ -73,90 +69,83 @@ class LossWeights:
     stage: float = 1.0
 
 
-def _sine_2d(height: int, width: int, dim: int, device: torch.device,
-             dtype: torch.dtype) -> Tensor:
-    """Normalized spatial positions, without assuming a particular resolution."""
-    y = torch.linspace(0, 2 * math.pi, height, device=device, dtype=torch.float32)
-    x = torch.linspace(0, 2 * math.pi, width, device=device, dtype=torch.float32)
-    yy, xx = torch.meshgrid(y, x, indexing="ij")
-    frequencies = 10000 ** (-torch.arange(dim // 4, device=device).float() / (dim // 4))
-    phases_x = xx.flatten()[:, None] * frequencies[None, :]
-    phases_y = yy.flatten()[:, None] * frequencies[None, :]
-    return torch.cat((phases_y.sin(), phases_y.cos(), phases_x.sin(), phases_x.cos()), -1).to(dtype)
+def build_official_model(c):
+    """Assemble original components with local-only weight loading.
 
-
-def _encoder(config: ACTConfig, layers: int) -> nn.TransformerEncoder:
-    layer = nn.TransformerEncoderLayer(
-        config.hidden_dim, config.heads, config.feedforward_dim, config.dropout,
-        activation="gelu", batch_first=True, norm_first=True,
-    )
-    return nn.TransformerEncoder(layer, layers, norm=nn.LayerNorm(config.hidden_dim),
-                                 enable_nested_tensor=False)
+    Official Backbone() implicitly downloads pretrained weights. Constructing
+    its original BackboneBase with the same ResNet/FrozenBN avoids network I/O.
+    No early ResNet layer is frozen: upstream's freeze loop is commented out.
+    """
+    resnet = resnet18(weights=None, norm_layer=FrozenBatchNorm2d)
+    if c.backbone_weights is not None:
+        path = Path(c.backbone_weights)
+        if not path.is_file():
+            raise FileNotFoundError(f"Local ResNet18 weights not found: {path}")
+        resnet.load_state_dict(torch.load(path, map_location="cpu", weights_only=True), strict=True)
+    backbone = BackboneBase(resnet, train_backbone=True, num_channels=512, return_interm_layers=False)
+    joined = Joiner(backbone, PositionEmbeddingSine(c.hidden_dim // 2, normalize=True))
+    joined.num_channels = 512
+    transformer = Transformer(d_model=c.hidden_dim, nhead=c.heads,
+        num_encoder_layers=c.encoder_layers, num_decoder_layers=c.decoder_layers,
+        dim_feedforward=c.feedforward_dim, dropout=c.dropout, activation="relu",
+        normalize_before=False, return_intermediate_dec=True)
+    posterior = TransformerEncoder(TransformerEncoderLayer(c.hidden_dim, c.heads,
+        c.feedforward_dim, c.dropout, activation="relu", normalize_before=False),
+        c.posterior_layers, norm=None)
+    # In the pinned ACT source state_dim names the output action width. All
+    # three action projections remain A14. Only two qpos inputs become S16.
+    model = DETRVAE([joined], transformer, posterior, state_dim=c.action_dim,
+        num_queries=c.chunk_size, camera_names=[f"camera_{i}" for i in range(c.num_cameras)])
+    if c.state_dim != 14:
+        model.input_proj_robot_state = nn.Linear(c.state_dim, c.hidden_dim)
+        model.encoder_joint_proj = nn.Linear(c.state_dim, c.hidden_dim)
+    if c.latent_dim != model.latent_dim:
+        model.latent_dim = c.latent_dim
+        model.latent_proj = nn.Linear(c.hidden_dim, 2 * c.latent_dim)
+        model.latent_out_proj = nn.Linear(c.latent_dim, c.hidden_dim)
+    return model
 
 
 class ACTPolicy(nn.Module):
-    """Action chunk policy with optional training-only hand/stage losses.
-
-    The variant changes loss selection, not initialization or inference inputs.
-    All heads exist in every variant so an identical random seed gives the same
-    common starting weights. No pretrained weight is downloaded implicitly.
-    """
-
-    def __init__(self, config: ACTConfig | None = None) -> None:
+    """Original ACT graph plus noninvasive observation auxiliary heads."""
+    def __init__(self, config=None):
         super().__init__()
         self.config = config or ACTConfig()
         c = self.config
-        backbone = resnet18(weights=None, norm_layer=FrozenBatchNorm2d)
-        if c.backbone_weights is not None:
-            weights_path = Path(c.backbone_weights)
-            if not weights_path.is_file():
-                raise FileNotFoundError(f"Local ResNet18 weights not found: {weights_path}")
-            weights = torch.load(weights_path, map_location="cpu", weights_only=True)
-            # Official torchvision ResNet18 checkpoints are plain state dictionaries.
-            backbone.load_state_dict(weights, strict=True)
-        self.backbone = nn.Sequential(*list(backbone.children())[:-2])
-        self.image_projection = nn.Conv2d(512, c.hidden_dim, kernel_size=1)
-        self.camera_embedding = nn.Embedding(c.num_cameras, c.hidden_dim)
-        self.state_projection = nn.Linear(c.state_dim, c.hidden_dim)
-        self.state_position = nn.Parameter(torch.zeros(1, 1, c.hidden_dim))
-        self.observation_encoder = _encoder(c, c.encoder_layers)
+        self.model = build_official_model(c)
+        # These heads never enter the original ACT forward graph, and their
+        # initialization does not advance the baseline model's random stream.
+        with torch.random.fork_rng(devices=[]):
+            self.gesture_head = nn.Linear(c.hidden_dim + c.state_dim, 6)
+            self.skeleton_head = nn.Linear(c.hidden_dim + c.state_dim, 2*21*3)
+            self.stage_head = nn.Linear(c.hidden_dim + c.state_dim, c.stage_classes)
+        self.register_buffer("image_mean", torch.tensor([.485,.456,.406]).reshape(1,1,3,1,1))
+        self.register_buffer("image_std", torch.tensor([.229,.224,.225]).reshape(1,1,3,1,1))
 
-        self.posterior_encoder = _encoder(c, c.posterior_layers)
-        self.posterior_cls = nn.Parameter(torch.zeros(1, 1, c.hidden_dim))
-        self.posterior_state = nn.Linear(c.state_dim, c.hidden_dim)
-        self.posterior_action = nn.Linear(c.action_dim, c.hidden_dim)
-        self.posterior_position = nn.Embedding(c.chunk_size + 2, c.hidden_dim)
-        self.posterior_distribution = nn.Linear(c.hidden_dim, 2 * c.latent_dim)
-        self.latent_projection = nn.Linear(c.latent_dim, c.hidden_dim)
-        decoder_layer = nn.TransformerDecoderLayer(
-            c.hidden_dim, c.heads, c.feedforward_dim, c.dropout,
-            activation="gelu", batch_first=True, norm_first=True,
-        )
-        self.action_decoder = nn.TransformerDecoder(
-            decoder_layer, c.decoder_layers, norm=nn.LayerNorm(c.hidden_dim))
-        self.action_queries = nn.Embedding(c.chunk_size, c.hidden_dim)
-        self.action_head = nn.Linear(c.hidden_dim, c.action_dim)
-        self.gesture_head = nn.Linear(c.hidden_dim, 2 * 3)
-        self.skeleton_head = nn.Linear(c.hidden_dim, 2 * 21 * 3)
-        self.stage_head = nn.Linear(c.hidden_dim, c.stage_classes)
-        # PyTorch clones transformer layers with identical initial values.
-        # Give the independent layers independent draws, without touching CNN
-        # pretrained weights or changing the seed across the four variants.
-        for transformer in (self.observation_encoder, self.posterior_encoder, self.action_decoder):
-            for parameter in transformer.parameters():
-                if parameter.ndim > 1:
-                    nn.init.xavier_uniform_(parameter)
-        self.register_buffer("image_mean", torch.tensor([.485, .456, .406]).reshape(1, 3, 1, 1))
-        self.register_buffer("image_std", torch.tensor([.229, .224, .225]).reshape(1, 3, 1, 1))
+    @property
+    def backbone(self):
+        return self.model.backbones[0][0].body
 
-    def _observations(self, images: Tensor, state: Tensor) -> Tensor:
+    @property
+    def action_head(self):
+        return self.model.action_head
+
+    @property
+    def image_projection(self):
+        return self.model.input_proj
+
+    @property
+    def posterior_encoder(self):
+        return self.model.encoder
+
+    def _validate_observations(self, images, state):
         c = self.config
-        if images.ndim != 5 or images.shape[1:3] != (c.num_cameras, 3):
+        if images.ndim != 5 or images.shape[1:3] != (c.num_cameras,3):
             raise ValueError(f"images must have shape [batch, {c.num_cameras} cameras, 3 channels, height, width]")
         batch = images.shape[0]
         if batch < 1 or min(images.shape[-2:]) < 32:
             raise ValueError("images require a nonempty batch and height/width >= 32")
-        if state.shape != (batch, c.state_dim):
+        if state.shape != (batch,c.state_dim):
             raise ValueError(f"state must have shape [{batch}, {c.state_dim}]")
         if not images.is_floating_point() or not state.is_floating_point():
             raise ValueError("images and state must be floating-point tensors")
@@ -166,74 +155,52 @@ class ACTPolicy(nn.Module):
             raise ValueError("Robot observations must be finite")
         if (images < 0).any() or (images > 1).any():
             raise ValueError("images must be RGB in [0, 1]; ImageNet normalization is internal")
-        flat_images = images.reshape(batch * c.num_cameras, 3, *images.shape[-2:])
-        features = self.image_projection(self.backbone((flat_images - self.image_mean) / self.image_std))
-        _, dim, height, width = features.shape
-        tokens = features.flatten(2).transpose(1, 2).reshape(batch, c.num_cameras, height * width, dim)
-        positions = _sine_2d(height, width, dim, images.device, tokens.dtype)
-        tokens = tokens + positions[None, None] + self.camera_embedding.weight[None, :, None]
-        state_token = self.state_projection(state).unsqueeze(1) + self.state_position
-        return self.observation_encoder(torch.cat((state_token, tokens.flatten(1, 2)), dim=1))
 
-    def _posterior(self, state: Tensor, actions: Tensor, is_pad: Tensor | None
-                   ) -> tuple[Tensor, Tensor, Tensor]:
-        c = self.config
-        batch = state.shape[0]
-        if actions.shape != (batch, c.chunk_size, c.action_dim):
-            raise ValueError(f"actions must have shape [{batch}, {c.chunk_size}, {c.action_dim}]")
-        if actions.device != state.device or not actions.is_floating_point():
-            raise ValueError("actions must be floating-point and on the observation device")
-        if is_pad is None:
-            is_pad = torch.zeros((batch, c.chunk_size), device=state.device, dtype=torch.bool)
-        if is_pad.shape != actions.shape[:2] or is_pad.dtype != torch.bool or is_pad.device != state.device:
-            raise ValueError("is_pad must be boolean [batch, chunk_size] on the observation device")
-        # Clear BEFORE projection: NaN * zero would otherwise poison attention.
-        cleaned = torch.where(is_pad.unsqueeze(-1), torch.zeros_like(actions), actions)
-        if not torch.isfinite(cleaned).all():
-            raise ValueError("Unpadded action targets must be finite")
-        tokens = torch.cat((self.posterior_cls.expand(batch, -1, -1),
-                            self.posterior_state(state).unsqueeze(1),
-                            self.posterior_action(cleaned)), dim=1)
-        tokens = tokens + self.posterior_position.weight.unsqueeze(0)
-        mask = torch.cat((torch.zeros((batch, 2), dtype=torch.bool, device=state.device), is_pad), dim=1)
-        encoded = self.posterior_encoder(tokens, src_key_padding_mask=mask)[:, 0]
-        mu, logvar = self.posterior_distribution(encoded).chunk(2, dim=-1)
-        # Bound exponentiation for stable mixed precision while preserving the CVAE.
-        return mu, logvar.clamp(-10, 10), ~is_pad.all(dim=1)
-
-    def forward(self, images: Tensor, state: Tensor, actions: Tensor | None = None,
-                is_pad: Tensor | None = None) -> dict[str, Any]:
-        """At eval time targets are ignored and the latent is exactly zero."""
-        observation = self._observations(images, state)
-        batch = state.shape[0]
-        # Heads cannot read z, posterior tokens, action targets, or future images.
-        summary = observation.mean(dim=1)
+    def forward(self, images, state, actions=None, is_pad=None):
+        """Training uses the official posterior; eval always omits actions/z=0."""
+        self._validate_observations(images,state)
+        c,batch = self.config,state.shape[0]
+        cleaned = None
+        posterior_mask = torch.zeros(batch,device=state.device,dtype=torch.bool)
         if self.training and actions is not None:
-            mu, logvar, posterior_mask = self._posterior(state, actions, is_pad)
-            latent = mu + (.5 * logvar).exp() * torch.randn_like(mu)
-        else:
-            mu = state.new_zeros((batch, self.config.latent_dim))
+            if actions.shape != (batch,c.chunk_size,c.action_dim):
+                raise ValueError(f"actions must have shape [{batch}, {c.chunk_size}, {c.action_dim}]")
+            if actions.device != state.device or not actions.is_floating_point():
+                raise ValueError("actions must be floating-point and on the observation device")
+            if is_pad is None:
+                is_pad = torch.zeros(actions.shape[:2],device=state.device,dtype=torch.bool)
+            if is_pad.shape != actions.shape[:2] or is_pad.dtype != torch.bool or is_pad.device != state.device:
+                raise ValueError("is_pad must be boolean [batch, chunk_size] on the observation device")
+            cleaned = actions.masked_fill(is_pad.unsqueeze(-1),0)
+            if not torch.isfinite(cleaned).all():
+                raise ValueError("Unpadded action targets must be finite")
+            posterior_mask = ~is_pad.all(1)
+        pooled = []
+        # Capture projected image features before any latent or proprio token
+        # enters the original transformer. Auxiliaries cannot read actions/z.
+        handle = self.model.input_proj.register_forward_hook(
+            lambda _module,_inputs,value: pooled.append(value.mean(dim=(-2,-1))))
+        try:
+            action,pad_logits,(mu,logvar) = self.model(state,
+                (images-self.image_mean)/self.image_std, None, cleaned, is_pad if cleaned is not None else None)
+        finally:
+            handle.remove()
+        if mu is None:
+            mu = state.new_zeros((batch,c.latent_dim))
             logvar = torch.zeros_like(mu)
-            latent = torch.zeros_like(mu)
-            posterior_mask = torch.zeros(batch, device=state.device, dtype=torch.bool)
-        memory = torch.cat((self.latent_projection(latent).unsqueeze(1), observation), dim=1)
-        queries = self.action_queries.weight.unsqueeze(0).expand(batch, -1, -1)
-        decoded = self.action_decoder(queries, memory)
-        return {
-            "action": self.action_head(decoded), "mu": mu, "logvar": logvar,
-            "posterior_mask": posterior_mask,
-            "gesture_logits": self.gesture_head(summary).reshape(batch, 2, 3),
-            "skeleton": self.skeleton_head(summary).reshape(batch, 2, 21, 3),
-            "stage_logits": self.stage_head(summary), "variant": self.config.variant,
-        }
+        summary = torch.cat((torch.stack(pooled,dim=1).mean(dim=1),state),dim=-1)
+        return {"action":action,"mu":mu,"logvar":logvar,"posterior_mask":posterior_mask,
+            "is_pad_logits":pad_logits,
+            "gesture_logits":self.gesture_head(summary).reshape(batch,2,3),
+            "skeleton":self.skeleton_head(summary).reshape(batch,2,21,3),
+            "stage_logits":self.stage_head(summary),"variant":c.variant}
 
     @torch.no_grad()
-    def predict(self, images: Tensor, state: Tensor) -> Tensor:
-        """Deterministic robot-only prediction; preserves the caller's train mode."""
+    def predict(self,images,state):
         was_training = self.training
         try:
             self.eval()
-            return self(images, state)["action"]
+            return self(images,state)["action"]
         finally:
             self.train(was_training)
 
@@ -292,8 +259,9 @@ def compute_loss(output: Mapping[str, Any], targets: Mapping[str, Tensor],
                  variant: str | None = None) -> dict[str, Tensor]:
     """Masked losses, with no training credit assigned to padding/missing labels.
 
-    masks use True=valid (the opposite of forward's is_pad). Action L1 averages
-    over valid coordinates; skeleton SmoothL1 over valid coordinates; gesture
+    masks use True=valid (the opposite of forward's is_pad). Official Action L1
+    masks invalid errors then averages over all B*K*A coordinates; skeleton SmoothL1
+    over valid coordinates; gesture
     CE over valid hand instances. KL sums latent dimensions then averages over
     examples with at least one real action, matching ACT's usual KL convention.
     Each missing auxiliary task has exactly zero loss and zero valid count.
@@ -313,10 +281,16 @@ def compute_loss(output: Mapping[str, Any], targets: Mapping[str, Tensor],
         weight_values = {**vars(LossWeights()), **weights}
     if any(not math.isfinite(float(v)) or v < 0 for v in weight_values.values()):
         raise ValueError("Loss weights must be finite and nonnegative")
-    action, action_count = _regression(output["action"], targets["action"], masks.get("action"), "action")
+    action_valid, action_count = _regression(output["action"], targets["action"], masks.get("action"), "action")
+    valid_action = _valid_mask(masks.get("action"), targets["action"].shape, output["action"], "action")
+    clean_target = torch.where(valid_action, targets["action"], torch.zeros_like(targets["action"]))
+    clean_prediction = torch.where(valid_action, output["action"], torch.zeros_like(output["action"]))
+    # Exactly the upstream policy.py reduction: invalid errors zero, full mean.
+    action = F.l1_loss(clean_prediction, clean_target, reduction="none").mean()
     zero = action * 0
     zero_count = action_count.new_zeros(())
-    result: dict[str, Tensor] = {"action": action, "action_count": action_count}
+    result: dict[str, Tensor] = {"action": action, "action_count": action_count,
+        "action_valid_l1": action_valid, "action_full_count": action_count.new_tensor(targets["action"].numel())}
     mu, logvar = output["mu"].float(), output["logvar"].float()
     valid_kl = output["posterior_mask"] & _valid_mask(masks.get("action"), targets["action"].shape,
                                                      output["action"], "action").flatten(1).any(1)

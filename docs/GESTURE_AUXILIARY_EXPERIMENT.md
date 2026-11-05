@@ -2,6 +2,8 @@
 
 本实验只增加训练期的左右三分类监督。策略观察仍为单 oblique RGB 640×480 与 S16 机器人状态，输出仍为 K30、A14；机器人动作30 Hz、控制60 Hz、物理500 Hz。不得修改 Raw、裁剪、Safe Stitch、Action 时间对齐、物理保护或成功标准。
 
+2026-11-05起，ACT和DP的Baseline/Gesture都切换到各自固定官方核心与新v2 Checkpoint。下方2026-11-04的ACT90%/80%、DP34%/6%及旧网络/调度描述是历史本地变体结果，不代表新模型表现。两种模型都需在同一Pack分别从头训练，相应旧v1权重不可恢复。当前参数和命令以[RUN_PIPELINE.md](RUN_PIPELINE.md)第4、4.1和5节为准；尚无新版Panda50例成绩。
+
 ## 标签究竟表示什么
 
 固定 Pack 为 `outputs/dataset/tray_to_platform/training_packs/auto_20261103_213247_870817`，64条、49 train / 15 val，按会话隔离。训练和验证都只消费官方 Pack Reader 已有的 `category_id/category_mask`，不从机器人动作、未来阶段或手骨架反推标签。
@@ -14,9 +16,13 @@ Unknown、未分配类别及不可用记录不新增第四类，不转换成静�
 
 ## 网络与损失
 
-ACT 沿用现有实现：ResNet18 → observation Transformer → 共享观察表征。左右三类头是同一个6输出线性层中两组独立参数，每组单独 softmax。它读 observation tokens 的均值，位于 CVAE posterior/latent 进入动作 decoder 之前。CVAE 只供主任务训练；辅助头无法看到未来动作、posterior tokens 或 z。推理固定 z=0，只接受 RGB 与 S16。现有 padding 在投影前清零并屏蔽 attention，动作 L1 与 KL 排除无效目标。无需改变 ACT 网络和 Pack 接口。
+ACT新增的手势辅助头不是官方模型自带：它对原`input_proj`图像特征做空间及相机均值，再拼接当前S16，通过6输出线性层形成左右独立三分类。它没有单独观察Transformer，不能读取未来Action、CVAE posterior或z；辅助Loss只回传现有视觉投影/骨干与该头，不改变官方主模型前向图。两组公共参数和随机流保持相同，推理固定z=0。
 
-DP 沿用 ResNet18(GN)+spatial softmax、H2观察条件、Conditional U-Net、K30/A8；训练配置的采样默认DDIM10，本轮冻结部署为DDIM20、每次执行A8，两组一致。当前及上一帧的观察条件特征同时送给原去噪网络与新增左右三分类线性头；监督目标仅为当前锚点。分类分支看不到 noisy action、epsilon、扩散 timestep 或未来图像。观察编码只计算一次，梯度回传共享视觉编码器；推理不执行分类头、不需要标签。DP数据接口本来就继承当前锚点手势字段，增加H2时未改变其时间索引。
+当前ACT复用固定官方DETRVAE、Post-LN/ReLU Transformer、位置编码与CVAE，保留S16两处输入投影、单oblique/K30和A14契约。Baseline以官方全B×K×A分母的masked Action L1 +10KL优化；有效坐标L1另作诊断与z=0验证best指标。正式参数hidden512/FF3200、encoder4/decoder7/posterior4、latent32、FP32/batch16/40k，AdamW主干和其余参数均1e-5、常量LR、无warmup/无clip。上游第一个intermediate decoder输出的选择保持不变。
+
+当前DP两组直接复用固定官方U-Net、FiLM/skip、DDPM和EMA；视觉为robomimic ResNet18（GN按channels//16分组）+ SpatialSoftmax32 + 64维投影及ReLU。RGB仍读取640×480，内部按高宽472×632训练随机裁剪、验证/推理中心裁剪，映射到 `[-1,1]`。H2/S16、K30/A14、A8不变，默认DDPM100、FP32、40k/batch16、官方EMA与余弦LR降0、不裁剪梯度。官方组件与许可证位于 `training/diffusion/official/`，可调部分集中在两份JSON配置。
+
+当前及上一帧的同一观察条件同时送入去噪网络和新增左右三分类线性头，监督目标仅为当前锚点。分类分支看不到noisy action、epsilon、扩散timestep或未来图像。观察编码只计算一次，梯度回传共享视觉编码器；推理不执行分类头、不需要标签。Gesture头仍在公共参数初始化后创建并恢复CPU RNG；同模型两组必须保持相同crop、精度、EMA、预算和执行协议。数据仍保留future-only索引0、安全拼接与硬边界Mask，网络内部K30补齐不移动标签。
 
 固定第一轮损失：
 
@@ -31,17 +37,17 @@ DP gesture:   L_epsilon_MSE + 0.1 L_gesture_CE
 
 ## 公平性与选择规则
 
-同算法的 baseline / gesture 使用同 Pack、完整固定split、训练集归一化、seed、batch16、图像尺寸、观察历史、动作长度、优化器、精度、更新次数、验证频率和训练内best指标定义；闭环选型的搜索范围差异另行披露。ACT仍为训练集标准化，DP仍为训练集min-max；不要求跨算法强行统一归一化或观察历史。ACT H1、DP H2须在跨算法表格中明确披露。
+同算法的Baseline/Gesture使用同Pack、固定split、训练集归一化、seed、batch16、图像尺寸、历史、主干及预算。当前ACT和DP均FP32，但各自保留官方优化器/调度约定；不要求跨算法强行统一Loss或EMA。ACT-H1与DP-H2的历史差异须披露。历史2026-11-04的选型搜索差异另行记录。
 
 ACT的全部variant本来就有同一套头，同seed初始化逐位一致。DP baseline不增加参数；gesture在全部公共参数初始化后创建新增头，并恢复全局CPU RNG，确保公共参数与后续训练噪声序列不因额外头初始化变化。两者均从原始初始化开始gesture训练，不能从已经学过40k步的baseline开始计gesture预算。
 
-截至2026-11-04，四组训练均已完成：ACT baseline / gesture各60k，DP baseline / gesture各40k。ACT两组前40k均执行原500步warmup与40k cosine，后20k保持40k checkpoint已有最低学习率，完整继承优化器/采样器/RNG；gesture从原始初始化训练，未改成60k cosine。DP两组均使用原40k调度。完成记录见 [ACT baseline](../outputs/training/tray_to_platform/baseline/baseline_continued40000_to60000_20261104/completion.json)、[ACT gesture](../outputs/training/tray_to_platform/gesture/gesture_continued40000_to60000_20261104/completion.json)、[DP baseline](../outputs/training/tray_to_platform/diffusion/baselines_20261103_232447_579530/completion.json)、[DP gesture](../outputs/training/tray_to_platform/diffusion_gesture/gesture_seed20261016_40000_20261104/completion.json)。验证选型及四组最终50初态评估也已完成；最终测试未用于重新选择checkpoint或调整参数。
+以下已完成预算及选型描述均为2026-11-04历史实验：ACT baseline / gesture各60k，旧DP baseline / gesture各40k。ACT两组前40k均执行原500步warmup与40k cosine，后20k保持40k checkpoint已有最低学习率，完整继承优化器/采样器/RNG；gesture从原始初始化训练，未改成60k cosine。旧DP两组均使用当时40k调度。完成记录见 [ACT baseline](../outputs/training/tray_to_platform/baseline/baseline_continued40000_to60000_20261104/completion.json)、[ACT gesture](../outputs/training/tray_to_platform/gesture/gesture_continued40000_to60000_20261104/completion.json)、[旧DP baseline](../outputs/training/tray_to_platform/diffusion/baselines_20261103_232447_579530/completion.json)、[旧DP gesture](../outputs/training/tray_to_platform/diffusion_gesture/gesture_seed20261016_40000_20261104/completion.json)。当时验证选型及四组最终50初态评估已完成；不是新版ACT/DP已训练的证明。
 
-首段配置分别为 `config/training_act_gesture.json` 与 `config/training_diffusion_gesture.json`；ACT使用 `--variant gesture`，DP配置内外variant均明确为gesture。两份配置都从对应baseline配置复制，只增加辅助监督选择/权重及候选保存设置，训练由主任务统一调度GPU。ACT两组已通过同variant `continue-from` 完成后20k，不允许从baseline切换variant；正式续训前已显式核验父run的完整40k完成状态、非smoke/overfit和全量heldout验证。
+历史首段运行使用当时两份Gesture配置，复现以历史run内冻结config为准，不应使用目前已更新的JSON替代；ACT使用 `--variant gesture`，DP配置内外variant均明确为gesture。两份配置都从对应baseline配置复制，只增加辅助监督选择/权重及候选保存设置，训练由主任务统一调度GPU。ACT两组已通过同variant `continue-from` 完成后20k，不允许从baseline切换variant；正式续训前已显式核验父run的完整40k完成状态、非smoke/overfit和全量heldout验证。
 
 ACT启动必须同时显式传 `--config config/training_act_gesture.json`。仅传 `--variant gesture` 仍会读baseline默认配置，未声明的gesture权重会回落到模型历史默认1.0，不属于本轮λ=0.1实验。运行后以冻结的 `run.json/config.json` 再确认实际权重。
 
-ACT best按val的z=0 action L1选择；DP best保持按固定噪声/timestep的EMA val noise MSE选择，采样动作误差另作诊断。不能因为gesture分类好而改选best。候选checkpoint和离线指标可用val诊断；正式闭环测试初态、预算、物理判据与协议固定，不能用测试成功率调λ、选种子或挑checkpoint。本轮ACT实际部署为chunked/30，DP为DDIM20、chunked/8；两种执行协议不同，须披露，均沿用同一物理执行器。
+ACT best按val的z=0 action L1选择；DP best保持按固定噪声/timestep的EMA val noise MSE选择，采样动作误差另作诊断；新版也未照搬官方以测试闭环score选TopK。不能因为gesture分类好而改选best。候选checkpoint和离线指标可用val诊断；正式闭环测试初态、预算、物理判据与协议固定，不能用测试成功率调λ、选种子或挑checkpoint。历史ACT部署为chunked/30，旧DP为DDIM20、chunked/8；当前新DP默认DDPM100/A8，需在新训练后独立冻结评估，不能直接复用旧结果。
 
 探索性追加协议（exploratory addendum）：在观察训练/验证诊断后、尚未使用新最终测试初态前，ACT两组原候选40/45/50/55/60k各追加自己的 `best.pt`。best仅由整个60k训练轨迹的全量heldout、z=0 action L1选出；同一步候选去重。两组均用同一16个验证初态选择部署候选，不调整λ、训练数据或调度。保留原计划和此次追加记录，不能称追加规则在训练前已经预注册；手势CE上升本身也不证明动作策略过拟合。
 
@@ -111,5 +117,5 @@ DP选型搜索并不完全对称：baseline对checkpoint、DDIM步数及A4/A8执
 
 参考作者来源：
 
-- [ACT项目与方法](https://tonyzhaozh.github.io/aloha/)：动作块、CVAE及推理z=0；[作者实现](https://github.com/tonyzhaozh/act/blob/main/detr/models/detr_vae.py)。本工程独立observation encoder为本地实现，不能称逐层精确复现作者网络。
+- [ACT项目与方法](https://tonyzhaozh.github.io/aloha/)与[固定作者实现](https://github.com/tonyzhaozh/act/blob/742c753c0d4a5d87076c8f69e5628c79a8cc5488/detr/models/detr_vae.py)：当前主干直接复用固定版本，S16/单相机/K30为任务适配；观察分类头属于另行声明的本工程扩展。
 - [Diffusion Policy项目](https://diffusion-policy.cs.columbia.edu/)与[作者图像策略实现](https://github.com/real-stanford/diffusion_policy/blob/main/diffusion_policy/policy/diffusion_unet_image_policy.py)：视觉条件扩散与滚动动作预测。本轮gesture支路是本工程提出的辅助监督，不是原论文已有的结论。

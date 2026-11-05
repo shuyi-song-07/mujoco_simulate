@@ -49,6 +49,18 @@ def verify_training_sources(provenance):
             if reason is None:
                 raise ValueError(f'Frozen training source changed: {name}')
             reviewed.append(reason)
+    # New official-core runs freeze the small vendored source files as well.
+    # Historical fixture metadata without this field still follows its
+    # existing model/trainer checks; it cannot pass the new checkpoint gate.
+    official = provenance.get('official_sources_sha256', {})
+    if not isinstance(official, dict):
+        raise ValueError('Invalid frozen official ACT sources')
+    for relative, expected in official.items():
+        path = (directory / relative).resolve()
+        if not path.is_relative_to((directory / 'official').resolve()) or not path.is_file():
+            raise ValueError('Invalid official ACT source path')
+        if hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+            raise ValueError(f'Frozen official ACT source changed: {relative}')
     mode = ('exact-current-sources' if not reviewed else
             'reviewed-checkpoint-retention-only' if all(reason == 'optional-candidate-checkpoint-retention-20261104'
                                                       for reason in reviewed) else

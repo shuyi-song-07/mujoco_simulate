@@ -30,7 +30,8 @@ class DiffusionRolloutTests(unittest.TestCase):
             validation_batches=1, validation_sample_batches=0, save_every=1,
             log_every=1, image_size=[64,48])
         cls.config['model'].update(feature_dim=16, time_dim=16, down_dims=[16,32],
-            diffusion_steps=8, inference_steps=2, backbone_weights=None, observation_horizon=2)
+            diffusion_steps=8, inference_steps=2, backbone_weights=None, observation_horizon=2,
+            crop_shape=[42,56])
         cls.run_dir = run(cls.config, cls.pack, 'tray_transfer', output=cls.root/'trained', engineering=True)
         cls.scene = {'oblique_render_sources': {'native': {'camera': {'test': 'frozen'}}}}
 
@@ -129,7 +130,7 @@ class DiffusionRolloutTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'history'):
             policy.predict(image,state)
 
-    def test_real_ddim_is_reproducible_after_seed_reset(self):
+    def test_real_ddpm_is_reproducible_after_seed_reset(self):
         policy = self.policy()
         rgb = {'oblique':np.zeros((480,640,3),np.uint8)}
         state=np.zeros(16,np.float32)

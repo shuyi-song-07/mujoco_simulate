@@ -55,6 +55,8 @@ def verify_run(run_dir, checkpoint='best', *, verify_cache=False, allow_engineer
     run, completion = _read(root/'run.json'), _read(root/'completion.json')
     config, binding = _read(root/'config.json'), _read(root/'data_binding.json')
     engineering = run.get('engineering')
+    if run.get('version') == 'papera-diffusion-checkpoint-v1':
+        raise ValueError('Legacy local DP checkpoint: the official-core model requires a new training run; historical weights are unchanged')
     if (run.get('algorithm') != 'diffusion_policy' or run.get('version') != CHECKPOINT_VERSION
             or run.get('config') != config or type(engineering) is not bool
             or completion.get('engineering') != engineering):
@@ -134,6 +136,8 @@ def verify_run(run_dir, checkpoint='best', *, verify_cache=False, allow_engineer
         'training_camera_configs': {key: value['camera'] for key, value in scene['oblique_render_sources'].items()},
         'chunk_size': mc.prediction_horizon, 'action_horizon': mc.action_horizon,
         'inference_steps': mc.inference_steps, 'diffusion_steps': mc.diffusion_steps,
+        'sampler': 'official_diffusers_DDPM',
+        'image_crop_shape': list(mc.crop_shape) if mc.crop_shape is not None else None,
         'observation_horizon': h, 'model_image_shape': [h, 1, 3, *reversed(config['image_size'])],
         'source_image_shape': [480, 640, 3], 'image_size': config['image_size'],
         'data_contract': DATA_VERSION, 'action_alignment': manifest['action_alignment'],
