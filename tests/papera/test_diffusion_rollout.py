@@ -28,7 +28,7 @@ class DiffusionRolloutTests(unittest.TestCase):
         cls.config.update(device='cpu', precision='fp32', steps=2, batch_size=2,
             num_workers=0, cpu_threads=2, warmup_steps=0, validation_every=1,
             validation_batches=1, validation_sample_batches=0, save_every=1,
-            log_every=1, image_size=[64,48])
+            log_every=1, image_size=[64,48], candidate_save_every=1)
         cls.config['model'].update(feature_dim=16, time_dim=16, down_dims=[16,32],
             diffusion_steps=8, inference_steps=2, backbone_weights=None, observation_horizon=2,
             crop_shape=[42,56])
@@ -83,6 +83,74 @@ class DiffusionRolloutTests(unittest.TestCase):
                 verify_run(self.run_dir, allow_engineering=True)
         finally:
             torch.save(saved, path)
+
+    def test_retained_step_uses_its_own_ema_without_changing_best_last(self):
+        with patch('rollout.protocol.load_scene_provenance', return_value=self.scene):
+            metadata, saved, _ = verify_run(self.run_dir, 'step_000001', allow_engineering=True)
+        self.assertEqual(metadata['checkpoint_step'], 1)
+        self.assertEqual(metadata['selected_by'], 'training/retained_candidate')
+        self.assertEqual(metadata['weights'], 'ema')
+        self.assertEqual(saved['ema_updates'], 1)
+        index = json.loads((self.run_dir/'checkpoints/candidates.json').read_text(encoding='utf-8'))
+        entry = next(row for row in index['candidates'] if row['saved_step'] == 1)
+        self.assertEqual(entry['checkpoint'], 'step_000001.pt')
+        self.assertEqual(entry['validation']['step'], 1)
+        self.assertEqual(entry['file_size_bytes'], (self.run_dir/'checkpoints/step_000001.pt').stat().st_size)
+        for name in ('best', 'last'):
+            with patch('rollout.protocol.load_scene_provenance', return_value=self.scene):
+                self.assertTrue(verify_run(self.run_dir, name, allow_engineering=True)[0]['weights'] == 'ema')
+
+    def test_historical_best_last_do_not_require_index_or_candidate_signature(self):
+        index = self.run_dir/'checkpoints/candidates.json'
+        backup = index.with_suffix('.test-backup')
+        index.rename(backup)
+        try:
+            for name in ('best', 'last'):
+                path = self.run_dir/'checkpoints'/f'{name}.pt'
+                saved = torch.load(path, map_location='cpu', weights_only=False)
+                legacy = dict(saved)
+                legacy.pop('candidate_signature', None)
+                try:
+                    torch.save(legacy, path)
+                    with patch('rollout.protocol.load_scene_provenance', return_value=self.scene):
+                        self.assertEqual(verify_run(self.run_dir, name, allow_engineering=True)[0]['weights'], 'ema')
+                finally:
+                    torch.save(saved, path)
+        finally:
+            backup.rename(index)
+
+    def test_candidate_payload_identity_step_and_completion_are_required(self):
+        path = self.run_dir/'checkpoints/step_000001.pt'
+        original = torch.load(path, map_location='cpu', weights_only=False)
+        index_path = self.run_dir/'checkpoints/candidates.json'
+        index_text = index_path.read_text(encoding='utf-8')
+        index = json.loads(index_text)
+        mutations = [dict(original, candidate_signature='another-run'),
+                     dict(original, step=2), dict(original, ema_updates=0),
+                     dict(original, source_sha256={'different': 'source'})]
+        try:
+            for saved in mutations:
+                torch.save(saved, path)
+                # Keep file-size evidence current to exercise payload checks,
+                # not merely the earlier truncated-file rejection.
+                index['candidates'][0]['file_size_bytes'] = path.stat().st_size
+                index_path.write_text(json.dumps(index), encoding='utf-8')
+                with self.assertRaises(ValueError):
+                    verify_run(self.run_dir, 'step_000001', allow_engineering=True)
+        finally:
+            torch.save(original, path)
+            index['candidates'][0]['file_size_bytes'] = path.stat().st_size
+            index_path.write_text(json.dumps(index), encoding='utf-8')
+        completion_path = self.run_dir/'completion.json'
+        completion_text = completion_path.read_text(encoding='utf-8')
+        completion = json.loads(completion_text)
+        try:
+            completion['status'] = 'stopped_after_requested_updates'
+            completion_path.write_text(json.dumps(completion), encoding='utf-8')
+            with self.assertRaisesRegex(ValueError, 'completed training budget'):
+                verify_run(self.run_dir, 'step_000001', allow_engineering=True)
+        finally:
+            completion_path.write_text(completion_text, encoding='utf-8')
 
     def test_legacy_baseline_model_defaults_remain_loadable(self):
         run_path = self.run_dir/'run.json'

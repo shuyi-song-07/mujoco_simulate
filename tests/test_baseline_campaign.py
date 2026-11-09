@@ -62,6 +62,47 @@ class CampaignTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 campaign.training_complete(root, 'dp', plan)
 
+    def dp_cli_run(self, root):
+        """The DP CLI materializes its explicit --variant in the frozen config."""
+        expected = {'steps': 40000, 'batch_size': 16, 'model': {
+            'prediction_horizon': 30, 'state_dim': 16, 'action_dim': 14,
+            'down_dims': [512, 1024, 2048]}}
+        actual = copy.deepcopy(expected)
+        actual['variant'] = 'baseline'
+        actual['model']['variant'] = 'baseline'
+        plan = {'task_id': 'test', 'pack': str(root / 'pack'),
+                'training_configs': {'dp': expected}}
+        run = {'algorithm': 'diffusion_policy', 'variant': 'baseline',
+               'task_id': 'test', 'pack_path': plan['pack'], 'config': actual}
+        campaign.write(root / 'run.json', run)
+        return plan, run
+
+    def test_dp_cli_materialized_baseline_variant_matches_the_frozen_plan(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan, run = self.dp_cli_run(root)
+            original_plan = copy.deepcopy(plan)
+            self.assertEqual(campaign.validate_run(root, 'dp', plan), run)
+            self.assertEqual(plan, original_plan)  # No rewriting an active plan.
+
+    def test_dp_variant_normalization_does_not_accept_gesture_or_other_model_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan, run = self.dp_cli_run(root)
+            mutations = [
+                lambda r: r['config'].update(variant='gesture'),
+                lambda r: r['config']['model'].update(variant='gesture'),
+                lambda r: r['config']['model'].update(prediction_horizon=16),
+                lambda r: r['config']['model'].update(down_dims=[256, 512, 1024]),
+                lambda r: r.update(variant='gesture'),
+            ]
+            for index, mutate in enumerate(mutations):
+                changed = copy.deepcopy(run)
+                mutate(changed)
+                campaign.write(root / 'run.json', changed)
+                with self.subTest(mutation=index), self.assertRaises(ValueError):
+                    campaign.validate_run(root, 'dp', plan)
+
     def test_protocols_require_same_source_and_initial_states(self):
         a = {'seeds': list(range(50)), 'source': {'scene': 'frozen'},
              'preflight': {'cases': [{'seed': 1, 'initial_state': {'x': 2}}]}}

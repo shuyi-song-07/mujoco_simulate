@@ -125,7 +125,8 @@ class CheckpointCandidateTests(unittest.TestCase):
 class TrainingSourceCompatibilityTests(unittest.TestCase):
     def provenance(self):
         files = {"model_source_sha256": "act_model.py", "reader_source_sha256": "pack_data.py",
-                 "normalizer_source_sha256": "data.py", "trainer_source_sha256": "train.py"}
+                 "normalizer_source_sha256": "data.py", "trainer_source_sha256": "train.py",
+                 "engine_source_sha256": "engine.py"}
         return {key: hashlib.sha256((ROOT / "training/papera" / file).read_bytes()).hexdigest()
                 for key, file in files.items()}
 

@@ -87,6 +87,33 @@ class SafeStitchTrainingDataTests(unittest.TestCase):
         self.data = SafeStitchDataset(self.binding)
         self.addCleanup(self.data.close)
 
+    def test_rollout_pack_check_uses_structural_verification_without_rgb_hashes(self):
+        from rollout import policy
+        from training.papera import data as normalizer_source
+        with tempfile.TemporaryDirectory() as directory:
+            run = Path(directory)
+            for name, value in (('stats.json', self.binding['stats']),
+                                ('split.json', self.binding['split'])):
+                (run/name).write_text(json.dumps(value), encoding='utf-8')
+            provenance = {
+                'pack': str(self.pack.resolve()), 'data_contract': self.binding['version'],
+                'pack_binding': dict(self.binding), 'cameras': ['oblique'],
+                'sequence_contract': self.binding['sequence_contract'],
+                'action_alignment': training_pack.ALIGNMENT, 'model': {'num_cameras': 1},
+                'config': {'version': 'papera-single-oblique-act-official-v2',
+                           'pack_path': str(self.pack.resolve()), 'image_size': [64,48]},
+                'pack_manifest_sha256': self.binding['manifest_sha256'],
+                'stats_sha256': policy.file_sha256(run/'stats.json'),
+                'split_sha256': policy.file_sha256(run/'split.json'),
+                'pack_reader_source_sha256': policy.file_sha256(Path(training_pack.__file__)),
+                'normalizer_source_sha256': policy.file_sha256(Path(normalizer_source.__file__)),
+            }
+            scene = {'oblique_render_sources': {'fixture': {'camera': {'name': 'oblique'}}}}
+            with patch('rollout.protocol.load_scene_provenance', return_value=scene), \
+                    patch.object(training_pack, 'verify', wraps=training_pack.verify) as verify:
+                policy._verify_single_pack(run, provenance, verify_cache=True)
+                verify.assert_called_once_with(self.pack.resolve(), check_hashes=False)
+
     def test_official_reader_shapes_and_actual_next_tick_action(self):
         sample = self.data[0]
         self.assertEqual(sample["images"].shape, (1,3,48,64))

@@ -127,7 +127,7 @@ def _verify_single_pack(run_dir, provenance, verify_cache):
     statistics_split = dict(split, train=binding["train_keys"])
     validate_statistics(stats, statistics_split)
     if verify_cache:
-        checked = training_pack.verify(pack)
+        checked = training_pack.verify(pack, check_hashes=False)
         rebuilt = pack_data.prepare_pack(pack, selected_train_keys=binding["train_keys"],
             chunk_size=30, checked=checked, image_size=binding["image_size"])
         if dict(rebuilt) != binding:
@@ -310,7 +310,8 @@ def _verify(run_dir, checkpoint, verify_cache, allow_overfit=False):
         "selected_by": ("training/retained_candidate" if candidate is not None else
                         "validation/prior_action_l1" if checkpoint == "best" else "training/completed_step"),
         "pack": str(pack), "checked_hashes": hashes, "verified_cache_files": cache_count,
-        "full_cache_verified": bool(verify_cache), "training_precision": config["precision"],
+        "full_cache_verified": False, "verification": "format_and_interfaces",
+        "training_precision": config["precision"],
         "cameras": ["oblique"] if single_view else list(CAMERAS), "training_camera_configs": camera_configs,
         "state_names": list(STATE_NAMES), "action_names": list(ACTION_NAMES),
         "action_units": list(ACTION_UNITS), "action_alignment": expected_alignment,

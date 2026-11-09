@@ -52,8 +52,8 @@ class ACTConfig:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"{name} must be a positive integer")
-        if (self.state_dim, self.action_dim) != (16, 14) or self.num_cameras not in (1,3):
-            raise ValueError("Task3 requires state=16, action=14, and 1 oblique or 3 historical cameras")
+        if (self.state_dim, self.action_dim) not in ((16, 14), (14, 14)) or self.num_cameras not in (1,3):
+            raise ValueError("Task3 requires state=16/action=14; the explicit official reference uses S14/A14, with 1 or 3 cameras")
         if self.hidden_dim % self.heads or self.hidden_dim % 4:
             raise ValueError("hidden_dim must be divisible by heads and by 4")
         if not math.isfinite(self.dropout) or not 0 <= self.dropout < 1:
@@ -156,13 +156,15 @@ class ACTPolicy(nn.Module):
         if (images < 0).any() or (images > 1).any():
             raise ValueError("images must be RGB in [0, 1]; ImageNet normalization is internal")
 
-    def forward(self, images, state, actions=None, is_pad=None):
-        """Training uses the official posterior; eval always omits actions/z=0."""
+    def forward(self, images, state, actions=None, is_pad=None, *, posterior_in_eval=False):
+        """Task evaluation defaults to z=0; the reference can request its posterior."""
         self._validate_observations(images,state)
         c,batch = self.config,state.shape[0]
         cleaned = None
         posterior_mask = torch.zeros(batch,device=state.device,dtype=torch.bool)
-        if self.training and actions is not None:
+        if type(posterior_in_eval) is not bool:
+            raise ValueError("posterior_in_eval must be an explicit boolean")
+        if actions is not None and (self.training or posterior_in_eval):
             if actions.shape != (batch,c.chunk_size,c.action_dim):
                 raise ValueError(f"actions must have shape [{batch}, {c.chunk_size}, {c.action_dim}]")
             if actions.device != state.device or not actions.is_floating_point():

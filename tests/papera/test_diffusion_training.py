@@ -16,6 +16,8 @@ from training.diffusion.official.ema_model import EMAModel
 from diffusers.optimization import get_cosine_schedule_with_warmup
 from training.diffusion.inference import load_policy
 from training.diffusion.data import DiffusionDataset
+from training.diffusion.candidates import (run_signature, candidate_due, retain_candidate,
+    candidate_record, reconcile_resume_candidates)
 
 
 class DiffusionTrainingTests(unittest.TestCase):
@@ -142,7 +144,7 @@ class DiffusionTrainingTests(unittest.TestCase):
             output = run(config, self.pack, 'tray_transfer', output=self.root/'gesture', engineering=True)
         saved = torch.load(output/'checkpoints/last.pt', map_location='cpu', weights_only=False)
         self.assertTrue(any(key.startswith('gesture_head.') for key in saved['ema']))
-        self.assertTrue((output/'checkpoints/step_0000002.pt').is_file())
+        self.assertTrue((output/'checkpoints/step_000002.pt').is_file())
         self.assertIn('training/gesture_auxiliary.py', saved['source_sha256'])
         metrics = [json.loads(line) for line in (output/'metrics.jsonl').read_text().splitlines()]
         validation = [row for row in metrics if row['event'] == 'validation'][-1]
@@ -155,6 +157,130 @@ class DiffusionTrainingTests(unittest.TestCase):
             action = model.predict_action(torch.zeros(1,1,1,3,48,64), torch.zeros(1,1,16),
                 generator=torch.Generator().manual_seed(12))
         self.assertEqual(action.shape, (1,30,14))
+
+    def test_retention_leaves_updates_rng_and_resume_exactly_unchanged(self):
+        plain = copy.deepcopy(self.config)
+        plain['candidate_save_every'] = None
+        retained = dict(plain, candidate_save_every=2)
+        a = run(plain, self.pack, 'tray_transfer', output=self.root/'plain_retention_control', engineering=True)
+        b = run(retained, self.pack, 'tray_transfer', output=self.root/'retention_resume',
+                stop_after=2, engineering=True)
+        run(retained, self.pack, 'tray_transfer', resume=b/'checkpoints/last.pt', engineering=True)
+        expected = torch.load(a/'checkpoints/last.pt', map_location='cpu', weights_only=False)
+        actual = torch.load(b/'checkpoints/last.pt', map_location='cpu', weights_only=False)
+
+        def exact(left, right):
+            if torch.is_tensor(left):
+                self.assertTrue(torch.equal(left, right))
+            elif isinstance(left, np.ndarray):
+                np.testing.assert_array_equal(left, right)
+            elif isinstance(left, dict):
+                self.assertEqual(left.keys(), right.keys())
+                for key in left:
+                    exact(left[key], right[key])
+            elif isinstance(left, (tuple, list)):
+                self.assertEqual(len(left), len(right))
+                for x, y in zip(left, right):
+                    exact(x, y)
+            else:
+                self.assertEqual(left, right)
+
+        for name in ('model', 'ema', 'optimizer', 'scheduler', 'sampler', 'rng',
+                     'loader_generator', 'ema_state'):
+            exact(expected[name], actual[name])
+        index = json.loads((b/'checkpoints/candidates.json').read_text(encoding='utf-8'))
+        self.assertEqual([row['saved_step'] for row in index['candidates']], [2, 4])
+
+
+class DiffusionCandidateIndexTests(unittest.TestCase):
+    """Run-bound candidate bookkeeping; no network or training fixtures."""
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        (self.root/'checkpoints').mkdir()
+        self.config = {'steps': 5, 'candidate_save_every': 2}
+        self.sources = {'training/diffusion/model.py': 'source-identity'}
+        self.signature = run_signature(self.root, 'task', self.root/'pack', self.config, self.sources)
+        self.saved = []
+
+    def save(self, name):
+        self.saved.append(name)
+        (self.root/'checkpoints'/name).write_bytes(b'complete-checkpoint-fixture')
+
+    def record(self, name='step_000002'):
+        return candidate_record(self.root, name, self.signature, self.config)
+
+    def test_cadence_final_step_and_validation_are_not_invented(self):
+        self.assertIsNone(retain_candidate(self.root, self.save, self.config, 1, self.signature))
+        retain_candidate(self.root, self.save, self.config, 2, self.signature)
+        self.assertIsNone(self.record()['validation'])
+        validation = {'step': 4, 'event': 'validation', 'ema': True, 'noise_mse': .2}
+        retain_candidate(self.root, self.save, self.config, 4, self.signature, validation)
+        retain_candidate(self.root, self.save, self.config, 5, self.signature)
+        self.assertEqual(self.saved, ['step_000002.pt', 'step_000004.pt', 'step_000005.pt'])
+        self.assertEqual(self.record('step_000004')['validation'], validation)
+        self.assertTrue(candidate_due(self.config, 5))
+        self.assertFalse(candidate_due(dict(self.config, candidate_save_every=None), 5))
+
+    def test_signature_changes_for_run_task_pack_config_or_source(self):
+        args = [self.root, 'task', self.root/'pack', self.config, self.sources]
+        for index, different in enumerate([self.root/'other', 'other', self.root/'other_pack',
+                                          dict(self.config, steps=6), {'model.py': 'other'}]):
+            values = args.copy()
+            values[index] = different
+            self.assertNotEqual(run_signature(*values), self.signature)
+
+    def test_invalid_name_index_size_and_duplicate_are_rejected(self):
+        retain_candidate(self.root, self.save, self.config, 2, self.signature)
+        for name in ('../last', 'step_000002.pt', 'step_000000', 'step_000001',
+                     'step_000006', 'step_000004'):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                self.record(name)
+        with self.assertRaises(ValueError):
+            candidate_record(self.root, 'step_000002', 'another-run', self.config)
+        path = self.root/'checkpoints/step_000002.pt'
+        path.write_bytes(b'truncated')
+        with self.assertRaisesRegex(ValueError, 'size'):
+            self.record()
+        self.save(path.name)
+        index_path = self.root/'checkpoints/candidates.json'
+        index = json.loads(index_path.read_text(encoding='utf-8'))
+        index['candidates'].append(copy.deepcopy(index['candidates'][0]))
+        index_path.write_text(json.dumps(index), encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, 'exactly one'):
+            self.record()
+
+    def test_wrong_step_and_stale_validation_are_rejected(self):
+        retain_candidate(self.root, self.save, self.config, 2, self.signature)
+        path = self.root/'checkpoints/candidates.json'
+        original = json.loads(path.read_text(encoding='utf-8'))
+        mutations = [lambda row: row.update(saved_step=4),
+                     lambda row: row.update(validation_step=2),
+                     lambda row: row.update(validation={'step': 1, 'event': 'validation', 'ema': True},
+                                             validation_step=1, validation_source='metrics.jsonl:validation')]
+        for mutate in mutations:
+            changed = copy.deepcopy(original)
+            mutate(changed['candidates'][0])
+            path.write_text(json.dumps(changed), encoding='utf-8')
+            with self.assertRaises(ValueError):
+                self.record()
+        with self.assertRaises(ValueError):
+            retain_candidate(self.root, self.save, self.config, 4, self.signature,
+                             {'step': 2, 'event': 'validation', 'ema': True})
+
+    def test_resume_withdraws_future_index_entries_without_deleting_files(self):
+        for step in (2, 4):
+            retain_candidate(self.root, self.save, self.config, step, self.signature)
+        reconcile_resume_candidates(self.root, self.signature, 2)
+        self.assertEqual(self.record()['saved_step'], 2)
+        self.assertTrue((self.root/'checkpoints/step_000004.pt').is_file())
+        with self.assertRaises(ValueError):
+            self.record('step_000004')
+        with self.assertRaisesRegex(ValueError, 'overwritten'):
+            retain_candidate(self.root, self.save, self.config, 4, self.signature)
+        for name in ('best', 'last'):
+            self.assertIsNone(candidate_record(self.root, name, 'legacy-no-index', {}))
 
 
 if __name__ == '__main__':

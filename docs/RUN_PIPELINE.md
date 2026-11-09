@@ -36,7 +36,7 @@ VS Code：**打开 `paperA` 文件夹**，信任本地工程并启用 Python/Pyt
 & $train scripts/configure_vscode.py
 ```
 
-它只更新 `.vscode`，不启动训练。ACT Baseline/Gesture 和 DP Train 快捷项默认预算均为40,000次参数更新，分别读取各自训练配置；使用前必须准备正式真人 Pack。正式条件统一为单 oblique RGB 640×480、30Hz模型动作与K30；ACT观察1帧、DP观察2帧。物理仿真500Hz，控制器60Hz，每个模型动作目标执行2个控制tick。
+它只更新 `.vscode`，不启动训练。ACT Baseline/Gesture和DP Baseline快捷项当前最大预算为60,000次更新，DP Gesture仍为40,000次，分别读取各自训练配置；未来DP手势公平对照须先同步预算及选型协议，本轮未改未训Gesture。正式条件统一为单oblique RGB 640×480、30Hz模型动作与K30；ACT观察1帧、DP观察2帧。物理仿真500Hz，控制器60Hz，每个模型动作目标执行2个控制tick。
 
 ## 1. 采集
 
@@ -182,6 +182,12 @@ $partialPack = '<该次 training_packs/... 的实际目录>'
 
 本节为当前官方核心版本的使用入口。ACT无需新增Python依赖，复用已有Torch/Torchvision和本地ResNet18权重；不依赖临时复现目录或IPython。旧本地版本权重不加载到新结构。
 
+源码职责与复用边界：`training/papera/official/`是固定上游组件；`act_model.py`负责图像与State/Action维度适配并调用原模型，`engine.py`执行共用的前向、Action L1＋KL、反向和优化更新；`pack_data.py`消费Dataset已认证的虚拟序列，`data.py`负责训练集归一化，`train.py`组织训练、验证、完整保存和恢复。Baseline不使用手势辅助头。不为提高本任务成功率修改官方Transformer、CVAE、Loss或Dataset拼接判定。
+
+“官方核心一致”不等于原始训练脚本完全相同：原脚本按示范选随机起点，本地按Pack中的合法观察窗口均匀采样；本地归一化仅拟合训练集，正式离线验证用`z=0`，完整保存优化器/采样器/RNG。这些是已存在的数据与运行协议适配，必须随实验披露，不能把本地结果冒称官方原任务复现。`--official-reference`专用入口另行恢复原始采样和后验验证，只有该对照可以直接与其官方脚本实验比较。本轮不添加事件权重、阶段采样或新Loss。
+
+队友的单臂任务可以复用这些官方组件及更新循环，但**当前Panda入口不是只改一个维度JSON就能运行的通用单臂入口**。须先提供真实的State/Action字段、单位、相机和频率，再增加明确的任务数据适配：Pack契约、归一化角度列、物理诊断指标和Rollout执行器均需对应单臂。尤其上游DETRVAE的后验`encoder_action_proj`初始写为14维；当前A14无需替换，单臂A7则须在外层适配该投影和两个State投影，不能只改输出头，也不需要改vendor的计算结构。不要补零伪造另一条机械臂或复用双臂统计量。单臂适配完成后，先验收真实batch、动作窗口/Mask、前向反向、保存恢复及其自身执行器，再开始正式实验；本轮双臂结果不代表单臂已实现或验收。
+
 先完成ACT和DP Baseline的工程与闭环验证，再做各自Gesture对照。以下命令会启动长训练；一般在同一GPU上顺序运行。2026-11-04已在本机实测两组Gesture并行训练的显存及内存余量后安排并行，未改变batch、精度或更新预算。实验固定辅助权重0.1，必须显式选择Gesture配置；只传 `--variant gesture` 而沿用ACT Baseline配置，会回落到历史默认权重1。
 
 先确认 `$pack` 是本任务的正式真人数据，运行 verify-pack 后保留这个值。两组用 **同一个 Pack、split、seed、训练预算和主干配置**：
@@ -193,7 +199,7 @@ $partialPack = '<该次 training_packs/... 的实际目录>'
 
 这是两条长训练命令，由你选择时间执行；本轮迁移没有执行它们。输出自动为 `outputs/training/<task_id>/<variant>/<run_id>`。
 
-默认参数在 `config/training_baseline.json`：单oblique、640×480全画面、S16/A14、K30、batch16、40,000次更新、FP32。主干和其余参数均采用AdamW学习率1e-5、weight decay1e-4；`lr_scheduler="constant"`、`warmup_steps=0`，`gradient_clip_norm=null`表示不裁剪，只检查梯度有限。Transformer hidden512、FF3200、encoder4、decoder7、posterior4、heads8、latent32、dropout0.1；KL权重10。ResNet18从已有本地预训练文件加载，不自动下载。图像不裁剪，不改变Pack；模型动作30Hz、控制60Hz、物理500Hz。`--steps`改更新预算、`--seed`改种子、`--config`换参数文件；同一算法两组须同步。
+默认参数在 `config/training_baseline.json`：单oblique、640×480全画面、S16/A14、K30、batch16、最大60,000次更新、FP32。主干和其余参数均采用AdamW学习率1e-5、weight decay1e-4；`lr_scheduler="constant"`、`warmup_steps=0`，`gradient_clip_norm=null`表示不裁剪，只检查梯度有限。Transformer hidden512、FF3200、encoder4、decoder7、posterior4、heads8、latent32、dropout0.1；KL权重10。ResNet18从已有本地预训练文件加载，不自动下载。图像不裁剪，不改变Pack；模型动作30Hz、控制60Hz、物理500Hz。`--steps`改最大更新预算、`--seed`改种子、`--config`换参数文件；同一算法两组须同步。60k是训练上限，不表示必须部署60k或`best.pt`；保留的中间权重需要在独立闭环验证上选型，再冻结进行新测试。
 
 当前ACT直接复用固定官方提交 `742c753c0d4a5d87076c8f69e5628c79a8cc5488` 的DETRVAE、Post-LN/ReLU Transformer、位置编码和CVAE，来源与两份许可证见 `training/papera/official/SOURCE.json`。只对两处状态输入投影适配S16，Action仍14维，K30与单相机由配置给出；不保留旧自写观察Transformer。该官方版本的DETRVAE取第一个intermediate decoder输出，本工程保留这一行为，没有改成最后层。
 
@@ -234,15 +240,18 @@ DP 复用同一任务的正式 Training Pack、会话 split、S16/A14 和 Safe S
 
 Pack读取、train-only min-max、RPY周期处理、认证Safe Stitch和硬边界Mask不变；无效目标不计入Loss，未来动作仍从当前观察后的下一合法控制tick开始，执行索引0～7，不能照搬官方含过去动作序列的 `To-1` 偏移。无效目标先清除非有限值再整体加噪，去噪输入不再把无效后缀强制清零。Baseline不使用手势标签；Gesture只增加观察条件上的左右分类头和0.1倍CE，推理仍无手势输入。
 
-ACT 与 DP 使用相同640×480、K30、batch16和40,000次更新。ACT保持1帧观察，DP使用2帧；同一算法内Baseline/Gesture必须用相同数据、split、相机、历史和预算。跨算法比较需要披露历史不同，不能称输入信息完全相同；严格控制历史的比较可另跑DP-H1。以后的历史、分辨率、宽度或预算变化都作为新实验记录。
+ACT与DP Baseline使用相同640×480、K30、batch16和最大60,000次更新；DP本轮从头训练，结果待完成。ACT保持1帧观察，DP使用2帧，网络和计算量也不同，不能称输入信息或算力预算完全相同。DP Gesture配置仍保留40k，本轮未改未训；未来同一算法内Baseline/Gesture必须用相同数据、split、相机、历史、预算和对称选型协议。以后的历史、分辨率、宽度或预算变化都作为新实验记录。
 
-默认 AdamW 学习率1e-4、betas(.95,.999)、weight decay1e-6、batch16、40,000次更新、warmup500、FP32。学习率使用diffusers官方余弦调度，最终降至0；首个warmup更新的LR为0。`gradient_clip_norm=null` 为官方默认不裁剪，只检查梯度有限性。EMA直接使用官方幂次预热，默认power0.75、inv_gamma1、上限0.9999。每25步记日志，每1000步验证/保存，最终或请求停止时也保存。`best.pt` 仍依据固定噪声与timestep的 **EMA验证noise MSE**，完整验证集前2批另记录DDPM动作误差；没有照搬官方按测试闭环得分挑TopK的规则。采样误差与训练损失均不是自主成功率。
+Baseline默认 AdamW 学习率1e-4、betas(.95,.999)、weight decay1e-6、batch16、60,000次更新、warmup500、FP32。学习率使用diffusers官方余弦调度，最终降至0；首个warmup更新的LR为0。`gradient_clip_norm=null` 为官方默认不裁剪，只检查梯度有限性。EMA直接使用官方幂次预热，默认power0.75、inv_gamma1、上限0.9999。每25步记日志，每1000步验证/保存，最终或请求停止时也保存。`best.pt` 依据固定噪声与timestep的**完整验证集EMA noise MSE**选择；`sample_action_l1_normalized`和物理动作MAE只在前2批、共32个锚点生成DDPM动作后统计，是局部诊断，不是全验证集误差。离线best与采样误差均不直接决定自主成功率，正式权重需要独立闭环验证选型。
+
+`candidate_save_every=5000`每5k及完整预算末步保留`checkpoints/step_NNNNNN.pt`，包含模型、EMA、优化器、scheduler、sampler与RNG；设`null`关闭，不额外触发验证。`checkpoints/candidates.json`绑定run/task/config/source、文件尺寸、真实保存步及同一步验证（未在该步验证则为null），不能从任意.pt文件名推断候选。训练先提交`last.pt`再写候选，恢复时撤回超出恢复步的索引、不删除原文件；遇到已有孤立同名候选会拒绝覆盖。历史best/last无需新索引，继续只读兼容。
 
 DP 常用配置字段如下；ACT 的对应公共条件在 `config/training_baseline.json`，对照时一起核对。
 
 | JSON 字段 | 当前默认 | 调整作用 |
 |---|---:|---|
-| `steps` / `batch_size` | 40000 / 16 | 优化器更新总数 / 每次使用的样本窗口数 |
+| `steps` / `batch_size` | 60000 / 16 | Baseline优化器更新总数 / 每次使用的样本窗口数；Gesture历史配置仍40000 |
+| `candidate_save_every` | 5000 | 每N步及最终步保留完整候选；`null`关闭，不改变验证频率 |
 | `image_size` | `[640,480]` | Pack/RGB输入宽、高，单位像素；模型内部另按crop_shape处理 |
 | `model.crop_shape` | `[472,632]` | 裁剪高、宽；训练随机，验证/推理中心；`null`禁用，不改Raw/Pack |
 | `model.observation_horizon` | 2 | 同一摄像头过去至当前的2个合法观察锚点；不增加相机，不移动当前动作的因果起点 |
@@ -258,7 +267,7 @@ DP 常用配置字段如下；ACT 的对应公共条件在 `config/training_base
 | `validation_sample_batches` | 2 | 验证时额外生成动作并统计误差的批数，设0可只统计噪声MSE |
 | `num_workers` / `precision` | 2 / `fp32` | Windows异步数据读取进程数 / CUDA数值精度 |
 
-新DP已通过模型同权重对照、EMA/LR与恢复检查：完整回归608项通过、4项按原条件跳过；真实Pack上640×480/H2、batch16、FP32完成两次GPU工程更新及状态恢复，峰值显存约9.15GiB。两条新物理工程记录也跑通Dataset→小模型短训→CUDA Rollout；这些仅证明工程通路，不是正式训练或任务成功率。证据在 `.local/checks/dp_official_restore_20261105/`。当前没有新版Panda50例成功率，历史旧DP的34%结果不作为新模型成绩。
+2026-11-05的DP工程验收通过模型同权重对照、EMA/LR与恢复检查：完整回归608项通过、4项跳过；真实Pack上640×480/H2、batch16、FP32完成两次GPU工程更新及状态恢复，峰值显存约9.15GiB。两条工程记录也跑通Dataset→短训→CUDA Rollout；这些仅证明工程通路。证据在 `.local/checks/dp_official_restore_20261105/`。随后官方40k运行的17k best为8/50，历史本地旧DP为17/50，两者保留但不当作当前fresh60k成绩。当前实验的训练与评估状态见第6.5节。
 
 | 参数 | 含义 |
 |---|---|
@@ -270,7 +279,7 @@ DP 常用配置字段如下；ACT 的对应公共条件在 `config/training_base
 | `--stop-after N` | 本次额外运行N次更新后保存退出，冻结的总预算保持不变 |
 | `--engineering` | 明确允许 scripted_test 工程 Pack；输出隔离在 `.local/checks` |
 
-默认只做必要的 Pack 格式、文件尺寸、冻结身份、split、因果标签和合法序列接口检查，不重复重算全部大文件哈希，不访问外部 Raw/Prepared；这不等于完整内容审计。需要严格审计时显式使用 `--full-verify`。正常训练输出 `outputs/training/<task>/diffusion/<run_id>/`，含 `config.json`、`data_binding.json`、`run.json`、`metrics.jsonl`、`tensorboard/`、`checkpoints/{best,last}.pt`、`completion.json`。
+默认只做必要的 Pack 格式、文件尺寸、冻结身份、split、因果标签和合法序列接口检查，不重复重算全部大文件哈希，不访问外部 Raw/Prepared；这不等于完整内容审计。需要严格审计时显式使用 `--full-verify`。正常训练输出 `outputs/training/<task>/diffusion/<run_id>/`，含 `config.json`、`data_binding.json`、`run.json`、`metrics.jsonl`、`tensorboard/`、`checkpoints/{best,last}.pt`、已启用的候选及索引、`completion.json`。
 
 ```powershell
 $dpRun = '<实际 outputs/training/任务/diffusion/run_id>'
@@ -349,13 +358,15 @@ ACT 候选权重保留参数在 `config/training_baseline.json` 的 `candidate_s
 
 DP 恢复同一 run 中的模型与 EMA、优化器、scheduler、sampler、RNG、归一化、Pack路径、split 和预算；输入必须是 DP 的 `last.pt`。不同时传 `--config`、`--steps` 或 `--output`，不更换 Pack。可加 `--stop-after N` 限制本次更新数用于工程验证。默认恢复仍做格式和接口检查；`--full-verify` 可额外核验内容哈希。DP 本轮没有 `--continue-from` 延长预算入口。
 
+已完成40k的cosine学习率为0，不能照搬ACT保持末端LR的续训方式。当前60k使用相同官方余弦调度从头新建run；总预算改变也改变前40k的学习率轨迹，因此不是纯粹多训练20k的单变量实验。旧40k权重和结果保持原样，不能修改其冻结预算后覆盖恢复。
+
 当前Checkpoint契约为 `papera-diffusion-official-checkpoint-v2`，同时保存EMA权重及完整EMA配置、optimization_step和decay。旧 `papera-diffusion-checkpoint-v1` 对应不同网络，明确拒绝恢复或加载到新网络；不能拿旧last接着训练，应复用同一Pack从头新建run。旧成果只保留历史查看，若确需运行历史模型须使用相应历史源码；当前新源码不维护第二套旧模型流程。
 
 ## 6. 模型检查、预览与50次评估
 
-本节共用入口支持ACT和DP各自的Baseline/Gesture。未指定config时使用任务默认ACT评估配置；DP需额外指定DP配置。原 `best.pt` 选择指标保持不变；独立验证可以选择明确的last或ACT保留候选，但必须先冻结理由、步数和执行配置，再评估50次测试，不能从测试结果反选checkpoint。
+本节共用入口支持ACT和DP各自的Baseline/Gesture。未指定config时使用任务默认ACT评估配置；DP需额外指定DP配置。原 `best.pt` 选择指标保持不变；独立验证可以选择明确的last或ACT/DP保留候选，但必须先冻结理由、步数和执行配置，再评估50次测试，不能从测试结果反选checkpoint。
 
-DP推理可以显式指定 `diffusion_inference_steps`（去噪次数）与 `diffusion_action_horizon`（本次预测执行几个30Hz目标），改变默认值必须提供 `inference_selection_reason`；`n_action_steps` 要与动作执行长度一致。实际值和原训练默认值同时记录，不改历史checkpoint。DP正式使用last时配置为 `checkpoint_selection="fixed_last_training_step"`，并填写 `expected_checkpoint_step=40000` 和选择理由。仍加载该checkpoint的EMA参数，不是未经EMA的model参数。对同一算法的Gesture对照使用相同执行设置。
+DP推理可以显式指定 `diffusion_inference_steps`（去噪次数）与 `diffusion_action_horizon`（本次预测执行几个30Hz目标），改变默认值必须提供 `inference_selection_reason`；`n_action_steps` 要与动作执行长度一致。实际值和原训练默认值同时记录，不改历史checkpoint。正式用last时配置为 `checkpoint_selection="fixed_last_training_step"`；用已登记`step_NNNNNN`时为`fixed_retained_training_step`。两者均填写真实`expected_checkpoint_step`及选择理由，例如新60k last为60000，保留20k候选为20000，不能沿用旧40000。实际始终加载该checkpoint的EMA参数。对同一算法的Gesture对照使用相同执行设置。
 
 ```powershell
 & $train -m rollout --task $task --mode check --run $run
@@ -420,6 +431,40 @@ $pack = (Get-Content "outputs/dataset/$task/TRAINING_PACK_CURRENT.json" -Raw -En
 2026-11-04旧本地ACT曾用独立验证初态选择chunk30执行与40,000步last，随后50个新初态成功38次。它使用旧v1网络，不是当前官方核心的成绩。当前任务仍支持动作块与逐帧集成；新模型应按第6节明确冻结自己的执行参数，不能继承这次历史选型结论。
 
 这次绑定旧run、Pack与固定last的一次性`evaluation_act_optimized.json`已从当前配置目录归档移出，旧文档和配置保存在工程外`paperA_版本备份/source_cleanup_20261105_213715/`。历史视频与`summary.json`仍在`outputs/rollout/tray_to_platform/baseline/optimized_last_chunk30_50_20261104/`，只读查看即可；历史重跑需对应历史源码。当前新训练和新评估按第4～6节，不再提供可误用于新版权重的旧启动命令。
+
+### 6.3 当前官方 ACT Baseline：明确权重与执行参数
+
+本轮使用同一份64条真人示范的Pack，保持49/15整会话划分，从已完成40k的官方结构继续至60k；没有修改ACT数学、裁剪、IK或成功判据。最大预算与最终部署步数分别记录。独立20个初态验证比较40/45/50/55/60k与两种执行方式，选中 **50k + chunk30**（17/20）；60k虽为离线best，并未作为最终部署模型。完整选型表、原始曲线、最终50例和视频集中在 `outputs/campaigns/tray_to_platform/act_baseline_finalization_20261106_174942/REPORT.html`，机器可读入口为 `outputs/ACT_BASELINE_CURRENT.json`。
+
+冻结后的新测试初态7217000～7217049：**38/50成功（76%）**，7次超时、5次接触丢失，无基础设施错误；47/50真实双抓并抬升，50个视频完整解码。单次上限60秒；推理和渲染均为RTX5090。95% Wilson区间为62.6%～85.7%，仅针对这份权重的初态抽样。成功率包含既有物理保护执行器作用，不是无约束原始预测；没有据此宣称数据优于其他采集方式。只完成一个训练seed，数据仍为auto审核候选。
+
+下面命令复用本轮已选模型，不会训练，也不会误加载35k `best.pt`。先逐行设置变量，`--run`是训练目录，`--checkpoint`是该目录已登记的候选名称；`--config`固定chunk30、60秒与任务判据，`--device cuda`明确GPU推理：
+
+```powershell
+Set-Location 'D:\轻量化数据采集\paperA'
+$train = (Get-Content config/environments.json -Raw -Encoding UTF8 | ConvertFrom-Json).training_python
+$act = Get-Content 'outputs/ACT_BASELINE_CURRENT.json' -Raw -Encoding UTF8 | ConvertFrom-Json
+$task = $act.task_id
+$run = $act.training_run
+$evalConfig = $act.evaluation_config
+$checkpoint = $act.checkpoint
+$protocol = $act.final_protocol
+& $train -m rollout --task $task --config $evalConfig --mode check --run $run --checkpoint $checkpoint --device cuda
+# 单次独立预览；不是50次最终测试的一部分
+& $train -m rollout --task $task --config $evalConfig --mode preview --run $run --checkpoint $checkpoint --device cuda --seed 910001 --max-seconds 60
+# 如需重放已冻结的50例，创建一个新结果目录；不会覆盖本轮结果
+$replay = 'outputs/rollout/tray_to_platform/baseline/my_fixed_baseline_replay'
+& $train -m rollout --task $task --config $evalConfig --mode batch --run $run --checkpoint $checkpoint --protocol $protocol --device cuda --workers 4 --output $replay
+& $train -m rollout --task $task --mode summarize --output $replay
+```
+
+`workers`是并行进程数量，范围1～4，不是评估次数；本机本轮实测4进程的推理和OpenGL均使用RTX5090。重放是同一测试集的复查，不是新增独立样本；若条件变化，不能恢复或覆盖原批次。视频完成封装前可能无法播放，以`summary.json`的完整50例和逐例视频校验为准。
+
+重新训练从第4节统一入口和 `config/training_baseline.json` 启动；本次60k上限保留每5k候选。之后新模型应另做独立闭环验证选型，再冻结新的测试初态，不自动沿用这次50k结论。`best.pt`仍按离线动作误差保存，`last.pt`仍作恢复点；二者不改名冒充本次选中权重。第6节不传config/checkpoint的通用示例默认使用任务best/逐帧配置，不能复现本节模型。`scripts/run_baseline_campaign.py`仍是离线best的通用流程，不负责本次闭环选型。
+
+上述ACT实验未重训DP或Gesture；后续DP fresh60k固定实验见第6.5节，结果需分别记录。ACT Gesture仅同步60k预算，今后需要独立初始化及同等验证协议。ACT与历史40k DP不能声称等预算对照。旧90%是不同本地网络在另一批初态上的历史结果，不作为本轮官方模型的直接因果对照。
+
+导航指向的实验归档`final_evaluation_config.json`只属于本次托盘实验及50k候选，不能直接用于单臂或另一份新run。候选范围是在观察验证结果后、最终测试前缩小为标准1e-5家族；未完成的1e-4诊断停在16k，未参与选型，也不当作40k对照。完整搜索并非全程预注册；50个新测试初态没有用于调参。核心16项定向检查通过，Pack接口检查通过；主回归609项中6项跳过、1项审核HTTP连接中止，原日志保留，该项单独重跑通过，不写成整套首跑全绿。独立审计未发现阻塞问题，但不保证不存在未知缺陷。
 
 ### 6.4 四组模型的固定对照与结果查看
 
@@ -493,6 +538,33 @@ $collect = (Get-Content config/environments.json -Raw -Encoding UTF8 | ConvertFr
 
 在训练和其他评估进程退出后，单进程RTX5090/BF16、5次预热及30次计时，选中ACT查询均值12.6 ms、P95 13.4 ms；DP DDIM20查询均值156.2 ms、P95 167.3 ms。计时含图像预处理和推理，不含MuJoCo渲染/物理，不等于端到端实时延迟。DP每次查询输出8步执行目标，不需要每个30Hz目标重新去噪；60秒上限按仿真时间计，不是墙钟时间。首次启动的Pack结构检查可能耗时数分钟，这一阶段的CPU工作不代表策略退回CPU推理。
 
+<!-- BEGIN CURRENT DP BASELINE -->
+### 6.5 当前官方 DP Baseline：配置与使用
+
+已完成：60k新余弦训练，独立20例选中第40000步EMA、DDPM100/A30（15/20），冻结后50例成功20次（40%）。使用`step_040000.pt`；不要擅自换成其他best/last。训练预算不是选中权重步数。失败、曲线、候选表和逐例视频在[报告](../outputs/campaigns/tray_to_platform/dp_baseline_finalization_20261106_205752/REPORT.html)，唯一准确导航是`outputs/DP_BASELINE_CURRENT.json`。
+
+官方数据参照各25,368更新后独立last EMA、同50例，PushT `mean_score`（各回合最高归一化奖励的平均）官方/本地为0.8222 / 0.8222；不是二元任务成功率，也不是完整501/3050epoch论文复现。Panda数据接口、实际训练与Rollout另有检查。全回归618项（跳过6项）、采集39项通过，定向候选保存/恢复、数据与官方核心检查见报告。
+
+先在工程根目录设置`$train`（第0节）。下列命令读取准确模型，不启动训练：
+
+```powershell
+$dp = Get-Content 'outputs/DP_BASELINE_CURRENT.json' -Raw -Encoding UTF8 | ConvertFrom-Json
+Get-Content $dp.summary -Raw -Encoding UTF8
+& $train -m rollout --task $dp.task_id --config $dp.evaluation_config --mode check --run $dp.training_run --checkpoint $dp.checkpoint
+# 单次预览，仍用冻结DDPM100/A30和60秒上限
+& $train -m rollout --task $dp.task_id --config $dp.evaluation_config --mode preview --run $dp.training_run --checkpoint $dp.checkpoint --seed 910001 --device cuda
+# 重跑同50初态，创建新的输出目录，保留历史结果
+$out = 'outputs/rollout/tray_to_platform/diffusion/manual_' + (Get-Date -Format 'yyyyMMdd_HHmmss')
+& $train -m rollout --task $dp.task_id --config $dp.evaluation_config --mode batch --run $dp.training_run --checkpoint $dp.checkpoint --protocol $dp.final_protocol --output $out --workers 4 --device cuda
+```
+
+`--checkpoint`控制实际EMA权重，`--config`冻结DDPM去噪步数、执行长度和60秒上限；`--protocol`固定50初态；`--workers`是并行进程数，不是测试次数。`--device cuda`不会静默切CPU。推理墙钟耗时与仿真60秒分开统计。
+
+新训练用第4.1节统一入口和`config/training_diffusion.json`（60k、候选5k）；同预算中断恢复用`--resume <run>/checkpoints/last.pt`。本次已完成的60k无需再resume；旧40k末尾LR为0，不能照搬ACT延长方式。完整验证noise MSE决定离线best，闭环20例另决定部署权重；sample Action MAE仅前2批32个anchor。网络、Loss、EMA、Safe Stitch、遥操作和成功条件没有改动。
+
+Baseline与Gesture未来公平比较必须同步Pack、split、主干、预算和选型范围；本轮未训练Gesture，其配置仍保留历史40k。ACT为H1、DP为H2，不能称相同输入信息或相同算力。单臂可以复用官方模型核心，但需明确适配State/Action schema、归一化字段、Pack和执行器，不是只改task_id。
+<!-- END CURRENT DP BASELINE -->
+
 ## 7. 可重复的工程检查（不用于论文结果）
 
 日常维护只需选择相关入口；不需要逐个运行`tests`中的文件，也不需要下载官方基准数据集或预训练策略：
@@ -509,7 +581,7 @@ $collect = (Get-Content config/environments.json -Raw -Encoding UTF8 | ConvertFr
 
 准备分享时先修改`config/environments.json`中的两个Python解释器和Node路径，再运行`& $train scripts/configure_vscode.py`。四个训练F5入口仍保留；训练Pack路径由运行者显式输入。`.local/`、`.cache/`、`datasets/`、`outputs/`、`logs/`均已被Git忽略。独立复现下载缓存继续留在`.local/`，不会随源码上传，也无需重新下载。单臂队友应对齐模型核心、归一化原则、频率、训练预算和选模协议，另行声明自己的State/Action Schema；当前双臂Pack或权重不能直接当作单臂输入。
 
-对正式真人Pack可先做不写文件的接口检查，再按需要做至多每算法3次独立工程更新。工具读取两份实际JSON配置，当前ACT H1、DP H2，默认使用各自batch16；不是重新裁剪或正式40,000步训练：
+对正式真人Pack可先做不写文件的接口检查，再按需要做至多每算法3次独立工程更新。工具读取两份实际JSON配置，当前ACT H1、DP H2，默认使用各自batch16；不是重新裁剪或正式长训练：
 
 ```powershell
 $task = 'tray_to_platform'
@@ -542,7 +614,7 @@ $testRun = '.local/checks/training/my_smoke_baseline'
 
 `--smoke-test` 固定3步、较小工程验证范围；`--engineering` 只允许显式工程数据/短预览，不允许正式50次评估。工程采集结果明确保存为 scripted_test / failure，证明记录通路，不伪称成功示范。重复生成前保留或归档旧工程目录；不同 task_binding 不会混合。无需为了迁移重新处理旧视频。
 
-同一工程 Pack 可检查 DP，并验证短训练与恢复；使用新输出目录，预算仍保持默认40,000步，以下只各运行2次更新：
+同一工程 Pack 可检查 DP，并验证短训练与恢复；使用新输出目录，冻结预算保持当前Baseline默认60,000步，以下只各运行2次更新：
 
 ```powershell
 $testDpRun = '.local/checks/training/my_smoke_diffusion'
@@ -595,6 +667,31 @@ $task = 'tray_to_platform'
 
 版本回溯标签：`before-highwall-platform-20261025` 为修改前，`highwall-platform-v1-20261025` 为本次场景验收版本。使用 `git show <标签>` 查看说明、`git diff before-highwall-platform-20261025 highwall-platform-v1-20261025 -- tasks tests docs README.md` 查看改动；需要切回体验前先检查 `git status`，不要丢弃未提交工作。新工程已有独立Git，不推送远程。工程视频和检查包位于被Git忽略的 `.local/checks`，标签保存源码及说明，不保存这些体积较大的产物。
 
+### 7.2 ACT官方A/B参照：先验证训练代码，再更换自己的数据
+
+A是固定官方仓库原始`imitate_episodes.py`的完整训练和原任务评估；B通过本地`train.py --official-reference`入口，实际使用本地`ACTPolicy`、`compute_loss`和与正式Pack共用的`engine.run_loop/optimize_batch`。B没有另写临时参数更新循环，也没有将官方S14伪造成Panda S16。官方HDF5 Reader仅通过`reference.py`转换为本地batch字典；这不等于验证了Safe Stitch裁剪或Panda物理执行器。
+
+本轮固定同一份50条官方脚本示范、40/10划分、全50条归一化统计、单top 640×480、S14/A14关节目标、K100、hidden512/FF3200、batch8、KL10、AdamW固定1e-5、seed0、2000 epochs（10000次更新）。B保留官方Episode等权随机时刻采样，以及后验L1+KL验证和best选择，评估保留K100动作块、seed1000的50个初态。不能把本项目按帧采样、train-only统计、z=0选型或K30默默混进这个比较。
+
+当前机器的实际命令如下。数据和预训练权重复用本地缓存，不重新下载；输出在`.local/checks`，不是正式托盘训练结果。临时嵌入式Python不自动将当前目录加入import路径，因此`launch.py`只补项目路径并调用同一个`train.main()`，不包含训练逻辑。
+
+```powershell
+Set-Location 'D:\轻量化数据采集\paperA'
+$refPy = '.local/checks/official_reproduction_20261105/act/physics_py311/python.exe'
+$refData = '.local/checks/official_reproduction_20261105/act/data_original_physics'
+$upstream = '.local/checks/act_reference_20261106/upstream'
+$refB = '.local/checks/act_reference_B_20261106'
+& $refPy "$refB/launch.py" --official-reference $refData --reference-upstream $upstream --reference-epochs 2000 --output "$refB/run"
+# 本轮B完成后，用与A相同的原始评估入口及场景评估导出的policy_best.ckpt
+& $refPy "$refB/evaluate.py"
+```
+
+这是本轮实际使用的命令；训练目录已有结果时会拒绝覆盖。需要重复训练时须显式指定新的`--output`，并让原始评估入口的`--ckpt_dir`指向该新目录；本轮`evaluate.py`固定读取`$refB/run`且拒绝覆盖已完成评估。`--smoke-test`只在独立新目录做两轮工程训练，不替代完整B。此profile只接受Baseline，拒绝Pack、Gesture、续训及任意步数覆盖，不改变`--task ... --pack ...`正式入口的S16/A14/K30约束。
+
+适配类别：Pack读取、Safe Stitch窗口/Mask、S16的两个输入投影、单oblique与米制XYZ/RPY动作是任务数据接口；本地权重缓存、Windows路径和读取进程数是运行适配；按帧采样、z=0选best与学习率/预算是实验策略，不能统称适配必需。原ResNet/Transformer/CVAE核心不在本轮重新设计。旧Panda配置与默认计算保持不变，旧模型通过精确的源码兼容登记读取，不能用这个登记放行后续网络或数据变更。
+
+2026-11-06已完成：A为48/50（96%），B为50/50（100%）；两者均完整2000轮/10000次更新，均选epoch1780，后验验证总损失分别0.043276/0.041681。共同成功48例，仅B成功2例。两组曲线接近，本次未见通用本地训练实现明显退化；单训练seed和50例不能证明性能提升或所有代码无误，更不是Panda托盘成功率。B的50段原视频全部解码400帧；全回归614项（6跳过）和39项采集通过，工程Collection→Dataset→Pack→3步训练→2秒CUDA预览也通过。结果与训练曲线入口：[A/B汇总](../.local/checks/act_reference_B_20261106/RESULTS.html)。B参考模式尚未提供CLI续训，不可拿其专用checkpoint直接走Panda恢复入口；正式Panda既有恢复能力已回归验证。本轮没有重训正式托盘模型或提交Git。
+
 ## 输入输出速查表
 
 | 程序/阶段 | 输入 | 输出 | 环境 |
@@ -630,8 +727,8 @@ $task = 'tray_to_platform'
 | `python -m collection start --task ...` | 使用 `$collect`；可指定种子、操作者和端口 | 跳过交互菜单，启动指定任务的同一套采集服务 | 与CMD相同；`--no-browser`不打开浏览器，`--headless`不显示MuJoCo窗口 |
 | `dataset/manage_dataset.py` | 使用 `$train`，指定 `--task` 和子命令；`preview-menu`可交互选择任务 | `process/reclip`处理，`review`可写审核，`preview`只读裁剪预览，`prepare/pack/verify-pack`导出和核验 | `outputs/dataset/<task_id>/`；审核默认8026，不控制机器人 |
 | `dataset/PREVIEW-CURATION.cmd` | 双击，选任务与菜单1/2/3；可传 `-Task tray_to_platform -Port 8026` | 调用 `start-preview.ps1` 配置训练环境，再调用同一 `manage_dataset.py preview-menu`；选1/2仅预览，选3才处理数据；不训练 | 浏览器自动打开，只读预览；终端显示版本与实际端口，Ctrl+C退出 |
-| `python -m training.papera` | 使用 `$train`；显式指定task、variant、Pack，或指定resume checkpoint | 启动训练；Baseline/Gesture共用入口，默认40,000步；不会自动打开采集网页 | `outputs/training/<task>/<variant>/<run_id>/`；按第5节恢复 |
-| `python -m training.diffusion` | 使用 `$train`；指定task和Pack，或DP last.pt | DP默认40,000步；`--check-only`只读检查；`--stop-after N`保存并暂停本次更新 | `outputs/training/<task>/diffusion/<run_id>/`；按第5.1节恢复 |
+| `python -m training.papera` | 使用 `$train`；显式指定task、variant、Pack，或指定resume checkpoint | 启动训练；Baseline/Gesture共用入口，当前最大60,000步；不会自动打开采集网页 | `outputs/training/<task>/<variant>/<run_id>/`；按第5节恢复 |
+| `python -m training.diffusion` | 使用 `$train`；指定task和Pack，或DP last.pt | Baseline默认60,000步fresh cosine；Gesture历史40,000步；`--check-only`只读检查，`--stop-after N`保存并暂停本次更新 | `outputs/training/<task>/diffusion/<run_id>/`；按第5.1节恢复 |
 | `python -m rollout` | 使用 `$train`；显式指定task、mode、run/Pack | `check`只检查，`prepare`只固定初态清单，`preview`执行一次，`batch`批量执行，`summarize`汇总 | `outputs/rollout/<task>/<variant>/`；默认headless，视频须等完成后播放 |
 | `python -m training.papera.analyze_checkpoint` | `& $train -m training.papera.analyze_checkpoint --run $run` | 读取checkpoint做离线指标分析，不继续训练 | `<run>/analysis/evaluation/` |
 | `python -m training.papera.plot_training_analysis` | `& $collect -m training.papera.plot_training_analysis --run $run` | 读取已有训练/分析结果生成图表 | `<run>/analysis/figures/` |
@@ -645,10 +742,10 @@ $task = 'tray_to_platform'
 
 | F5名称 | 实际含义 | 需要输入 |
 |---|---|---|
-| `ACT 训练` | `training_baseline.json`，首40,000步 | task_id、正式Pack绝对路径 |
-| `DP 训练` | `training_diffusion.json`，40,000步 | 相同task_id与Pack |
-| `ACT + 手势辅助监督训练` | `training_act_gesture.json`，首40,000步，CE权重0.1 | 相同task_id与Pack |
-| `DP + 手势辅助监督训练` | `training_diffusion_gesture.json`，40,000步，CE权重0.1 | 相同task_id与Pack |
+| `ACT 训练` | `training_baseline.json`，最大60,000步 | task_id、正式Pack绝对路径 |
+| `DP 训练` | `training_diffusion.json`，60,000步fresh cosine，每5k保留候选 | 相同task_id与Pack |
+| `ACT + 手势辅助监督训练` | `training_act_gesture.json`，最大60,000步，CE权重0.1；本轮未训练 | 相同task_id与Pack |
+| `DP + 手势辅助监督训练` | `training_diffusion_gesture.json`，历史40,000步，CE权重0.1；本轮未改未训，正式公平对照前须同步预算 | 相同task_id与Pack |
 
 ### 启动采集、检查连接、正常退出
 

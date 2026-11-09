@@ -80,8 +80,19 @@ class CheckpointSelectionTests(unittest.TestCase):
                         dict(policy,selected_by='training/completed_step')):
             with self.subTest(changed=changed), self.assertRaises(ValueError):
                 validate_batch_checkpoint_selection(settings,'step_045000',changed)
-        with self.assertRaisesRegex(ValueError, 'ACT only'):
-            validate_batch_checkpoint_selection(dict(settings,policy_algorithm='diffusion_policy'))
+        dp_settings = dict(settings, policy_algorithm='diffusion_policy')
+        dp_policy = dict(policy, algorithm='diffusion_policy', weights='ema')
+        self.assertEqual(validate_batch_checkpoint_selection(
+            dp_settings, 'step_045000', dp_policy)['actual_step'], 45000)
+        dp_settings.update(execution='chunked', n_action_steps=8)
+        dp_policy['action_horizon'] = 8
+        validate_policy_settings(dp_policy, dp_settings)
+        # Candidate selection never bypasses the frozen algorithm or index identity.
+        with self.assertRaisesRegex(ValueError, 'algorithm differs'):
+            validate_batch_checkpoint_selection(dp_settings, 'step_045000', policy)
+        with self.assertRaisesRegex(ValueError, 'candidate index'):
+            validate_batch_checkpoint_selection(dp_settings, 'step_045000',
+                dict(dp_policy, selected_by='training/completed_step'))
 
     def test_cli_accepts_only_explicit_checkpoint_names(self):
         for value in ('best','last','step_045000','step_060000'):

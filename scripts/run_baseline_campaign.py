@@ -63,8 +63,19 @@ def validate_run(run, algorithm, plan):
     else:
         require(value['algorithm'] == 'diffusion_policy', 'Expected a DP run')
         config, pack, task = value['config'], value['pack_path'], value['task_id']
+        require(all(variant == 'baseline' for variant in (
+            value.get('variant', 'baseline'), config.get('variant', 'baseline'),
+            config.get('model', {}).get('variant', 'baseline'))),
+            'DP campaign requires a baseline without gesture supervision')
     require(task == plan['task_id'] and resolve(pack) == resolve(plan['pack']), 'Training run task/Pack differs from campaign')
     expected = plan['training_configs'][algorithm]
+    if algorithm == 'dp':
+        # The CLI materializes --variant in model; compare equivalent defaults
+        # without rewriting either the frozen plan or the run's configuration.
+        config, expected = dict(config), dict(expected)
+        for item in (config, expected):
+            if 'model' in item:
+                item['model'] = {'variant': 'baseline', **item['model']}
     for key, wanted in expected.items():
         if key not in {'pack_path', 'output_root'}:
             require(config.get(key) == wanted, f'{algorithm} frozen training setting differs: {key}')

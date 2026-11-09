@@ -32,7 +32,8 @@ class SmokeContinuationGuardTests(unittest.TestCase):
         binding = {'split': {'train': ['train'], 'val': ['val']},
                    'stats': {'fit_split': 'train'}}
         fields = {'model_source_sha256': 'act_model.py', 'reader_source_sha256': 'pack_data.py',
-                  'normalizer_source_sha256': 'data.py', 'trainer_source_sha256': 'train.py'}
+                  'normalizer_source_sha256': 'data.py', 'trainer_source_sha256': 'train.py',
+                  'engine_source_sha256': 'engine.py'}
         provenance = {'config': config, 'variant': 'gesture', 'pack_binding': binding,
                       'engineering_overfit': False, 'validation_scope': 'heldout_sessions',
                       **{key: hashlib.sha256((ROOT/'training/papera'/name).read_bytes()).hexdigest()

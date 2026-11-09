@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 from collections import deque
-from contextlib import nullcontext
 from dataclasses import asdict
 from datetime import datetime
 import copy
@@ -29,6 +28,7 @@ from torch.utils.data import DataLoader, Sampler
 
 from training.papera.act_model import ACTConfig, ACTPolicy, compute_loss, IMPLEMENTATION
 from training.papera.data import file_sha256
+from training.papera.engine import move_batch, targets_masks, precision_context, run_loop
 
 ROOT = Path(__file__).resolve().parents[2]
 CHECKPOINT_VERSION = "papera-act-official-checkpoint-v2"
@@ -153,22 +153,6 @@ def lr_multiplier(step, config):
     fraction = (step - warmup) / max(1, config["steps"] - warmup)
     floor = config["minimum_lr_fraction"]
     return floor + (1 - floor) * .5 * (1 + math.cos(math.pi * min(1., max(0., fraction))))
-
-
-def move_batch(batch, device):
-    return {key: value.to(device, non_blocking=True) if isinstance(value, torch.Tensor) else value
-            for key, value in batch.items()}
-
-
-def targets_masks(batch):
-    targets = {key: batch[key] for key in ("action", "gesture", "skeleton", "stage")}
-    masks = {"action": ~batch["is_pad"], "gesture": batch["gesture_mask"],
-             "skeleton": batch["skeleton_mask"], "stage": torch.ones_like(batch["stage"], dtype=torch.bool)}
-    return targets, masks
-
-
-def precision_context(device, precision):
-    return torch.autocast("cuda", dtype=torch.bfloat16) if device.type == "cuda" and precision == "bf16" else nullcontext()
 
 
 @torch.no_grad()
@@ -501,7 +485,8 @@ def official_source_hashes():
 
 def snapshot_sources(output):
     files = [Path(__file__), Path(__file__).with_name("act_model.py"),
-             Path(__file__).with_name("pack_data.py"), Path(__file__).with_name("data.py")]
+             Path(__file__).with_name("pack_data.py"), Path(__file__).with_name("data.py"),
+             Path(__file__).with_name("engine.py")]
     files.extend(Path(__file__).parent / name for name in official_source_hashes())
     for path in files:
         target = Path(output) / "source_snapshot" / path.relative_to(ROOT)
@@ -638,6 +623,7 @@ def run(config, variant="baseline", output=None, resume=None, smoke=False, stop_
         "model_source_sha256": file_sha256(Path(__file__).with_name("act_model.py")),
         "reader_source_sha256": file_sha256(Path(__file__).with_name("pack_data.py" if binding else "data.py")),
         "trainer_source_sha256": file_sha256(Path(__file__)),
+        "engine_source_sha256": file_sha256(Path(__file__).with_name("engine.py")),
         "model_implementation": IMPLEMENTATION,
         "official_sources_sha256": official_source_hashes(),
         "task_id": config["task_id"], "task_binding": config["task_binding"],
@@ -861,63 +847,53 @@ def run(config, variant="baseline", output=None, resume=None, smoke=False, stop_
             save("last.pt")
             del extension_source["best_checkpoint"]
 
+        def after_step(updated_step, losses, norm):
+            nonlocal step, best
+            step = updated_step
+            sampler.mark_consumed()
+            validation_metrics = None
+            if step % config["log_every"] == 0 or step == 1:
+                record = {"step": step, "epoch": sampler.state_dict()["epoch"], "event": "train",
+                    **{k: float(v.detach().cpu()) for k, v in losses.items()},
+                    "gradient_norm": float(norm), "lr": optimizer.param_groups[0]["lr"],
+                    "elapsed_s": elapsed_offset + time.perf_counter() - started}
+                with (output / "metrics.jsonl").open("a", encoding="utf-8") as stream:
+                    stream.write(json.dumps(record, allow_nan=False) + "\n")
+                for key, value in record.items():
+                    if isinstance(value, (int, float)):
+                        writer.add_scalar("train/" + key, value, step)
+                print(f"step {step}/{config['steps']} loss={record['total']:.5f} action={record['action']:.5f} "
+                      f"KL={record['kl']:.5f} elapsed={record['elapsed_s']:.1f}s", flush=True)
+            if step % config["validation_every"] == 0 or step == config["steps"]:
+                metrics = validate(model, val_loader, train.normalizer, device, config["precision"],
+                                   max_batches=2 if smoke else None)
+                metrics.update(step=step, event="validation", smoke_subset=smoke,
+                               validation_scope=provenance["validation_scope"],
+                               engineering_overfit=is_overfit)
+                validation_metrics = metrics
+                with (output / "metrics.jsonl").open("a", encoding="utf-8") as stream:
+                    stream.write(json.dumps(metrics, allow_nan=False) + "\n")
+                for key, value in metrics.items():
+                    if isinstance(value, (int, float)) and value is not None:
+                        writer.add_scalar("validation/" + key, value, step)
+                print(f"validation prior L1={metrics['prior_action_l1']:.5f}, XYZ={metrics['xyz_error_mm']:.3f}mm", flush=True)
+                horizon_text = ", ".join(
+                    f"h{h}={metrics[f'h{h}_xyz_error_mm']:.2f}mm "
+                    f"(n={metrics[f'h{h}_valid_samples']})"
+                    for h in (0, 4, 9, 29) if metrics.get(f"h{h}_xyz_error_mm") is not None)
+                print(f"prior horizon XYZ: {horizon_text}", flush=True)
+                if metrics["prior_action_l1"] < best:
+                    best = metrics["prior_action_l1"]; save("best.pt")
+            if step % config["save_every"] == 0 or step == config["steps"] or candidate_due(config, step):
+                save("last.pt")
+            retain_candidate(output, save, config, step, signature, validation_metrics)
+            if stop_after is not None and step - starting_step >= stop_after:
+                save("last.pt"); return False
+
         try:
-            while step < config["steps"]:
-                b = move_batch(next(iterator), device)
-                optimizer.zero_grad(set_to_none=True)
-                with precision_context(device, config["precision"]):
-                    out = model(b["images"], b["state"], b["action"], b["is_pad"])
-                    targets, masks = targets_masks(b)
-                    losses = compute_loss(out, targets, masks, config["loss_weights"], variant)
-                loss = losses["total"]
-                if not torch.isfinite(loss):
-                    raise FloatingPointError("Nonfinite loss; stopping before optimizer update")
-                loss.backward()
-                if config["gradient_clip_norm"] is None:
-                    norm = torch.nn.utils.get_total_norm(
-                        [p.grad for p in model.parameters() if p.grad is not None], error_if_nonfinite=True)
-                else:
-                    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config["gradient_clip_norm"], error_if_nonfinite=True)
-                optimizer.step(); scheduler.step(); step += 1
-                sampler.mark_consumed()
-                validation_metrics = None
-                if step % config["log_every"] == 0 or step == 1:
-                    record = {"step": step, "epoch": sampler.state_dict()["epoch"], "event": "train",
-                        **{k: float(v.detach().cpu()) for k, v in losses.items()},
-                        "gradient_norm": float(norm), "lr": optimizer.param_groups[0]["lr"],
-                        "elapsed_s": elapsed_offset + time.perf_counter() - started}
-                    with (output / "metrics.jsonl").open("a", encoding="utf-8") as stream:
-                        stream.write(json.dumps(record, allow_nan=False) + "\n")
-                    for key, value in record.items():
-                        if isinstance(value, (int, float)):
-                            writer.add_scalar("train/" + key, value, step)
-                    print(f"step {step}/{config['steps']} loss={record['total']:.5f} action={record['action']:.5f} "
-                          f"KL={record['kl']:.5f} elapsed={record['elapsed_s']:.1f}s", flush=True)
-                if step % config["validation_every"] == 0 or step == config["steps"]:
-                    metrics = validate(model, val_loader, train.normalizer, device, config["precision"],
-                                       max_batches=2 if smoke else None)
-                    metrics.update(step=step, event="validation", smoke_subset=smoke,
-                                   validation_scope=provenance["validation_scope"],
-                                   engineering_overfit=is_overfit)
-                    validation_metrics = metrics
-                    with (output / "metrics.jsonl").open("a", encoding="utf-8") as stream:
-                        stream.write(json.dumps(metrics, allow_nan=False) + "\n")
-                    for key, value in metrics.items():
-                        if isinstance(value, (int, float)) and value is not None:
-                            writer.add_scalar("validation/" + key, value, step)
-                    print(f"validation prior L1={metrics['prior_action_l1']:.5f}, XYZ={metrics['xyz_error_mm']:.3f}mm", flush=True)
-                    horizon_text = ", ".join(
-                        f"h{h}={metrics[f'h{h}_xyz_error_mm']:.2f}mm "
-                        f"(n={metrics[f'h{h}_valid_samples']})"
-                        for h in (0, 4, 9, 29) if metrics.get(f"h{h}_xyz_error_mm") is not None)
-                    print(f"prior horizon XYZ: {horizon_text}", flush=True)
-                    if metrics["prior_action_l1"] < best:
-                        best = metrics["prior_action_l1"]; save("best.pt")
-                if step % config["save_every"] == 0 or step == config["steps"] or candidate_due(config, step):
-                    save("last.pt")
-                retain_candidate(output, save, config, step, signature, validation_metrics)
-                if stop_after is not None and step - starting_step >= stop_after:
-                    save("last.pt"); break
+            step = run_loop(model, train_loader, optimizer, scheduler, device=device,
+                config=config, variant=variant, start_step=step, iterator=iterator,
+                after_step=after_step)
         except KeyboardInterrupt:
             # A mid-step interrupt may have consumed a batch; only completed
             # scheduled checkpoints are exact-resume points. Do not overwrite
@@ -944,7 +920,14 @@ def run(config, variant="baseline", output=None, resume=None, smoke=False, stop_
 
 def make_parser():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--task", required=True)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--task")
+    source.add_argument("--official-reference", type=Path,
+                        help="Isolated official HDF5 comparison using the same local training engine")
+    parser.add_argument("--reference-upstream", type=Path,
+                        help="Existing pinned ACT checkout; reference mode only, never downloaded")
+    parser.add_argument("--reference-epochs", type=int, default=2000,
+                        help="Official reference budget; default 2000 epochs = 10000 updates")
     parser.add_argument("--pack", type=Path)
     parser.add_argument("--config", type=Path,
                         help="Default: config/training_baseline.json; resume defaults to its frozen run config")
@@ -968,6 +951,21 @@ def make_parser():
 def main(argv=None):
     parser = make_parser()
     args = parser.parse_args(argv)
+    if args.official_reference is not None:
+        if (any(value is not None for value in (args.pack, args.config, args.resume,
+                args.continue_from, args.steps, args.overfit_episodes, args.stop_after,
+                args.candidate_save_every)) or args.variant != "baseline"
+                or args.seed not in (None, 0)):
+            parser.error("Official reference fixes A's protocol; task/Pack/resume/Gesture overrides are not supported")
+        if args.output is None:
+            parser.error("Official reference requires an explicit new --output below .local/checks")
+        from training.papera.reference import run_reference
+        output = run_reference(data=args.official_reference, upstream=args.reference_upstream,
+                               output=args.output, epochs=2 if args.smoke_test else args.reference_epochs)
+        print(f"Reference run files: {output}")
+        return
+    if args.reference_upstream is not None or args.reference_epochs != 2000:
+        parser.error("--reference-upstream/--reference-epochs require --official-reference")
     if args.resume is not None and args.continue_from is not None:
         parser.error("--resume 与 --continue-from 不能同时使用")
     extension_source = None

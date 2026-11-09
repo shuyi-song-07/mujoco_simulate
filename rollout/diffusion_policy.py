@@ -14,6 +14,7 @@ import torch
 from training.diffusion.data import Normalizer, VERSION as DATA_VERSION
 from training.diffusion.model import DiffusionConfig, DiffusionPolicy
 from training.diffusion.train import CHECKPOINT_VERSION, model_config
+from training.diffusion.candidates import run_signature, candidate_record
 from training.papera.data import file_sha256
 from training.papera.pack_data import resize_rgb
 from training.papera.train import precision_context
@@ -49,8 +50,6 @@ def verify_run(run_dir, checkpoint='best', *, verify_cache=False, allow_engineer
     from dataset.task3 import training_pack
     from tasks.artifacts import check_artifact
     from rollout.protocol import load_scene_provenance
-    if checkpoint not in ('best', 'last'):
-        raise ValueError('Select best or last')
     root = Path(run_dir).resolve()
     run, completion = _read(root/'run.json'), _read(root/'completion.json')
     config, binding = _read(root/'config.json'), _read(root/'data_binding.json')
@@ -66,6 +65,8 @@ def verify_run(run_dir, checkpoint='best', *, verify_cache=False, allow_engineer
     if (completion.get('status') != 'complete' or completion.get('step') != config['steps']
             or completion.get('budget_steps') != config['steps'] or config['steps'] <= 0):
         raise ValueError('DP evaluation requires a completed training budget')
+    signature = run_signature(root, run['task_id'], run['pack_path'], config, run['source_sha256'])
+    candidate = candidate_record(root, checkpoint, signature, config)
     pack = Path(run['pack_path']).resolve()
     manifest = check_artifact(pack, run['task_id'], engineering=engineering)
     if (binding.get('version') != DATA_VERSION or binding.get('task_id') != run['task_id']
@@ -115,9 +116,19 @@ def verify_run(run_dir, checkpoint='best', *, verify_cache=False, allow_engineer
     if not validations or any(not np.isfinite(row['noise_mse']) or row.get('ema') is not True for row in validations):
         raise ValueError('DP best selection needs finite EMA validation evidence')
     best = min(validations, key=lambda row: row['noise_mse'])
-    if (saved.get('step') != (best['step'] if checkpoint == 'best' else completion['step'])
+    expected_step = candidate['saved_step'] if candidate is not None else (
+        best['step'] if checkpoint == 'best' else completion['step'])
+    if (saved.get('step') != expected_step
             or not np.isclose(completion['best_noise_mse'], best['noise_mse'], rtol=0, atol=1e-12)):
         raise ValueError('DP selected checkpoint does not match validation noise MSE selection')
+    if candidate is not None:
+        if (saved.get('candidate_signature') != signature
+                or saved.get('source_sha256') != run['source_sha256']
+                or saved.get('ema_updates') != expected_step
+                or saved.get('ema_state', {}).get('optimization_step') != expected_step):
+            raise ValueError('DP candidate checkpoint run/source/EMA step differs from its index')
+        if candidate['validation'] is not None and candidate['validation'] not in validations:
+            raise ValueError('DP candidate validation differs from the recorded metrics')
     if not saved.get('ema') or any(not torch.isfinite(v).all().item()
             for v in saved['ema'].values() if torch.is_tensor(v) and v.is_floating_point()):
         raise ValueError('DP EMA weights are missing/nonfinite')
@@ -128,7 +139,8 @@ def verify_run(run_dir, checkpoint='best', *, verify_cache=False, allow_engineer
         'run_dir': str(root), 'variant': 'diffusion_gesture' if mc.variant == 'gesture' else 'diffusion',
         'training_variant': mc.variant, 'checkpoint': str(path),
         'checkpoint_sha256': file_sha256(path), 'checkpoint_step': saved['step'],
-        'selected_by': 'validation/EMA_noise_mse' if checkpoint == 'best' else 'training/completed_step', 'weights': 'ema',
+        'selected_by': ('training/retained_candidate' if candidate is not None else
+                       'validation/EMA_noise_mse' if checkpoint == 'best' else 'training/completed_step'), 'weights': 'ema',
         'pack': str(pack), 'checked_hashes': {str(pack/'manifest.json'): manifest_sha},
         'verified_cache_files': sum(len(ep['files']) for ep in manifest['episodes']) if checked else 0,
         'full_cache_verified': False, 'verification': 'format_and_interfaces',

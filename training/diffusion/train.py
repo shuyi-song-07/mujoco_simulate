@@ -31,6 +31,8 @@ from training.papera.train import (StatefulBatchSampler, atomic_checkpoint,
 from training.diffusion.model import DiffusionConfig, DiffusionPolicy, IMPLEMENTATION
 from training.diffusion.data import DiffusionDataset, prepare_data, restore_data
 from training.diffusion.official.ema_model import EMAModel
+from training.diffusion.candidates import (run_signature, candidate_due,
+    retain_candidate, reconcile_resume_candidates)
 
 ROOT = Path(__file__).resolve().parents[2]
 CHECKPOINT_VERSION = 'papera-diffusion-official-checkpoint-v2'
@@ -241,7 +243,7 @@ def gesture_arguments(model, batch):
 
 
 def snapshot_sources(output):
-    paths = [ROOT/'training/diffusion'/name for name in ('model.py', 'data.py', 'train.py', 'schedule.py')]
+    paths = [ROOT/'training/diffusion'/name for name in ('model.py', 'data.py', 'train.py', 'schedule.py', 'candidates.py')]
     paths += [ROOT/'training/gesture_auxiliary.py']
     paths += sorted(path for path in (ROOT/'training/diffusion/official').rglob('*')
                     if path.is_file() and '__pycache__' not in path.parts
@@ -268,6 +270,7 @@ def append_metrics(output, writer, event, step, values):
     for key, value in values.items():
         if isinstance(value, (float, int)):
             writer.add_scalar(f'{event}/{key}', value, step)
+    return record
 
 
 def run(config, pack, task_id, *, output=None, resume=None, engineering=False,
@@ -362,6 +365,11 @@ def run(config, pack, task_id, *, output=None, resume=None, engineering=False,
                     'gpu': torch.cuda.get_device_name() if device.type == 'cuda' else None},
                 'best_selection': 'EMA validation noise MSE with fixed random draws',
                 'closed_loop_verified': False})
+        candidate_signature = run_signature(output, task_id, pack, config, sources)
+        if resume:
+            if checkpoint.get('candidate_signature', candidate_signature) != candidate_signature:
+                raise ValueError('DP checkpoint candidate identity differs from its frozen run')
+            reconcile_resume_candidates(output, candidate_signature, step)
         from torch.utils.tensorboard import SummaryWriter
         writer = SummaryWriter(str(output / 'tensorboard'), purge_step=step if resume else None)
         print(f'Diffusion Policy | train={len(train)}, val={len(heldout)} windows | output={output}', flush=True)
@@ -397,6 +405,7 @@ def run(config, pack, task_id, *, output=None, resume=None, engineering=False,
                 'data_binding': dict(binding), 'model_config': asdict(mc),
                 'engineering': engineering, 'step': step, 'best_noise_mse': best,
                 'source_sha256': sources,
+                'candidate_signature': candidate_signature,
                 'model': model.state_dict(), 'ema': ema.model.state_dict(), 'ema_updates': ema.updates,
                 'ema_state': ema.state_dict(),
                 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(),
@@ -439,17 +448,17 @@ def run(config, pack, task_id, *, output=None, resume=None, engineering=False,
                     print(f"step {step}/{config['steps']} noise_mse={values['noise_mse']:.6f}", flush=True)
                 final_update = (step == config['steps'] or stop_requested
                                 or (stop_after is not None and step - start_step >= stop_after))
+                validation_record = None
                 if step % config['validation_every'] == 0 or final_update:
                     metrics = validate(ema.model, val_loader, train.normalizer, device, config)
-                    append_metrics(output, writer, 'validation', step, metrics)
+                    validation_record = append_metrics(output, writer, 'validation', step, metrics)
                     if metrics['noise_mse'] < best:
                         best = metrics['noise_mse']
                         save('best.pt')
                     print(f"validation step={step} EMA noise_mse={metrics['noise_mse']:.6f} best={best:.6f}", flush=True)
-                if step % config['save_every'] == 0 or final_update:
+                if step % config['save_every'] == 0 or final_update or candidate_due(config, step):
                     save('last.pt')
-                if config.get('candidate_save_every') and step % config['candidate_save_every'] == 0:
-                    save(f'step_{step:07d}.pt')
+                retain_candidate(output, save, config, step, candidate_signature, validation_record)
                 if final_update:
                     break
             status = ('complete' if step >= config['steps'] else 'interrupted' if stop_requested

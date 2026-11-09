@@ -336,7 +336,7 @@ def validate_policy_settings(metadata, settings):
         if (settings.get('policy_algorithm') != 'diffusion_policy'
                 or settings.get('execution') != 'chunked'
                 or settings.get('n_action_steps') != metadata['action_horizon']
-                or settings.get('checkpoint_selection') not in ('best_validation_ema_noise_mse', 'fixed_last_training_step')):
+                or settings.get('checkpoint_selection') not in ('best_validation_ema_noise_mse', 'fixed_last_training_step', 'fixed_retained_training_step')):
             raise ValueError('DP needs its explicit evaluation config: chunked execution, audited action_horizon and EMA checkpoint selection')
         validate_batch_checkpoint_selection(settings)
     elif settings.get('policy_algorithm') == 'diffusion_policy':
@@ -349,7 +349,7 @@ def checkpoint_argument(value):
     """Only explicit supported names, never a path or an arbitrary .pt file."""
     if value in ('best', 'last') or (re.fullmatch(r'step_[0-9]{6}', value) and int(value[5:]) > 0):
         return value
-    raise argparse.ArgumentTypeError('checkpoint must be best, last, or retained ACT step_NNNNNN')
+    raise argparse.ArgumentTypeError('checkpoint must be best, last, or retained step_NNNNNN')
 
 
 def validate_batch_checkpoint_selection(settings, checkpoint=None, policy=None):
@@ -370,8 +370,6 @@ def validate_batch_checkpoint_selection(settings, checkpoint=None, policy=None):
         if 'expected_checkpoint_step' in settings:
             raise ValueError('expected_checkpoint_step is only valid for a fixed training-step selection')
     elif rule in ('fixed_last_training_step', 'fixed_retained_training_step'):
-        if rule == 'fixed_retained_training_step' and diffusion:
-            raise ValueError('Retained candidate selection currently supports ACT only')
         reason = settings.get('checkpoint_selection_reason')
         expected_step = settings.get('expected_checkpoint_step')
         if not isinstance(reason, str) or not reason.strip():
@@ -1104,7 +1102,7 @@ def main(argv=None):
                 raise ValueError('50次评估清单尚未建立。先在同一入口运行 --mode prepare；'
                                  '再运行 --mode batch --run "本次训练目录"。') from None
             raise
-        print('Checking checkpoint, frozen training inputs and cache hashes ...',flush=True)
+        print('Checking checkpoint, frozen training inputs and Pack structure ...',flush=True)
         from rollout.policy import read_run_identity
         frozen=read_run_identity(run_path)
         if frozen.get('task_id')!=task.id or frozen.get('task_binding')!=task.binding():
