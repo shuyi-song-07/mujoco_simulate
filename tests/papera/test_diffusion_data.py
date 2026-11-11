@@ -23,7 +23,7 @@ class DiffusionDataTests(unittest.TestCase):
         cls.pack = make_pack(Path(cls.temporary.name))
         cls.config = {"observation_horizon": 2, "prediction_horizon": 30,
                       "action_horizon": 8, "image_size": [64, 48]}
-        cls.binding = prepare_data(cls.pack, "tray_transfer", cls.config, engineering=True)
+        cls.binding = prepare_data(cls.pack, "tray_to_platform", cls.config, engineering=True)
 
     @classmethod
     def tearDownClass(cls):
@@ -56,7 +56,7 @@ class DiffusionDataTests(unittest.TestCase):
         self.assertEqual(sample["target_control_tick"][0], sample["source_control_tick"]+1)
 
     def test_defaults_use_one_observation_and_full_640_480_frame(self):
-        binding = prepare_data(self.pack, "tray_transfer", {}, engineering=True)
+        binding = prepare_data(self.pack, "tray_to_platform", {}, engineering=True)
         self.assertEqual(binding["config"]["observation_horizon"], 1)
         self.assertEqual(binding["config"]["image_size"], [640, 480])
         self.assertEqual(binding["config"]["prediction_horizon"], 30)
@@ -141,19 +141,19 @@ class DiffusionDataTests(unittest.TestCase):
 
     def test_explicit_task_engineering_and_split_are_required(self):
         with self.assertRaisesRegex(ValueError, "Cross-task"):
-            prepare_data(self.pack, "tray_to_platform", self.config, engineering=True)
+            prepare_data(self.pack, "h_frame_push_align", self.config, engineering=True)
         with self.assertRaisesRegex(ValueError, "Engineering Pack"):
-            prepare_data(self.pack, "tray_transfer", self.config)
+            prepare_data(self.pack, "tray_to_platform", self.config)
         with self.assertRaisesRegex(ValueError, "frozen train split"):
-            prepare_data(self.pack, "tray_transfer", self.config, engineering=True,
+            prepare_data(self.pack, "tray_to_platform", self.config, engineering=True,
                          selected_train_keys=self.binding["validation_keys"])
         with self.assertRaises(FileNotFoundError):
-            prepare_data(self.pack/"missing", "tray_transfer", self.config, engineering=True)
+            prepare_data(self.pack/"missing", "tray_to_platform", self.config, engineering=True)
 
     def test_lightweight_validation_skips_file_and_current_source_hashes(self):
         with patch.object(training_pack, "sha256", side_effect=AssertionError("file hash")), \
              patch("tasks.registry.get", side_effect=AssertionError("current task source gate")):
-            binding = prepare_data(self.pack, "tray_transfer", self.config, engineering=True)
+            binding = prepare_data(self.pack, "tray_to_platform", self.config, engineering=True)
             data = self.dataset(binding)
             self.assertEqual(data[0]["action"].shape, (30,14))
         self.assertIn("no_file_hashes", binding["verification"])

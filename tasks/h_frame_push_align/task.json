@@ -1,0 +1,39 @@
+{
+  "task_id": "h_frame_push_align",
+  "display_name": "双臂 H 形框架推动归位",
+  "status": "ready",
+  "version": "1.0.0",
+  "scene_id": "H_FRAME_PUSH_ALIGN",
+  "scene_config": "tasks/h_frame_push_align/scene.json",
+  "model_xml": "simulation/mujoco/assets/dual_arm/dual_arm_scene.xml",
+  "mesh_directory": "simulation/mujoco/assets/franka_emika_panda/assets",
+  "controller": "dual_panda_v1",
+  "schema": {
+    "state": "dual_panda_q7_width_m_s16",
+    "action": "dual_xyz_rpy_width_m_a14",
+    "observation": "oblique_rgb",
+    "state_dim": 16,
+    "action_dim": 14
+  },
+  "hooks": {
+    "initial_state": "tasks.h_frame_push_align.scene:initial_state",
+    "configure_xml": "tasks.h_frame_push_align.scene:configure_xml",
+    "reset": "tasks.h_frame_push_align.scene:reset",
+    "collection_success": "tasks.h_frame_push_align.success:collection_success",
+    "rollout_monitor": "tasks.h_frame_push_align.success:rollout_monitor",
+    "preflight": "tasks.h_frame_push_align.preflight:preflight",
+    "dataset_adapter": "tasks.h_frame_push_align.evidence:dataset_adapter"
+  },
+  "source_files": [
+    "tasks/h_frame_push_align/scene.py",
+    "tasks/h_frame_push_align/success.py",
+    "tasks/h_frame_push_align/preflight.py",
+    "tasks/h_frame_push_align/evidence.py",
+    "tasks/h_frame_push_align/evaluation.json",
+    "tasks/adapters/tray.py",
+    "simulation/mujoco/dual_arm/task_scenes.py"
+  ],
+  "initialization": "Seeded bounded planar pose with a fixed, rotated goal on the table.",
+  "cameras": "top/front/oblique operator views; oblique only for policy observations",
+  "evaluation_config": "tasks/h_frame_push_align/evaluation.json"
+}

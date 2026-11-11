@@ -15,7 +15,7 @@ def port():
     with socket.socket() as s:
         s.bind(('127.0.0.1',0));return s.getsockname()[1]
 
-def run(task='tray_transfer', browser_check=False):
+def run(task='tray_to_platform', browser_check=False):
     from tasks.registry import get
     selected = get(task)
     web,backend=port(),port()
@@ -83,7 +83,7 @@ def run(task='tray_transfer', browser_check=False):
 if __name__=='__main__':
     import argparse
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--task',default='tray_transfer')
+    parser.add_argument('--task',default='tray_to_platform')
     parser.add_argument('--browser-check',action='store_true',help='Also inspect the real headless browser DOM; no camera')
     args=parser.parse_args()
     run(args.task,args.browser_check)

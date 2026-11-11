@@ -130,7 +130,7 @@ Evaluation manifest 保存task、checkpoint SHA、Pack/source SHA、初态、代
 
 ## 高侧壁高台任务的接口与证据
 
-`tray_to_platform`（`HIGHWALL_PLATFORM`，任务版本 1.0.0）与旧 5 cm 平台任务 `tray_raised_placement` 使用不同 task_id/Binding。它沿用同一单 oblique、S16/A14、60 Hz 控制、30 Hz 图像及 Safe Stitch 时间轴，不引入新的训练输入、Action 编码或 ACT 分支。
+`tray_to_platform`（`HIGHWALL_PLATFORM`）沿用同一单 oblique、S16/A14、60 Hz 控制、30 Hz 图像及 Safe Stitch 时间轴，不引入新的训练输入、Action 编码或 ACT 分支。
 
 来源由 Task Binding 和录制时冻结的完整 config 保存：`scene.paper_object`、`scene.platform_task.geometry_version`、`scene.placement_platform`、随机初态/seed、相机、控制协议，以及 `scene.py`/`success.py`/评估配置的 SHA。平台顶面 Z=0.45 与目标 body Z=0.484 必须分别解释；底面偏移为 -0.034，物体位置字段不能被当作台顶或质心坐标。质量和惯量来自任务实际碰撞盒，具体尺寸与计算入口见 [ADD_TASK.md](ADD_TASK.md#6-已实现示例高侧壁托盘放置至-10-cm-高台)。正式原件位于 `datasets/tray_to_platform/`；处理、训练、评估的输出继续按该 task_id 隔离。
 

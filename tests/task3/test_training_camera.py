@@ -15,7 +15,7 @@ class RecordingCameraContractTests(unittest.TestCase):
     def test_paper_recording_declares_only_training_rgb(self):
         from collection.config import recording_config
         from tasks.registry import get
-        task = get('tray_transfer')
+        task = get('tray_to_platform')
         config = recording_config(task)
         self.assertEqual(config['task_binding'], task.binding())
         self.assertEqual(task.config()['recording']['cameras'], list(OPERATOR_CAMERAS))

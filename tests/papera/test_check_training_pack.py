@@ -36,7 +36,7 @@ class TrainingPackCheckTests(unittest.TestCase):
     def test_read_only_checks_both_histories_and_keeps_pack_files_unchanged(self):
         before = {str(path.relative_to(self.pack)): (path.stat().st_size, path.stat().st_mtime_ns)
                   for path in self.pack.rglob('*') if path.is_file()}
-        report = check_pack(self.pack, 'tray_transfer', act_config=self.act, dp_config=self.dp)
+        report = check_pack(self.pack, 'tray_to_platform', act_config=self.act, dp_config=self.dp)
         self.assertFalse(report['formal_training_started'])
         self.assertFalse(report['training_started'])
         self.assertEqual(report['act']['train']['action'], [30, 14])
@@ -54,7 +54,7 @@ class TrainingPackCheckTests(unittest.TestCase):
         bad = copy.deepcopy(self.dp)
         bad['model']['action_dim'] = 13
         with self.assertRaisesRegex(ValueError, 'S16/A14'):
-            check_pack(self.pack, 'tray_transfer', act_config=self.act, dp_config=bad)
+            check_pack(self.pack, 'tray_to_platform', act_config=self.act, dp_config=bad)
 
     def test_padding_cannot_carry_targets_and_provenance_cannot_cross_boundary(self):
         dataset = SafeStitchDataset(prepare_pack(self.pack, image_size=[64, 48]))
@@ -70,7 +70,7 @@ class TrainingPackCheckTests(unittest.TestCase):
             inspect_sample(dataset, index, sample=sample)
 
     def test_history_cannot_read_before_the_hard_boundary(self):
-        binding = prepare_data(self.pack, 'tray_transfer', {'observation_horizon': 2,
+        binding = prepare_data(self.pack, 'tray_to_platform', {'observation_horizon': 2,
             'prediction_horizon': 30, 'action_horizon': 8, 'image_size': [64, 48]}, engineering=True)
         dataset = DiffusionDataset(binding)
         self.addCleanup(dataset.close)
@@ -82,15 +82,15 @@ class TrainingPackCheckTests(unittest.TestCase):
     def test_engineering_budget_and_output_guard_reject_long_or_formal_runs(self):
         for count in (4, 40000, -1, True):
             with self.subTest(count=count), self.assertRaisesRegex(ValueError, '0..3'):
-                check_pack(self.pack, 'tray_transfer', updates=count)
+                check_pack(self.pack, 'tray_to_platform', updates=count)
         with self.assertRaisesRegex(ValueError, 'Read-only'):
-            check_pack(self.pack, 'tray_transfer', output=self.root / 'unused')
+            check_pack(self.pack, 'tray_to_platform', output=self.root / 'unused')
         with self.assertRaisesRegex(ValueError, '.local/checks'):
             engineering_updates('act', None, self.act, ROOT / 'outputs/invalid-check',
                                 updates=1, device='cpu')
 
     def test_real_act_and_dp_updates_restore_checkpoint_then_continue(self):
-        report = check_pack(self.pack, 'tray_transfer', act_config=self.act, dp_config=self.dp,
+        report = check_pack(self.pack, 'tray_to_platform', act_config=self.act, dp_config=self.dp,
             updates=2, output=self.root / 'updates', device='cpu')
         for algorithm in ('act', 'dp'):
             evidence = report[algorithm]['engineering']

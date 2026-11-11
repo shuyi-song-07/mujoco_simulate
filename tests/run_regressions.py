@@ -37,7 +37,8 @@ if __name__=='__main__':
     collection_only='--collection-only' in sys.argv
     names=['tests.task3.test_action_contract', 'tests.task3.test_level_gripper_control',
            'tests.task3.test_control_computation','tests.task3.test_episode_completion',
-           'tests.task3.test_preview_cameras'] if collection_only else MODULES
+           'tests.task3.test_preview_cameras', 'tests.task3.test_h_push_success',
+           'tests.h_frame_push_transport', 'tests.push_r_transport'] if collection_only else MODULES
     if '--with-upstream' in sys.argv and not collection_only:
         names = [*names, 'tests.papera.test_act_official']
     result=unittest.TextTestRunner(verbosity=1).run(unittest.defaultTestLoader.loadTestsFromNames(names))

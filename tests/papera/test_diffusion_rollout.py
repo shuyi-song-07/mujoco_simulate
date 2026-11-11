@@ -32,7 +32,7 @@ class DiffusionRolloutTests(unittest.TestCase):
         cls.config['model'].update(feature_dim=16, time_dim=16, down_dims=[16,32],
             diffusion_steps=8, inference_steps=2, backbone_weights=None, observation_horizon=2,
             crop_shape=[42,56])
-        cls.run_dir = run(cls.config, cls.pack, 'tray_transfer', output=cls.root/'trained', engineering=True)
+        cls.run_dir = run(cls.config, cls.pack, 'tray_to_platform', output=cls.root/'trained', engineering=True)
         cls.scene = {'oblique_render_sources': {'native': {'camera': {'test': 'frozen'}}}}
 
     @classmethod
@@ -46,7 +46,7 @@ class DiffusionRolloutTests(unittest.TestCase):
     def test_ema_best_dispatch_and_scope(self):
         identity = read_run_identity(self.run_dir)
         self.assertEqual(identity['variant'], 'diffusion')
-        self.assertEqual(identity['task_id'], 'tray_transfer')
+        self.assertEqual(identity['task_id'], 'tray_to_platform')
         with self.assertRaisesRegex(ValueError, 'Engineering'):
             verify_run(self.run_dir)
         with patch('rollout.protocol.load_scene_provenance', return_value=self.scene):

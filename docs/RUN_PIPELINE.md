@@ -598,18 +598,18 @@ $pack = (Get-Content "outputs/dataset/$task/TRAINING_PACK_CURRENT.json" -Raw -En
 ```powershell
 & $train tests/run_regressions.py
 & $collect tests/collection_launch_smoke.py
-& $collect tests/pipeline_smoke.py --task tray_transfer --sessions 2
-& $train dataset/manage_dataset.py --task tray_transfer --engineering process
-$engineeringRoot = '.local/checks/pipeline/outputs/dataset/tray_transfer'
+& $collect tests/pipeline_smoke.py --task tray_to_platform --sessions 2
+& $train dataset/manage_dataset.py --task tray_to_platform --engineering process
+$engineeringRoot = '.local/checks/pipeline/outputs/dataset/tray_to_platform'
 $curation = (Get-Content -LiteralPath "$engineeringRoot/CURATION_CURRENT.json" -Raw -Encoding UTF8 | ConvertFrom-Json).selected_version
-& $train dataset/manage_dataset.py --task tray_transfer --engineering prepare --run $curation --review-mode auto
+& $train dataset/manage_dataset.py --task tray_to_platform --engineering prepare --run $curation --review-mode auto
 $prepared = (Get-Content -LiteralPath "$engineeringRoot/PREPARED_CURRENT.json" -Raw -Encoding UTF8 | ConvertFrom-Json).path
-& $train dataset/manage_dataset.py --task tray_transfer --engineering pack --prepared $prepared
+& $train dataset/manage_dataset.py --task tray_to_platform --engineering pack --prepared $prepared
 $testPack = (Get-Content -LiteralPath "$engineeringRoot/TRAINING_PACK_CURRENT.json" -Raw -Encoding UTF8 | ConvertFrom-Json).path
-& $train dataset/manage_dataset.py --task tray_transfer --engineering verify-pack --pack $testPack
+& $train dataset/manage_dataset.py --task tray_to_platform --engineering verify-pack --pack $testPack
 $testRun = '.local/checks/training/my_smoke_baseline'
-& $train -m training.papera --task tray_transfer --variant baseline --pack $testPack --smoke-test --output $testRun
-& $train -m rollout --task tray_transfer --engineering --mode preview --run $testRun --max-seconds 2 --seed 910001 --headless
+& $train -m training.papera --task tray_to_platform --variant baseline --pack $testPack --smoke-test --output $testRun
+& $train -m rollout --task tray_to_platform --engineering --mode preview --run $testRun --max-seconds 2 --seed 910001 --headless
 ```
 
 `--smoke-test` 固定3步、较小工程验证范围；`--engineering` 只允许显式工程数据/短预览，不允许正式50次评估。工程采集结果明确保存为 scripted_test / failure，证明记录通路，不伪称成功示范。重复生成前保留或归档旧工程目录；不同 task_binding 不会混合。无需为了迁移重新处理旧视频。
@@ -618,16 +618,16 @@ $testRun = '.local/checks/training/my_smoke_baseline'
 
 ```powershell
 $testDpRun = '.local/checks/training/my_smoke_diffusion'
-& $train -m training.diffusion --task tray_transfer --pack $testPack --engineering --check-only
-& $train -m training.diffusion --task tray_transfer --pack $testPack --engineering --stop-after 2 --output $testDpRun
-& $train -m training.diffusion --task tray_transfer --resume "$testDpRun/checkpoints/last.pt" --stop-after 2
+& $train -m training.diffusion --task tray_to_platform --pack $testPack --engineering --check-only
+& $train -m training.diffusion --task tray_to_platform --pack $testPack --engineering --stop-after 2 --output $testDpRun
+& $train -m training.diffusion --task tray_to_platform --resume "$testDpRun/checkpoints/last.pt" --stop-after 2
 ```
 
 工程属性随 checkpoint 恢复，不会变成正式训练；`completion.json` 的停止状态与完成总预算分别记录。上述工程命令不验证 DP 自主成功率。
 
 ### 7.1 高侧壁托盘到高台：tray_to_platform
 
-这是独立的新任务，场景ID为 `HIGHWALL_PLATFORM`。原 `tray_raised_placement` 仍是薄托盘和5 cm高台，`lift/push`仍为development占位；不要把三者当作同一个场景。
+托盘任务 `tray_to_platform` 使用场景 ID `HIGHWALL_PLATFORM`。
 
 ```powershell
 $task = 'tray_to_platform'
@@ -692,6 +692,27 @@ $refB = '.local/checks/act_reference_B_20261106'
 
 2026-11-06已完成：A为48/50（96%），B为50/50（100%）；两者均完整2000轮/10000次更新，均选epoch1780，后验验证总损失分别0.043276/0.041681。共同成功48例，仅B成功2例。两组曲线接近，本次未见通用本地训练实现明显退化；单训练seed和50例不能证明性能提升或所有代码无误，更不是Panda托盘成功率。B的50段原视频全部解码400帧；全回归614项（6跳过）和39项采集通过，工程Collection→Dataset→Pack→3步训练→2秒CUDA预览也通过。结果与训练曲线入口：[A/B汇总](../.local/checks/act_reference_B_20261106/RESULTS.html)。B参考模式尚未提供CLI续训，不可拿其专用checkpoint直接走Panda恢复入口；正式Panda既有恢复能力已回归验证。本轮没有重训正式托盘模型或提交Git。
 
+### 7.3 双臂 Push-R
+
+在项目根目录使用采集环境运行，或双击 `START-PAPERA.cmd` 后输入 `push_r`。
+
+```powershell
+$task = 'push_r'
+& $collect -m collection list
+& $collect -m collection start --task $task --seed 10 --operator-id operator01
+```
+
+先双掌绑定，张掌打开夹爪并下降，随后用 ILoveYou 在 XY 平面推动深灰色 R 到绿色轮廓。双臂可分别接近后侧直边、上横梁和斜腿外侧，通过不同接触位置纠正方向。当前任务要求位置和朝向同时对齐并稳定0.5秒，达到 DONE 后按既有流程保存。正式原件写入 `datasets/push_r/`，Dataset、Training 和 Rollout 的通用命令均使用同一个 `$task`。
+
+工程物理演示可用以下命令复核。输出目录必须是尚未存在的新目录。
+
+```powershell
+& $collect -m unittest tests.push_r_transport -v
+& $collect -m tests.push_r_transport --media .local/checks/push_r/my_preview
+```
+
+本轮预览在 `.local/checks/push_r/preview/`，包含 top/oblique 初态、推动与归位图及 `contact_push.mp4`。物理脚本使用真实指尖接触完成平移和转向，未建立双抓。脚本验证及工程记录都标记为 `scripted_test`，真人试操和正式示范仍需另行完成。
+
 ## 输入输出速查表
 
 | 程序/阶段 | 输入 | 输出 | 环境 |
@@ -720,7 +741,7 @@ $refB = '.local/checks/act_reference_B_20261106'
 
 | 实际程序 | 如何使用 | 会启动什么 / 不会启动什么 | 输出与退出 |
 |---|---|---|---|
-| `START-PAPERA.cmd` | 在工程根目录双击，输入完整 task_id，例如 `tray_raised_placement` 后回车 | 调用 `scripts/launch.ps1`，进入采集任务菜单；启动 MuJoCo 后端、Node 网页服务、浏览器；不会自动启动摄像头、录制、训练 | 网页默认8014，后端5014；日志 `logs/<task_id>/<时间戳>/`；保留终端窗口 |
+| `START-PAPERA.cmd` | 在工程根目录双击，输入完整 task_id，例如 `h_frame_push_align` 后回车 | 调用 `scripts/launch.ps1`，进入采集任务菜单；启动 MuJoCo 后端、Node 网页服务、浏览器；不会自动启动摄像头、录制、训练 | 网页默认8014，后端5014；日志 `logs/<task_id>/<时间戳>/`；保留终端窗口 |
 | `collection/START-COLLECTION.cmd` | 双击 | 转交根目录的 `START-PAPERA.cmd`；功能完全相同，不是另一套采集器 | 两个CMD任选一个，不要重复双击占用同一端口 |
 | `scripts/launch.ps1` | CMD内部调用；日常无需单独双击 | 读取 `config/environments.json`，设置解释器/PATH/UTF-8、移除旧PYTHONPATH，再运行采集菜单 | 不安装环境，不自动关闭其他服务 |
 | `python -m collection list` | 使用 `$collect` 运行 | 只列出注册任务及ready/development状态 | 不打开网页或仿真 |
@@ -753,7 +774,7 @@ $refB = '.local/checks/act_reference_B_20261106'
 2. 打开**本次终端打印的Page地址**；默认 `http://127.0.0.1:8014/dual_arm.html`。更新网页代码后按 **Ctrl+F5**。不要沿用旧工程8013页面。
 3. 网页应先显示“仿真已连接”，此时摄像头尚未开启；再点击“启动摄像头”、授权、双掌绑定。MuJoCo窗口打开本身不保证网页状态渲染正常。
 4. 退出前先保存或放弃正在录制的一轮，等待视频保存完成，再点击网页“结束采集并退出仿真”；也可在未录制/保存时于启动终端按Ctrl+C。不要在保存中强关进程。
-5. 如果后端已经关闭，只刷新网页无法恢复仿真。关闭原采集终端，重新双击启动器。端口仍占用时先核对所属服务，不要无差别结束所有Python/Node进程。
+5. 如果后端已经关闭，只刷新网页无法恢复仿真。关闭原采集终端，重新双击启动器。端口仍占用时，先用 `Get-NetTCPConnection -State Listen -LocalPort 8014,5014` 查监听进程，并用 `Get-Process -Id <OwningProcess>` 核对。若为旧采集服务，先保存或放弃录制，在原启动终端按 Ctrl+C。也可用 `& $collect -m collection start --task h_frame_push_align --web-port 8015 --backend-port 5015` 启动在另一组空闲端口，访问新终端打印的 Page 地址。
 
 下面是只读诊断，不会启动摄像头、控制机器人或录制：
 

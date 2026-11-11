@@ -11,9 +11,11 @@ Set-Location 'D:\轻量化数据采集\paperA'
 $envs = Get-Content config/environments.json -Raw | ConvertFrom-Json
 $collect = $envs.collection_python
 New-Item -ItemType Directory tasks/new_task
-Copy-Item tasks/tray_transfer/task.json tasks/new_task/task.json
-Copy-Item tasks/tray_transfer/scene.json tasks/new_task/scene.json
-Copy-Item tasks/tray_transfer/scene.py tasks/new_task/scene.py
+Copy-Item tasks/tray_to_platform/task.json tasks/new_task/task.json
+Copy-Item tasks/tray_to_platform/scene.json tasks/new_task/scene.json
+Copy-Item tasks/tray_to_platform/scene.py tasks/new_task/scene.py
+Copy-Item tasks/tray_to_platform/success.py tasks/new_task/success.py
+Copy-Item tasks/tray_to_platform/evaluation.json tasks/new_task/evaluation.json
 ```
 
 编辑 `tasks/new_task/task.json`：
@@ -44,7 +46,7 @@ Registry 实现是 `tasks/registry.py`，扫描 `tasks/*/task.json`。不会根�
 
 ## 3. 必须实现的任务 hooks
 
-参考 `tasks/adapters/tray.py` 和 `tasks/tray_transfer/scene.py`：
+参考 `tasks/adapters/tray.py` 和 `tasks/tray_to_platform/scene.py`：
 
 | hook | 实际签名/职责 |
 |---|---|
@@ -56,7 +58,7 @@ Registry 实现是 `tasks/registry.py`，扫描 `tasks/*/task.json`。不会根�
 | `preflight(config, seeds, demonstration_seeds=(), engineering_seeds=())` | 任务专属初态、可达性与相机检查，返回 cases/summary；保留全部种子及异常标记 |
 | `dataset_adapter()` | 返回含 `validate(metadata)` 与 `build_evidence(episode, curation_config)` 的对象；把任务事件转换成统一事实证据，交给未改动的裁剪和 Safe Stitch 核心 |
 
-几何和成功语义相同的托盘可以直接复用这七个函数；目标支撑物或完成条件改变时，应覆盖对应任务 hook。**纯推移**的完成条件、接触含义不等于“曾双抓后释放”，必须编写对应 success/monitor/evidence adapter；因此占位 `push` 目前不能采集。不要在 `curation_rules.py` 添加 task_id 分支。
+几何和成功语义相同的托盘可以直接复用这七个函数；目标支撑物或完成条件改变时，应覆盖对应任务 hook。**纯推移**的完成条件、接触含义不等于“曾双抓后释放”，必须编写对应 success/monitor/evidence adapter，可参考 `tasks/h_frame_push_align/`。不要在 `curation_rules.py` 添加 task_id 分支。
 
 需要新增任务特有失败/终止语义时，由任务 monitor/success hook 明确判定并记录；不要绕过共享碰撞、IK、限位保护。若新任务必须改变控制自由度或物理执行方式，已经超出现有 controller/schema，需要显式注册新控制器和适配器，不属于“仅换场景”。
 
@@ -88,7 +90,7 @@ Registry 实现是 `tasks/registry.py`，扫描 `tasks/*/task.json`。不会根�
 
 ## 6. 已实现示例：高侧壁托盘放置至 10 cm 高台
 
-`tray_to_platform` 是独立任务；旧 `tray_raised_placement` 仍为原托盘放到 5 cm 高、25×33 cm 的平台，不被新定义覆盖。新任务的 `task.json` 注册 `HIGHWALL_PLATFORM`；几何、初态和成功参数放在 `tasks/tray_to_platform/scene.json`，建模/可达性入口是同目录 `scene.py`，成功判据是 `success.py`。`evaluation.json` 给出该任务评估协议。
+`tray_to_platform` 的 `task.json` 注册 `HIGHWALL_PLATFORM`；几何、初态和成功参数放在 `tasks/tray_to_platform/scene.json`，建模/可达性入口是同目录 `scene.py`，成功判据是 `success.py`。`evaluation.json` 给出该任务评估协议。
 
 所有长度是米、角度是弧度、质量是 kg、惯量是 kg·m²。以下为当前默认值；修改尺寸后需同步检查抓取点、目标高度和可达性：
 
@@ -121,3 +123,15 @@ Registry 实现是 `tasks/registry.py`，扫描 `tasks/*/task.json`。不会根�
 ```
 
 正式示范写入 `datasets/tray_to_platform/<session>`。当前已通过几何/质量、20 个 seed 的初始化/正式预检（IK、工作区、四视角范围均无标记）；seed 0、1、2、3、17 已以真实接触完成抓取、抬升、搬运、落台、释放到 DONE，未发生碰撞。最终参数的演示在 `.local/checks/tray_to_platform/final_acceptance/`。**这不等于真人遥操作已验收，也不等于所有随机初态都已动态通过**。先亲自试操，再开始正式采集。
+
+## 7. Push-R 场景
+
+`tasks/push_r/` 注册 `push_r`。桌面、Panda 基座、初始关节姿态和相机沿用 H 形任务。R 由四个 box 和一个凸四棱柱斜腿组成同一自由刚体，上部孔洞和下部凹口具有对应碰撞边界。目标使用相同 R 轮廓，仅用于显示。
+
+`scene.json` 的 `object_half_size=[0.12,0.15,0.013]` 给出 24×30×2.6 cm 的完整尺寸，`r_shape.stroke_width_m=0.05` 设置笔画宽度，`r_shape.middle_bar_y_m` 设置中横梁位置，`object_mass_kg=0.55` 设置质量。MuJoCo 根据各部分体积计算质量分布和惯量。两侧后方推动点在物体坐标系的 `[-0.12,±0.09,0]`。参数变化后需要重新核对碰撞、接触点和预检。
+
+初态中心 `[-0.075,0,0.3632]`，XY 半随机范围 `[0.018,0.025]`，Yaw ±12°。固定目标 `[0.065,0,0.363]`，Yaw +15°。参考原点位于外包矩形中心，非对称 R 的质心由实际几何决定。成功要求 XY 误差≤2 cm、Yaw≤5°、桌面真实支撑且稳定至少0.5秒，工件完整留在桌内。成功判据对单臂和双臂使用相同物体条件。
+
+任务复用 H 形任务的平面成功检查、预检和事实证据，通过自己的包装保留 `push_r` 身份。共享遥操作、Dataset 裁剪和模型接口继续使用现有入口。独立 Z 下限 `workspace_z_min_m=0.372` 保留桌面间隙，`workspace_limits_enabled=0` 关闭额外包围盒限制。
+
+尺寸参考了官方 Push-T 的二维比例，其 `scale=30,length=4` 对应120×120坐标尺寸、30笔画宽度。这里的米制尺寸依据双臂工作台选定。[官方 Push-T 几何](https://github.com/real-stanford/diffusion_policy/blob/main/diffusion_policy/env/pusht/pusht_env.py)

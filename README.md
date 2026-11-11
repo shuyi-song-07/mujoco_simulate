@@ -23,11 +23,9 @@ flowchart LR
 
 | task_id | 场景 | 状态 |
 |---|---|---|
-| `tray_transfer` | S1：双臂托盘搬运 | ready；完成本次工程全链路检查 |
-| `tray_push_then_transfer` | S2：受阻托盘先推移再抓取搬运 | ready；场景加载/初始化回归通过；不是独立纯推移任务 |
-| `tray_raised_placement` | S3：放到 25×33 cm、5 cm 高的平台 | ready；加载与既有物理回归通过；尚未在新工程进行真人验收 |
 | `tray_to_platform` | 高侧壁空托盘，搬运到28×36 cm的实体高台，当前高度3 cm | ready；已有真人示范及模型闭环评估，结果与范围见第6.4节 |
-| `lift`、`push` | 未来独立任务占位 | development；明确拒绝启动，尚未实现 |
+| `h_frame_push_align` | 双臂 H 形框架推动与精确归位 | ready；工程试推已验证 |
+| `push_r` | 双臂推动带孔洞和斜腿的 R 形刚体归位 | ready；真实接触平移、转向及稳定归位已验证，待真人试操 |
 
 ready 表示现有实现可加载，不表示新任务的真人采集质量或模型成功率已经验证。新增任务自动发现，不需要修改固定任务枚举。
 
@@ -64,7 +62,7 @@ $envs = Get-Content config/environments.json -Raw | ConvertFrom-Json
 $collect = $envs.collection_python
 $train = $envs.training_python
 & $collect -m collection list
-& $collect -m collection start --task tray_transfer --operator-id operator01
+& $collect -m collection start --task tray_to_platform --operator-id operator01
 ```
 
 也可双击 `START-PAPERA.cmd` 或 `collection/START-COLLECTION.cmd`，输入列表中的 task_id。默认网页 `http://127.0.0.1:8014/dual_arm.html`，后端 5014；点击“启动摄像头”后授权。终端保持打开，退出前保存或放弃本轮。端口占用会报错，不会替换未知服务。

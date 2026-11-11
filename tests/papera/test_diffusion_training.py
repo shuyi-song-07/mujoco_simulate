@@ -41,8 +41,8 @@ class DiffusionTrainingTests(unittest.TestCase):
         cls.temp.cleanup()
 
     def test_update_ema_checkpoint_and_cpu_resume_equal_uninterrupted(self):
-        a = run(self.config, self.pack, 'tray_transfer', output=self.root / 'uninterrupted', engineering=True)
-        b = run(self.config, self.pack, 'tray_transfer', output=self.root / 'resumed', stop_after=2, engineering=True)
+        a = run(self.config, self.pack, 'tray_to_platform', output=self.root / 'uninterrupted', engineering=True)
+        b = run(self.config, self.pack, 'tray_to_platform', output=self.root / 'resumed', stop_after=2, engineering=True)
         initial = torch.load(b / 'checkpoints/last.pt', map_location='cpu', weights_only=False)
         self.assertEqual(initial['step'], 2)
         self.assertEqual(initial['ema_updates'], 2)
@@ -53,7 +53,7 @@ class DiffusionTrainingTests(unittest.TestCase):
         self.assertEqual(initial['ema_state']['decay'], 0.)
         self.assertTrue(all(torch.equal(initial['model'][key], value)
                             for key, value in initial['ema'].items()))
-        run(self.config, self.pack, 'tray_transfer', resume=b / 'checkpoints/last.pt', engineering=True)
+        run(self.config, self.pack, 'tray_to_platform', resume=b / 'checkpoints/last.pt', engineering=True)
         full = torch.load(a / 'checkpoints/last.pt', map_location='cpu', weights_only=False)
         resumed = torch.load(b / 'checkpoints/last.pt', map_location='cpu', weights_only=False)
         self.assertEqual(resumed['step'], 4)
@@ -68,7 +68,7 @@ class DiffusionTrainingTests(unittest.TestCase):
         self.assertTrue((b / 'checkpoints/best.pt').is_file())
         self.assertIn('training/diffusion/official/ema_model.py', full['source_sha256'])
         policy, normalizer, metadata = load_policy(b / 'checkpoints/best.pt')
-        self.assertEqual(metadata['task_id'], 'tray_transfer')
+        self.assertEqual(metadata['task_id'], 'tray_to_platform')
         with torch.no_grad():
             pred = policy.predict_action(torch.zeros(1,1,1,3,48,64), torch.zeros(1,1,16),
                                          generator=torch.Generator().manual_seed(12))
@@ -76,7 +76,7 @@ class DiffusionTrainingTests(unittest.TestCase):
 
     def test_check_only_creates_no_training_run(self):
         output = self.root / 'check_only_must_not_exist'
-        result = run(self.config, self.pack, 'tray_transfer', output=output, check_only=True, engineering=True)
+        result = run(self.config, self.pack, 'tray_to_platform', output=output, check_only=True, engineering=True)
         self.assertEqual(result['state'], [1,16])
         self.assertEqual(result['action'], [30,14])
         self.assertFalse(output.exists())
@@ -121,9 +121,9 @@ class DiffusionTrainingTests(unittest.TestCase):
 
     def test_old_local_checkpoint_and_config_are_rejected_explicitly(self):
         old = self.root/'legacy_local.pt'
-        torch.save({'version':'papera-diffusion-checkpoint-v1', 'task_id':'tray_transfer'}, old)
+        torch.save({'version':'papera-diffusion-checkpoint-v1', 'task_id':'tray_to_platform'}, old)
         with self.assertRaisesRegex(ValueError, 'older local DP'):
-            run(self.config, self.pack, 'tray_transfer', resume=old, engineering=True)
+            run(self.config, self.pack, 'tray_to_platform', resume=old, engineering=True)
         for name, value in (('ema_decay', .999), ('minimum_lr_fraction', .1)):
             with self.subTest(name=name), self.assertRaisesRegex(ValueError, 'Legacy local DP'):
                 validate_config(dict(self.config, **{name:value}))
@@ -141,7 +141,7 @@ class DiffusionTrainingTests(unittest.TestCase):
             item['gesture_mask'] = np.array([True, index % 2 == 0], dtype=bool)
             return item
         with patch.object(DiffusionDataset, '__getitem__', labelled_engineering_item):
-            output = run(config, self.pack, 'tray_transfer', output=self.root/'gesture', engineering=True)
+            output = run(config, self.pack, 'tray_to_platform', output=self.root/'gesture', engineering=True)
         saved = torch.load(output/'checkpoints/last.pt', map_location='cpu', weights_only=False)
         self.assertTrue(any(key.startswith('gesture_head.') for key in saved['ema']))
         self.assertTrue((output/'checkpoints/step_000002.pt').is_file())
@@ -162,10 +162,10 @@ class DiffusionTrainingTests(unittest.TestCase):
         plain = copy.deepcopy(self.config)
         plain['candidate_save_every'] = None
         retained = dict(plain, candidate_save_every=2)
-        a = run(plain, self.pack, 'tray_transfer', output=self.root/'plain_retention_control', engineering=True)
-        b = run(retained, self.pack, 'tray_transfer', output=self.root/'retention_resume',
+        a = run(plain, self.pack, 'tray_to_platform', output=self.root/'plain_retention_control', engineering=True)
+        b = run(retained, self.pack, 'tray_to_platform', output=self.root/'retention_resume',
                 stop_after=2, engineering=True)
-        run(retained, self.pack, 'tray_transfer', resume=b/'checkpoints/last.pt', engineering=True)
+        run(retained, self.pack, 'tray_to_platform', resume=b/'checkpoints/last.pt', engineering=True)
         expected = torch.load(a/'checkpoints/last.pt', map_location='cpu', weights_only=False)
         actual = torch.load(b/'checkpoints/last.pt', map_location='cpu', weights_only=False)
 

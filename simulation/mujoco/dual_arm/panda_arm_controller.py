@@ -57,7 +57,19 @@ class PandaArmController:
         self.task_rotation = flat.reshape(3, 3)
         self.task_origin = np.asarray(config["scene"]["task_frame_position"], dtype=float)
         self.fixed_rotation = self.task_rotation @ np.asarray(config["scene"]["ee_rotation_matrix"], dtype=float)
-        self.workspace = np.asarray(config["scene"][f"{side}_workspace"], dtype=float)
+        scene = config["scene"]
+        workspace_limits = scene.get("workspace_limits_enabled", 1)
+        if type(workspace_limits) is not int or workspace_limits not in (0, 1):
+            raise ValueError("scene.workspace_limits_enabled must be 0 (disabled) or 1 (enabled)")
+        if workspace_limits:
+            self.workspace = np.asarray(scene[f"{side}_workspace"], dtype=float)
+        else:
+            self.workspace = np.array([[-np.inf, np.inf]] * 3)
+        if "workspace_z_min_m" in scene:
+            z_min = scene["workspace_z_min_m"]
+            if type(z_min) not in (int, float) or not np.isfinite(z_min) or z_min >= self.workspace[2, 1]:
+                raise ValueError(f"scene.workspace_z_min_m must be finite and below the {side} Z maximum")
+            self.workspace[2, 0] = max(self.workspace[2, 0], z_min)
         self.command_position = np.zeros(3)
         self.command_rotation = self.fixed_rotation.copy()
         self.workspace_clamped = False

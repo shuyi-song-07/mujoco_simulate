@@ -18,7 +18,7 @@ from tests.task3.test_single_view_prepared_pack import fixture
 def source_prepared_fixture(root, excluded=()):
     """Yield two source Prepared inputs plus their shared whole-session split."""
     root = Path(root)
-    task = get('tray_transfer')
+    task = get('tray_to_platform')
     canonical = task.binding()
     collection = task.config()
     historical = copy.deepcopy(canonical)

@@ -92,7 +92,7 @@ def fixture(root):
         'effective_config_sha256': prepared.digest(effective_config(cfg)),
         'source_fingerprints_sha256': prepared.digest([])}
     from tasks.registry import get
-    manifest.update(task_id='tray_transfer',task_binding=get('tray_transfer').binding(),engineering_only=True)
+    manifest.update(task_id='tray_to_platform',task_binding=get('tray_to_platform').binding(),engineering_only=True)
     prepared.write_json(run/'manifest.json', manifest)
     split = root/'split.json'
     prepared.write_json(split, {'train_sessions': ['train_session'], 'val_sessions': ['val_session'],

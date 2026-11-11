@@ -61,7 +61,7 @@ def capture(task, seed, cameras=None):
 
 def main():
     import argparse
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--task',default='tray_transfer')
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--task',default='tray_to_platform')
     p.add_argument('--sessions',type=int,default=2)
     p.add_argument('--cameras',nargs='+',choices=('top','front','side','oblique'))
     a=p.parse_args()

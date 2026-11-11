@@ -73,7 +73,7 @@ class RecordedCollectionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'Frozen task/assets differ'):
                 validate_binding(other)
             with self.assertRaisesRegex(ValueError, 'Cross-task input rejected'):
-                validate_binding(self.recorded, 'tray_transfer')
+                validate_binding(self.recorded, 'h_frame_push_align')
 
     def test_other_sources_versions_and_schemas_cannot_enter_scope(self):
         for changed in ('source', 'version', 'schema', 'task', 'extra_source', 'missing_source'):
@@ -86,7 +86,7 @@ class RecordedCollectionTests(unittest.TestCase):
                 elif changed == 'schema':
                     binding['schema']['action_dim'] = 15
                 elif changed == 'task':
-                    binding['task_id'] = 'tray_transfer'
+                    binding['task_id'] = 'h_frame_push_align'
                 elif changed == 'extra_source':
                     binding['sources']['unregistered.py'] = '5' * 64
                 else:
@@ -155,7 +155,7 @@ class RecordedCollectionTests(unittest.TestCase):
             contract = source_contract([ref])
             self.assertEqual(contract['task_binding'], self.recorded)
             self.assertEqual(contract[PROOF_FIELD]['metadata_paths'], [str(self.metadata_path)])
-            self.write_metadata(task_id='tray_transfer')
+            self.write_metadata(task_id='h_frame_push_align')
             with self.assertRaisesRegex(ValueError, 'Task identity mismatch'):
                 source_contract([ref])
             self.write_metadata(config={'task_binding': self.current})
@@ -259,7 +259,7 @@ class RecordedInputGroupingTests(unittest.TestCase):
             self.groups()
 
     def test_identity_mismatch_is_not_fixed_or_ignored(self):
-        self.change_recorded(lambda value: value.update(task_id='tray_transfer'))
+        self.change_recorded(lambda value: value.update(task_id='h_frame_push_align'))
         with self.assertRaisesRegex(ValueError, 'identity mismatch'):
             self.groups()
 

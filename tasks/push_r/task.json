@@ -1,0 +1,45 @@
+{
+  "task_id": "push_r",
+  "display_name": "双臂 Push-R 字母推动归位",
+  "status": "ready",
+  "version": "1.0.0",
+  "scene_id": "PUSH_R",
+  "scene_config": "tasks/push_r/scene.json",
+  "model_xml": "simulation/mujoco/assets/dual_arm/dual_arm_scene.xml",
+  "mesh_directory": "simulation/mujoco/assets/franka_emika_panda/assets",
+  "controller": "dual_panda_v1",
+  "schema": {
+    "state": "dual_panda_q7_width_m_s16",
+    "action": "dual_xyz_rpy_width_m_a14",
+    "observation": "oblique_rgb",
+    "state_dim": 16,
+    "action_dim": 14
+  },
+  "hooks": {
+    "initial_state": "tasks.push_r.scene:initial_state",
+    "configure_xml": "tasks.push_r.scene:configure_xml",
+    "reset": "tasks.push_r.scene:reset",
+    "collection_success": "tasks.push_r.success:collection_success",
+    "rollout_monitor": "tasks.push_r.success:rollout_monitor",
+    "preflight": "tasks.h_frame_push_align.preflight:preflight",
+    "dataset_adapter": "tasks.push_r.evidence:dataset_adapter"
+  },
+  "source_files": [
+    "tasks/push_r/scene.py",
+    "tasks/push_r/success.py",
+    "tasks/push_r/evidence.py",
+    "tasks/push_r/evaluation.json",
+    "tasks/h_frame_push_align/success.py",
+    "tasks/h_frame_push_align/evidence.py",
+    "tasks/h_frame_push_align/preflight.py",
+    "tasks/adapters/tray.py",
+    "simulation/mujoco/dual_arm/task_scenes.py"
+  ],
+  "initialization": "Seeded R rigid-body pose on the table; rear spine offers two separate pushing sites.",
+  "cameras": "top/front/oblique operator views; oblique only for policy observations",
+  "evaluation_config": "tasks/push_r/evaluation.json",
+  "reference": {
+    "source": "https://github.com/real-stanford/diffusion_policy/blob/main/diffusion_policy/env/pusht/pusht_env.py",
+    "geometry": "PushT scale=30, length=4 gives 120x120 coordinate units and stroke 30. Push-R uses a metric 0.24x0.30 m footprint adapted to this dual-Panda workcell, not an upstream metre specification."
+  }
+}

@@ -27,7 +27,7 @@ class NativeSourcePathTests(unittest.TestCase):
         directory = tempfile.TemporaryDirectory(prefix="native_source_paths_")
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name).resolve()
-        self.task = get("tray_transfer")
+        self.task = get("tray_to_platform")
         self.binding = self.task.binding()
         self.config = recording_config(self.task)
         self.calls = []
@@ -256,7 +256,7 @@ class EquivalentPreparedSourceTests(unittest.TestCase):
                     path.write_text(json.dumps(metadata), encoding="utf-8")
                     fingerprint = next(item for item in entry["source_fingerprints"] if Path(item["path"]) == path)
                     fingerprint.update(sha256=hashlib.sha256(path.read_bytes()).hexdigest(), size=path.stat().st_size)
-                workflow = SimpleNamespace(source=root, task=get("tray_transfer"), engineering=True)
+                workflow = SimpleNamespace(source=root, task=get("tray_to_platform"), engineering=True)
                 with patch("collection.config.recording_config", return_value=inputs["reference_collection_config"]):
                     group = recorded_groups(workflow, refs=[entry["source_ref"] for entry in manifest["episodes"]])[0]
                     with recorded_collection_scope(binding, group["provenance"]) as proof:

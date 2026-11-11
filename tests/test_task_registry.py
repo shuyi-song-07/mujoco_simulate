@@ -29,7 +29,7 @@ class TaskRegistryTests(unittest.TestCase):
             self.assertEqual(rollout.prepare_protocol(settings, path), created)
             loader.assert_called_once()
             wrong = copy.deepcopy(settings)
-            wrong['task_id'] = 'push'
+            wrong['task_id'] = 'h_frame_push_align'
             with self.assertRaisesRegex(ValueError, 'Settings/seed'):
                 rollout.verify_protocol(path, wrong)
             with patch.object(rollout, 'implementation_hashes', return_value={'fixture': 'changed'}):
@@ -44,7 +44,7 @@ class TaskRegistryTests(unittest.TestCase):
     def test_registered_scenes_and_shared_reset(self):
         from simulation.mujoco.dual_arm.task_controller import DualArmTaskController
         from rollout.protocol import sample_initial_state
-        for name in ('tray_transfer','tray_push_then_transfer','tray_raised_placement'):
+        for name in ('tray_to_platform', 'h_frame_push_align'):
             task=get(name);config=task.config();c=DualArmTaskController(config)
             c.reset(823)
             initial=sample_initial_state(config,823)
@@ -54,17 +54,18 @@ class TaskRegistryTests(unittest.TestCase):
             self.assertTrue(np.isfinite(c.data.qpos).all())
             self.assertNotEqual(c.get_status()['task_state'],'FAIL')
 
-    def test_unknown_development_and_foreign_binding_fail(self):
-        for task in ('push','lift','missing_task'):
-            with self.assertRaises(ValueError):get(task)
-        with self.assertRaises(ValueError):validate_binding(get('tray_transfer').binding(),'tray_raised_placement')
-        b=get('tray_transfer').binding();b['task_version']='bad'
+    def test_unknown_task_and_foreign_binding_fail(self):
+        with self.assertRaisesRegex(ValueError, 'Unknown task'):
+            get('missing_task')
+        with self.assertRaisesRegex(ValueError, 'Cross-task input rejected'):
+            validate_binding(get('tray_to_platform').binding(), 'h_frame_push_align')
+        b=get('tray_to_platform').binding();b['task_version']='bad'
         with self.assertRaises(ValueError):validate_binding(b)
 
     def test_new_manifest_is_discovered_without_fixed_enum(self):
         # Temporary directory's parent is the real discovery root. Automatic cleanup is scoped by TemporaryDirectory.
         with tempfile.TemporaryDirectory(prefix='new_task_',dir=ROOT/'tasks') as directory:
-            folder=Path(directory);m=copy.deepcopy(get('tray_transfer').manifest)
+            folder=Path(directory);m=copy.deepcopy(get('tray_to_platform').manifest)
             m.update(task_id=folder.name,display_name='engineering registration fixture',scene_id='CUSTOM')
             (folder/'task.json').write_text(json.dumps(m),encoding='utf-8')
             task=discover()[folder.name]
@@ -72,6 +73,10 @@ class TaskRegistryTests(unittest.TestCase):
             c=DualArmTaskController(task.config());c.step(1/60)
             self.assertEqual(c.config['scene']['scenario'],'CUSTOM')
             self.assertEqual(c.config['task_binding']['task_id'],folder.name)
+            m['status'] = 'development'
+            (folder/'task.json').write_text(json.dumps(m), encoding='utf-8')
+            with self.assertRaisesRegex(ValueError, 'is development'):
+                get(folder.name)
             del m['schema'];(folder/'task.json').write_text(json.dumps(m),encoding='utf-8')
             with self.assertRaisesRegex(ValueError,'missing fields'):discover()
 

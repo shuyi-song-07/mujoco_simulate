@@ -6,6 +6,8 @@ import mujoco
 import numpy as np
 
 from tasks.registry import get, hook
+from simulation.mujoco.dual_arm.config import load_config
+from simulation.mujoco.dual_arm.task_scenes import scenario_config
 from simulation.mujoco.dual_arm.task_controller import DualArmTaskController
 from rollout.protocol import _waypoint_checks
 
@@ -51,7 +53,7 @@ class HighwallPlatformGeometryTests(unittest.TestCase):
             rotation = np.zeros(9)
             mujoco.mju_quat2Mat(rotation, site.quat)
             np.testing.assert_allclose(rotation.reshape(3, 3), s["ee_rotation_matrix"], atol=1e-12)
-        baseline = get("tray_transfer").config()
+        baseline = scenario_config(load_config("config/collection.json"), "S1")
         for name in ("table_top_z",
                      "left_base_quaternion_wxyz", "right_base_quaternion_wxyz"):
             self.assertEqual(s[name], baseline["scene"][name])
@@ -64,7 +66,7 @@ class HighwallPlatformGeometryTests(unittest.TestCase):
         self.assertEqual(self.config["recording"], baseline["recording"])
         self.assertEqual(self.config["gesture_control"], baseline["gesture_control"])
         self.assertEqual(self.config["control"], baseline["control"])
-        existing = get("tray_raised_placement").config()["scene"]["cameras"]
+        existing = scenario_config(load_config("config/collection.json"), "S3")["scene"]["cameras"]
         for camera in ("front", "side"):
             for field in ("projection", "position", "target"):
                 self.assertEqual(s["cameras"][camera][field], existing[camera][field])
@@ -91,8 +93,8 @@ class HighwallPlatformGeometryTests(unittest.TestCase):
         changed = create_model(cfg)
         np.testing.assert_allclose(changed.body('left_pedestal').pos, [-.08, -.63, .185])
         self.assertAlmostEqual(changed.geom('left_pedestal_geom').size[2], .185)
-        # Other tasks keep their original supports.
-        original = create_model(get('tray_transfer').config())
+        # The shared historical scene keeps its original supports.
+        original = create_model(scenario_config(load_config("config/collection.json"), "S1"))
         np.testing.assert_allclose(original.body('left_pedestal').pos, [0., -.75, .175])
 
     def test_volume_mass_center_and_inertia_are_consistent(self):
