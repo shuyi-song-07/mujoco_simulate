@@ -123,7 +123,7 @@ export function shouldCloseGripper({
 }
 
 export class SingleHandRearmGate {
-  constructor({ waitMs = 500, lossGraceMs = 250, stableMs = 0, stableRadius = 0.012 } = {}) {
+  constructor({ waitMs = 0, lossGraceMs = 0, stableMs = 0, stableRadius = 0.012 } = {}) {
     Object.assign(this, { waitMs, lossGraceMs, stableMs, stableRadius });
     this.reset();
   }

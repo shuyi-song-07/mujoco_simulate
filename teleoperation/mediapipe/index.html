@@ -81,7 +81,7 @@
           </div>
         </div>
 
-        <p class="robot-help" id="robot-help">手重新入镜后目标在 0.5 秒内恢复控制，同一手势可继续使用；可用“重置场景”重新随机摆放。空爪用 Victory 左右移动、Thumb_Up 前后移动、ILoveYou 斜向移动。张掌或握拳上下移动控制升降；握拳保持 50 毫秒闭爪，张掌松爪，抓取位置和高度由你手动调整。Pointing_Up 只在本场景初次调整夹爪朝向时生效；换成任一稳定手势后朝向固定，直到重置场景。MuJoCo 窗口斜走时显示俯视，抓取时用网页侧视和正面确认夹爪高度。夹爪准确位于红色刚体上方或夹住刚体进入圆盘时，窗口切回 overview。三路训练相机和每帧手势同步录制。</p>
+        <p class="robot-help" id="robot-help">手重新入镜即可恢复控制，无需停手等待稳定；重新入镜时以当前位置建立移动基准，同一手势可继续使用。可用“重置场景”重新随机摆放。空爪用 Victory 左右移动、Thumb_Up 前后移动、ILoveYou 斜向移动。张掌或握拳上下移动控制升降；握拳保持 50 毫秒闭爪，张掌松爪，抓取位置和高度由你手动调整。Pointing_Up 只在本场景初次调整夹爪朝向时生效；换成任一稳定手势后朝向固定，直到重置场景。MuJoCo 窗口斜走时显示俯视，抓取时用网页侧视和正面确认夹爪高度。夹爪准确位于红色刚体上方或夹住刚体进入圆盘时，窗口切回 overview。三路训练相机和每帧手势同步录制。</p>
 
         <section id="side-preview-panel" class="side-preview-panel" hidden aria-labelledby="side-preview-title">
           <div class="side-preview-heading">
@@ -138,6 +138,6 @@
 
     </main>
 
-    <script type="module" src="./app.js?v=hand-motion-01"></script>
+    <script type="module" src="./app.js?v=instant-reentry-01"></script>
   </body>
 </html>

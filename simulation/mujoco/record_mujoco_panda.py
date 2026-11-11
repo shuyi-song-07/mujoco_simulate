@@ -24,6 +24,11 @@ from flask import Flask, Response, jsonify, request
 from flask_cors import CORS
 from werkzeug.serving import WSGIRequestHandler, make_server
 
+try:
+    from .hand_motion_window import FixedWindowHandDisplacement
+except ImportError:  # Direct execution with mjpython.
+    from hand_motion_window import FixedWindowHandDisplacement
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MODEL_PATH = (
@@ -1522,6 +1527,20 @@ class MujocoPandaRecorder:
         self.filtered_wrist_uv = np.zeros(2, dtype=np.float64)
         self.filtered_wrist_timestamp_ms = -1.0
         self.filtered_wrist_valid = False
+        args = getattr(self, "args", None)
+        self.hand_delta_window = FixedWindowHandDisplacement(
+            getattr(args, "hand_delta_window_ms", 1000.0 / 30),
+            getattr(args, "hand_delta_max_gap_ms", 50.0),
+        )
+
+    def append_hand_window_sample(self) -> None:
+        """Use capture time, not network receipt time, for auxiliary labels."""
+        if not getattr(self, "raw_wrist_valid", False):
+            self.hand_delta_window.reset()
+            return
+        self.hand_delta_window.append(
+            self.raw_wrist_timestamp_ms, self.filtered_wrist_uv,
+        )
 
     def update_raw_wrist(self, payload: dict) -> None:
         """Keep the original MediaPipe wrist sample and capture time intact."""
@@ -1556,7 +1575,10 @@ class MujocoPandaRecorder:
         """Build a continuous filtered wrist path within each armed segment."""
         wrist = payload.get("wristUv")
         token = payload.get("handMotionToken")
-        if (not payload.get("handMotionReady") or not self.hand_visible
+        # Unknown gestures must clear both pending labels and the old anchor,
+        # even if a stale client still reports handMotionReady=True.
+        if (not GESTURE_CODES.get(self.latest_gesture, 0)
+                or not payload.get("handMotionReady") or not self.hand_visible
                 or self.control_paused or not isinstance(token, str)
                 or token != self.control_token or not isinstance(wrist, list)
                 or len(wrist) != 2):
@@ -1583,6 +1605,7 @@ class MujocoPandaRecorder:
             self.filtered_wrist_uv = point.copy()
             self.filtered_wrist_timestamp_ms = getattr(self, "raw_wrist_timestamp_ms", sent_at)
             self.filtered_wrist_valid = True
+            self.append_hand_window_sample()
             return
         if sent_at <= self.hand_motion_last_sent_at:
             return
@@ -1595,12 +1618,14 @@ class MujocoPandaRecorder:
             self.hand_motion_anchor = point
             self.hand_motion_pending.fill(0.0)
             self.hand_motion_pending_samples = 0
+            self.hand_delta_window.reset()
             return
         if distance >= 0.0015:
             self.hand_motion_pending += delta
             self.filtered_wrist_uv += delta
             self.hand_motion_anchor = point
         self.hand_motion_pending_samples += 1
+        self.append_hand_window_sample()
 
     def append_hand_trajectory_sample(self, payload: dict) -> None:
         """Preserve every received sample, including gaps, at camera report rate."""
@@ -1615,6 +1640,8 @@ class MujocoPandaRecorder:
                                   if self.filtered_wrist_valid else None),
             "filtered_timestamp_ms": self.filtered_wrist_timestamp_ms,
             "hand_motion_segment": self.hand_motion_segment if self.filtered_wrist_valid else -1,
+            "gesture": self.latest_gesture,
+            "motion_valid": bool(self.filtered_wrist_valid and GESTURE_CODES.get(self.latest_gesture, 0)),
             "sent_at_ms": float(payload.get("sentAt", -1.0)),
         })
 
@@ -2044,6 +2071,7 @@ class MujocoPandaRecorder:
         self.reset_simulation()
 
     def record_frame(self) -> None:
+        frame_timestamp_ms = time.time() * 1000.0
         gesture_fresh = time.perf_counter() - self.last_gesture_update_at < 0.5
         gesture = self.latest_gesture if gesture_fresh else "None"
         raw_wrist_valid = bool(self.raw_wrist_valid and gesture_fresh)
@@ -2055,10 +2083,16 @@ class MujocoPandaRecorder:
                              if filtered_wrist_valid else np.zeros(2, dtype=np.float32))
         filtered_wrist_timestamp_ms = (self.filtered_wrist_timestamp_ms
                                        if filtered_wrist_valid else -1.0)
-        hand_delta_valid = bool(self.hand_motion_pending_samples and not self.control_paused
+        hand_delta_valid = bool(gesture_fresh and GESTURE_CODES[gesture] != 0
+                                and self.hand_motion_pending_samples and not self.control_paused
                                 and time.time() * 1000.0 - self.hand_motion_last_sent_at <= 150.0)
         hand_delta_uv = self.hand_motion_pending.astype(np.float32).copy() if hand_delta_valid else np.zeros(2, dtype=np.float32)
         hand_motion_segment = self.hand_motion_segment if hand_delta_valid else -1
+        window = self.hand_delta_window.consume(frame_timestamp_ms)
+        if (not gesture_fresh or not GESTURE_CODES[gesture]
+                or not self.hand_visible or self.control_paused):
+            window = {"uv": np.zeros(2, dtype=np.float32), "valid": False,
+                      "start_ms": -1.0, "end_ms": -1.0}
         self.hand_motion_pending.fill(0.0)
         self.hand_motion_pending_samples = 0
         mapped_control_valid = bool(self.mapped_control_pending_commands)
@@ -2104,6 +2138,12 @@ class MujocoPandaRecorder:
                 "hand_delta_uv": hand_delta_uv,
                 "hand_delta_valid": np.array([int(hand_delta_valid)], dtype=np.int64),
                 "hand_motion_segment": np.array([hand_motion_segment], dtype=np.int64),
+                "hand_delta_window_uv": window["uv"],
+                "hand_delta_window_valid": np.array([int(window["valid"])], dtype=np.int64),
+                "hand_delta_window_start_ms": np.array([window["start_ms"]], dtype=np.float64),
+                "hand_delta_window_end_ms": np.array([window["end_ms"]], dtype=np.float64),
+                "hand_delta_window_ms": np.array([self.args.hand_delta_window_ms], dtype=np.float64),
+                "frame_timestamp_ms": np.array([frame_timestamp_ms], dtype=np.float64),
                 "raw_wrist_uv": raw_wrist_uv,
                 "raw_wrist_timestamp_ms": np.array([raw_wrist_timestamp_ms], dtype=np.float64),
                 "raw_wrist_valid": np.array([int(raw_wrist_valid)], dtype=np.int64),
@@ -2260,6 +2300,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="Pick up the red cube and place it on the white target plate",
     )
     parser.add_argument("--fps", type=int, default=30)
+    parser.add_argument("--hand-delta-window-ms", type=float, default=None,
+                        help="Wrist label duration; defaults to 1000/fps milliseconds.")
+    parser.add_argument("--hand-delta-max-gap-ms", type=float, default=None,
+                        help="Maximum capture gap and endpoint age; defaults to max(50, 1500/fps) ms.")
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--port", type=int, default=5001)
@@ -2339,6 +2383,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--test-motion", action="store_true")
     parser.add_argument("--test-failure", action="store_true")
     args = parser.parse_args(argv)
+    if args.fps <= 0:
+        parser.error("--fps must be greater than zero.")
+    if args.hand_delta_window_ms is None:
+        args.hand_delta_window_ms = 1000.0 / args.fps
+    if args.hand_delta_max_gap_ms is None:
+        args.hand_delta_max_gap_ms = max(50.0, 1500.0 / args.fps)
+    if not all(np.isfinite(x) and x > 0 for x in (
+        args.hand_delta_window_ms, args.hand_delta_max_gap_ms,
+    )):
+        parser.error("Hand displacement window and maximum gap must be finite and positive.")
     args.model_path = args.model_path.expanduser().resolve()
     args.dataset_root = args.dataset_root.expanduser().resolve()
     args.failure_dataset_root = args.failure_dataset_root.expanduser().resolve()

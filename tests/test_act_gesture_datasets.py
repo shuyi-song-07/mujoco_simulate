@@ -90,6 +90,25 @@ class GestureDatasetCompatibilityTests(unittest.TestCase):
                     self.assertEqual(result[GESTURE_KEY], result["action"])
                     self.assertIs(dataset_factory.resolve_delta_timestamps, current_resolve)
 
+    def test_fixed_window_targets_use_selected_keys_and_action_timestamps(self):
+        delta_key = "observation.hand_delta_window_uv"
+        valid_key = "observation.hand_delta_window_valid"
+        del self.metadata.features[HAND_DELTA_KEY]
+        del self.metadata.features[HAND_VALID_KEY]
+        self.metadata.features.update({delta_key: {}, valid_key: {}})
+
+        def builder(_cfg):
+            return dataset_factory.resolve_delta_timestamps(self.policy_cfg, self.metadata)
+
+        module = SimpleNamespace(make_train_eval_datasets=builder,
+                                 make_policy=lambda *args, **kwargs: None)
+        install_auxiliary(module, gesture_weight=0.1, hand_delta_weight=0.1,
+                          hand_delta_key=delta_key, hand_valid_key=valid_key)
+        offsets = module.make_train_eval_datasets(SimpleNamespace())
+        self.assertEqual(offsets[delta_key], offsets["action"])
+        self.assertEqual(offsets[valid_key], offsets["action"])
+        self.assertNotIn(HAND_DELTA_KEY, offsets)
+
     def test_installed_resolver_aligns_train_and_eval_auxiliary_targets(self):
         installed_resolver = dataset_factory.resolve_delta_timestamps
         supports_rename_map = "rename_map" in inspect.signature(installed_resolver).parameters

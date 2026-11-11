@@ -24,7 +24,8 @@ HAND_VALID_KEY = "observation.hand_delta_valid"
 IMAGE_KEY = "observation.images.overview"
 
 
-def check_dataset(root: Path, *, auxiliary: bool = False, motion: bool = False) -> dict:
+def check_dataset(root: Path, *, auxiliary: bool = False, motion: bool = False,
+                  hand_delta_source: str = "frame") -> dict:
     info_path = root / "meta/info.json"
     if not info_path.is_file():
         raise ValueError(f"Missing LeRobot metadata: {info_path}")
@@ -34,7 +35,10 @@ def check_dataset(root: Path, *, auxiliary: bool = False, motion: bool = False) 
     if auxiliary:
         required.add(GESTURE_KEY)
     if motion:
-        required.update({HAND_DELTA_KEY, HAND_VALID_KEY})
+        required.update(
+            {"observation.hand_delta_window_uv", "observation.hand_delta_window_valid"}
+            if hand_delta_source == "window" else {HAND_DELTA_KEY, HAND_VALID_KEY}
+        )
     if not required.issubset(features):
         raise ValueError(f"Missing dataset features: {sorted(required - features.keys())}")
     if IMAGE_KEY not in features:
@@ -138,6 +142,8 @@ def make_parser(auxiliary: bool = False, motion: bool = False) -> argparse.Argum
     if auxiliary:
         parser.add_argument("--gesture-weight", type=float, default=0.1)
     if motion:
+        parser.add_argument("--hand-delta-source", choices=("frame", "window"), default="frame",
+                            help="Use legacy frame accumulation or fixed-duration wrist labels")
         parser.add_argument(
             "--hand-delta-weight", type=float, default=0.0,
             help="Auxiliary wrist-displacement loss weight; 0 disables it",
@@ -204,11 +210,14 @@ def run(args, *, auxiliary: bool = False, install_auxiliary=None) -> None:
     root = args.dataset_root.expanduser().resolve()
     hand_delta_weight = getattr(args, "hand_delta_weight", 0.0)
     hand_delta_scale = getattr(args, "hand_delta_scale", 0.03)
+    hand_delta_source = getattr(args, "hand_delta_source", "frame")
     info = check_dataset(
-        root, auxiliary=auxiliary, motion=auxiliary and hand_delta_weight > 0
+        root, auxiliary=auxiliary, motion=auxiliary and hand_delta_weight > 0,
+        hand_delta_source=hand_delta_source,
     )
-    if auxiliary and (not 0 < args.gesture_weight or not args.gesture_weight < float("inf")):
-        raise ValueError("--gesture-weight must be finite and positive")
+    if auxiliary and (not 0 <= args.gesture_weight < float("inf")
+                      or (args.gesture_weight == 0 and hand_delta_weight == 0)):
+        raise ValueError("Gesture weight must be finite and nonnegative; enable at least one auxiliary loss")
     if auxiliary and (not 0 <= hand_delta_weight < float("inf")
                       or not 0 < hand_delta_scale < float("inf")):
         raise ValueError("Hand-delta weight must be nonnegative and scale must be positive")
@@ -217,6 +226,7 @@ def run(args, *, auxiliary: bool = False, install_auxiliary=None) -> None:
                       "frames": info["total_frames"], "lerobot_arguments": cli,
                       **({"gesture_weight": args.gesture_weight} if auxiliary else {}),
                       **({"hand_delta_weight": hand_delta_weight,
+                          "hand_delta_source": hand_delta_source,
                           "hand_delta_scale": hand_delta_scale} if hand_delta_weight > 0 else {})},
                      indent=2, ensure_ascii=False))
     if args.print_command:
@@ -232,8 +242,11 @@ def run(args, *, auxiliary: bool = False, install_auxiliary=None) -> None:
     install_input_filter(lerobot_train)
     install_training_only_stats(lerobot_train)
     if install_auxiliary is not None:
+        label_options = ({"hand_delta_key": "observation.hand_delta_window_uv",
+                          "hand_valid_key": "observation.hand_delta_window_valid"}
+                         if hand_delta_source == "window" else {})
         install_auxiliary(lerobot_train, args.gesture_weight,
-                          hand_delta_weight, hand_delta_scale)
+                          hand_delta_weight, hand_delta_scale, **label_options)
     if args.save_best and not args.smoke_test and args.eval_steps > 0 and args.eval_split > 0:
         try:
             from .best_checkpoint import install_best_checkpoint

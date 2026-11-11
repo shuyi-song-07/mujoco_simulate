@@ -59,7 +59,9 @@ def masked_hand_delta_loss(prediction: torch.Tensor, target: torch.Tensor,
 
 def install_auxiliary(train_module, gesture_weight: float,
                       hand_delta_weight: float = 0.0,
-                      hand_delta_scale: float = 0.03) -> None:
+                      hand_delta_scale: float = 0.03, *,
+                      hand_delta_key: str = HAND_DELTA_KEY,
+                      hand_valid_key: str = HAND_VALID_KEY) -> None:
     from lerobot.datasets import factory as dataset_factory
     from lerobot.policies.act.modeling_act import ACTPolicy
     from safetensors.torch import save_file
@@ -79,11 +81,11 @@ def install_auxiliary(train_module, gesture_weight: float,
             # The same offsets give one gesture target per predicted action frame.
             result = {**offsets, GESTURE_KEY: list(offsets["action"])}
             if hand_delta_weight > 0:
-                missing = {HAND_DELTA_KEY, HAND_VALID_KEY} - set(ds_meta.features)
+                missing = {hand_delta_key, hand_valid_key} - set(ds_meta.features)
                 if missing:
                     raise ValueError(f"Dataset is missing hand displacement fields: {sorted(missing)}")
-                result[HAND_DELTA_KEY] = list(offsets["action"])
-                result[HAND_VALID_KEY] = list(offsets["action"])
+                result[hand_delta_key] = list(offsets["action"])
+                result[hand_valid_key] = list(offsets["action"])
             return result
 
         dataset_factory.resolve_delta_timestamps = resolve_with_gesture
@@ -114,9 +116,9 @@ def install_auxiliary(train_module, gesture_weight: float,
             if self.hand_delta_head is not None:
                 prediction = self.hand_delta_head(hidden)
                 motion_loss, motion_count = masked_hand_delta_loss(
-                    prediction, batch[HAND_DELTA_KEY], batch[HAND_VALID_KEY],
-                    batch["action_is_pad"], batch[f"{HAND_DELTA_KEY}_is_pad"],
-                    batch[f"{HAND_VALID_KEY}_is_pad"], self.hand_delta_scale,
+                    prediction, batch[hand_delta_key], batch[hand_valid_key],
+                    batch["action_is_pad"], batch[f"{hand_delta_key}_is_pad"],
+                    batch[f"{hand_valid_key}_is_pad"], self.hand_delta_scale,
                 )
                 metrics["hand_delta_loss"] = motion_loss.item()
                 metrics["hand_delta_valid_frames"] = motion_count

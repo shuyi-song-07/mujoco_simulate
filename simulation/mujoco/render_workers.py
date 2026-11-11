@@ -219,6 +219,12 @@ def _dataset_features(args) -> dict:
         "observation.hand_visible": {"dtype": "int64", "shape": (1,), "names": ["visible_0_1"]},
         "observation.hand_delta_uv": {"dtype": "float32", "shape": (2,), "names": ["webcam_wrist_delta_u", "webcam_wrist_delta_v"]},
         "observation.hand_delta_valid": {"dtype": "int64", "shape": (1,), "names": ["valid_0_1"]},
+        "observation.hand_delta_window_uv": {"dtype": "float32", "shape": (2,), "names": ["window_wrist_delta_u", "window_wrist_delta_v"]},
+        "observation.hand_delta_window_valid": {"dtype": "int64", "shape": (1,), "names": ["valid_0_1"]},
+        "observation.hand_delta_window_start_ms": {"dtype": "float64", "shape": (1,), "names": ["browser_capture_epoch_ms"]},
+        "observation.hand_delta_window_end_ms": {"dtype": "float64", "shape": (1,), "names": ["browser_capture_epoch_ms"]},
+        "observation.hand_delta_window_ms": {"dtype": "float64", "shape": (1,), "names": ["fixed_duration_ms"]},
+        "observation.frame_timestamp_ms": {"dtype": "float64", "shape": (1,), "names": ["robot_snapshot_epoch_ms"]},
         "observation.hand_motion_segment": {"dtype": "int64", "shape": (1,), "names": ["reentry_segment_id"]},
         "observation.raw_wrist_uv": {"dtype": "float32", "shape": (2,), "names": ["mediapipe_raw_wrist_u", "mediapipe_raw_wrist_v"]},
         "observation.raw_wrist_timestamp_ms": {"dtype": "float64", "shape": (1,), "names": ["browser_capture_epoch_ms"]},
@@ -275,6 +281,24 @@ def training_render_worker(args, command_queue, reply_queue) -> None:
             encoder_threads=2,
             image_writer_threads=4,
         )
+        hand_motion_metadata = {
+            "schema_version": "fixed-window-wrist-v1",
+            "window_ms": args.hand_delta_window_ms,
+            "max_capture_gap_ms": args.hand_delta_max_gap_ms,
+            "max_endpoint_age_ms": args.hand_delta_max_gap_ms,
+            "source": "filtered_wrist_uv",
+            "coordinates": "normalized_webcam_uv; u right, v down; no robot mapping",
+            "window_end": "latest distinct valid wrist capture at or before robot frame",
+            "start_interpolation": "linear within one uninterrupted valid segment",
+            "invalid": "zero delta, valid=0, start/end=-1; no extrapolation or reused endpoints",
+            "legacy_frame_delta_key": "observation.hand_delta_uv",
+            "fixed_window_delta_key": "observation.hand_delta_window_uv",
+        }
+        for root in (args.dataset_root, args.failure_dataset_root):
+            (root / "meta/hand_motion.json").write_text(
+                json.dumps(hand_motion_metadata, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
         video_root = args.dataset_root / "episode_videos"
         manifest_path = video_root / "initial_positions.jsonl"
         failure_video_root = args.failure_dataset_root / "episode_videos"
@@ -314,6 +338,12 @@ def training_render_worker(args, command_queue, reply_queue) -> None:
                         "observation.hand_visible": command["hand_visible"],
                         "observation.hand_delta_uv": command["hand_delta_uv"],
                         "observation.hand_delta_valid": command["hand_delta_valid"],
+                        "observation.hand_delta_window_uv": command["hand_delta_window_uv"],
+                        "observation.hand_delta_window_valid": command["hand_delta_window_valid"],
+                        "observation.hand_delta_window_start_ms": command["hand_delta_window_start_ms"],
+                        "observation.hand_delta_window_end_ms": command["hand_delta_window_end_ms"],
+                        "observation.hand_delta_window_ms": command["hand_delta_window_ms"],
+                        "observation.frame_timestamp_ms": command["frame_timestamp_ms"],
                         "observation.hand_motion_segment": command["hand_motion_segment"],
                         "observation.raw_wrist_uv": command["raw_wrist_uv"],
                         "observation.raw_wrist_timestamp_ms": command["raw_wrist_timestamp_ms"],
@@ -339,6 +369,12 @@ def training_render_worker(args, command_queue, reply_queue) -> None:
                         "observation.hand_visible": command["hand_visible"],
                         "observation.hand_delta_uv": command["hand_delta_uv"],
                         "observation.hand_delta_valid": command["hand_delta_valid"],
+                        "observation.hand_delta_window_uv": command["hand_delta_window_uv"],
+                        "observation.hand_delta_window_valid": command["hand_delta_window_valid"],
+                        "observation.hand_delta_window_start_ms": command["hand_delta_window_start_ms"],
+                        "observation.hand_delta_window_end_ms": command["hand_delta_window_end_ms"],
+                        "observation.hand_delta_window_ms": command["hand_delta_window_ms"],
+                        "observation.frame_timestamp_ms": command["frame_timestamp_ms"],
                         "observation.hand_motion_segment": command["hand_motion_segment"],
                         "observation.raw_wrist_uv": command["raw_wrist_uv"],
                         "observation.raw_wrist_timestamp_ms": command["raw_wrist_timestamp_ms"],

@@ -93,7 +93,7 @@ test("Victory retains its full lateral step and mirrored direction", () => {
 });
 
 test("re-entering hand uses 500 ms of wall time without restarting on movement or gesture changes", () => {
-  const gate = new SingleHandRearmGate();
+  const gate = new SingleHandRearmGate({ waitMs: 500, lossGraceMs: 250 });
   const frame = (gesture = "Victory", x = 0.5, score = 0.9) => ({
     gestures: [[{ categoryName: gesture, score }]], landmarks: [[{ x, y: 0.5 }]],
   });
@@ -108,6 +108,28 @@ test("re-entering hand uses 500 ms of wall time without restarting on movement o
   assert.equal(gate.observe({ landmarks: [], gestures: [] }, 540).state, "lost");
   assert.deepEqual(gate.observe(frame(), 560), { state: "waiting", remainingMs: 500 });
   assert.equal(gate.observe({ landmarks: [], gestures: [] }, 820).state, "lost");
+});
+
+test("single-arm re-entry is ready immediately while the wrist and gesture change", () => {
+  const gate = new SingleHandRearmGate();
+  const frame = (x, gesture = "Victory") => ({
+    gestures: [[{ categoryName: gesture, score: 0.9 }]],
+    landmarks: [[{ x, y: 0.5 }]],
+  });
+  assert.equal(gate.observe(frame(0.5), 0).state, "ready");
+  // A moving hand is still ready while waiting for backend acknowledgement.
+  assert.equal(gate.observe(frame(0.7, "ILoveYou"), 16).state, "ready");
+  gate.arm();
+  assert.equal(gate.observe(frame(0.8), 32).state, "armed");
+  assert.equal(gate.observe({ gestures: [], landmarks: [] }, 48).state, "lost");
+  assert.equal(gate.armed, false);
+  assert.equal(gate.candidate, null);
+  assert.equal(gate.observe(frame(0.2, "Closed_Fist"), 64).state, "ready");
+  assert.equal(gate.armed, false); // Still requires a new backend token.
+  assert.equal(gate.candidate.gestureSince, 64);
+  assert.equal(gate.observe(frame(0.4, "Open_Palm"), 80).state, "ready");
+  gate.arm();
+  assert.equal(gate.observe(frame(0.6), 96).state, "armed");
 });
 
 test("stable re-entry holds robot until the wrist and gesture settle", () => {

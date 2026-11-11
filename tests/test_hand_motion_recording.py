@@ -17,6 +17,7 @@ class HandMotionRecordingTest(unittest.TestCase):
         recorder.control_paused = False
         recorder.control_token = "first"
         recorder.hand_visible = True
+        recorder.latest_gesture = "Victory"
         recorder.recording = True
         recorder.episode_frames = 3
         recorder.hand_trajectory_samples = []
@@ -77,6 +78,7 @@ class HandMotionRecordingTest(unittest.TestCase):
         recorder.control_paused = False
         recorder.control_token = "first"
         recorder.hand_visible = True
+        recorder.latest_gesture = "Victory"
         recorder.reset_hand_motion()
 
         def send(x, y, when, token="first", segment=1, ready=True):
@@ -104,6 +106,76 @@ class HandMotionRecordingTest(unittest.TestCase):
         send(0.12, 0.11, 1180, token="second", segment=2)
         np.testing.assert_allclose(recorder.hand_motion_pending, [0.02, 0.01])
         self.assertEqual(recorder.hand_motion_segment, 2)
+
+    def test_unknown_gesture_clears_displacement_and_reanchors_on_recovery(self):
+        for unknown in ("None", "Unknown", ""):
+            with self.subTest(gesture=unknown):
+                recorder = object.__new__(MujocoPandaRecorder)
+                recorder.control_paused = False
+                recorder.control_token = "first"
+                recorder.hand_visible = True
+                recorder.latest_gesture = "Victory"
+                recorder.reset_hand_motion()
+
+                def send(x, when):
+                    recorder.update_hand_motion({
+                        "wristUv": [x, 0.5], "sentAt": when,
+                        "handMotionToken": "first", "handMotionSegment": 1,
+                        # Backend must reject unknown gestures independently.
+                        "handMotionReady": True,
+                    })
+
+                send(0.40, 1000)
+                send(0.43, 1030)
+                np.testing.assert_allclose(recorder.hand_motion_pending, [0.03, 0.0])
+                recorder.latest_gesture = unknown
+                send(0.45, 1060)
+                send(0.50, 1090)
+                np.testing.assert_array_equal(recorder.hand_motion_pending, [0.0, 0.0])
+                self.assertEqual(recorder.hand_motion_pending_samples, 0)
+                self.assertFalse(recorder.filtered_wrist_valid)
+                self.assertIsNone(recorder.hand_motion_anchor)
+
+                recorder.latest_gesture = "Victory"
+                send(0.52, 1120)
+                self.assertEqual(recorder.hand_motion_pending_samples, 0)
+                send(0.54, 1150)
+                np.testing.assert_allclose(recorder.hand_motion_pending, [0.02, 0.0])
+
+    def test_fixed_window_uses_capture_time_and_resets_on_unknown_and_jump(self):
+        recorder = object.__new__(MujocoPandaRecorder)
+        recorder.control_paused = False
+        recorder.control_token = "first"
+        recorder.hand_visible = True
+        recorder.latest_gesture = "Victory"
+        recorder.reset_hand_motion()
+
+        def send(x, captured_at, gesture="Victory"):
+            recorder.latest_gesture = gesture
+            payload = {
+                "wristUv": [x, 0.5], "wristCapturedAt": captured_at,
+                "sentAt": captured_at + 100, "handVisible": True,
+                "handMotionReady": True, "handMotionToken": "first",
+                "handMotionSegment": 1,
+            }
+            recorder.update_raw_wrist(payload)
+            recorder.update_hand_motion(payload)
+
+        for x, t in ((0.4, 1000), (0.43, 1030), (0.46, 1060)):
+            send(x, t)
+        label = recorder.hand_delta_window.consume(1070)
+        self.assertTrue(label["valid"])
+        self.assertEqual(label["end_ms"], 1060)
+        np.testing.assert_allclose(label["uv"], [1 / 30, 0], atol=1e-7)
+        send(0.5, 1090, gesture="None")
+        self.assertFalse(recorder.hand_delta_window.consume(1100)["valid"])
+        send(0.52, 1120)
+        self.assertFalse(recorder.hand_delta_window.consume(1130)["valid"])
+        send(0.54, 1150)
+        send(0.56, 1180)
+        self.assertTrue(recorder.hand_delta_window.consume(1190)["valid"])
+        send(0.9, 1210)  # Tracking jump also breaks the fixed window.
+        self.assertFalse(recorder.hand_delta_window.consume(1220)["valid"])
 
 
 if __name__ == "__main__":

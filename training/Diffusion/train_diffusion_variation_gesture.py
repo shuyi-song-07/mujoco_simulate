@@ -51,7 +51,9 @@ def masked_hand_delta_loss(prediction: torch.Tensor, target: torch.Tensor,
 
 
 def install_auxiliary(train_module, gesture_weight: float,
-                      hand_delta_weight: float, hand_delta_scale: float) -> None:
+                      hand_delta_weight: float, hand_delta_scale: float, *,
+                      hand_delta_key: str = HAND_DELTA_KEY,
+                      hand_valid_key: str = HAND_VALID_KEY) -> None:
     from lerobot.policies.diffusion.modeling_diffusion import DiffusionPolicy
     from safetensors.torch import save_file
 
@@ -90,9 +92,9 @@ def install_auxiliary(train_module, gesture_weight: float,
             if self.hand_delta_head is not None:
                 prediction = self.hand_delta_head(condition)
                 motion_loss, motion_count = masked_hand_delta_loss(
-                    prediction, batch[HAND_DELTA_KEY][:, -1],
-                    batch[HAND_VALID_KEY][:, -1],
-                    batch[f"{HAND_DELTA_KEY}_is_pad"][:, -1],
+                    prediction, batch[hand_delta_key][:, -1],
+                    batch[hand_valid_key][:, -1],
+                    batch[f"{hand_delta_key}_is_pad"][:, -1],
                     self.hand_delta_scale,
                 )
                 metrics["hand_delta_loss"] = motion_loss.item()

@@ -4,7 +4,7 @@ import {
   GestureRecognizer,
 } from "./node_modules/@mediapipe/tasks-vision/vision_bundle.mjs";
 
-import { mapPlanarMotion, pointingUpAngle, pointingControlCandidate, pointingYawFromWrist, shouldStartPlanarLock, nextPlanarAnchor, planarGestureAfterDiagonal, SingleHandRearmGate, openPalmAllowedAfterDiagonal, openPalmReadyToRelease, handClearForRelease, shouldCloseGripper } from "./interaction-state.js?v=hand-motion-01";
+import { mapPlanarMotion, pointingUpAngle, pointingControlCandidate, pointingYawFromWrist, shouldStartPlanarLock, nextPlanarAnchor, planarGestureAfterDiagonal, SingleHandRearmGate, openPalmAllowedAfterDiagonal, openPalmReadyToRelease, handClearForRelease, shouldCloseGripper } from "./interaction-state.js?v=instant-reentry-01";
 
 const video = document.querySelector("#webcam");
 const canvas = document.querySelector("#output-canvas");
@@ -86,7 +86,7 @@ let lastDiagonalGestureAt = Number.NEGATIVE_INFINITY;
 let openPalmSince = null;
 let motionRequestInFlight = false;
 let pendingMotionRequest;
-const rearmGate = new SingleHandRearmGate({ waitMs: 350, stableMs: 250, stableRadius: 0.012 });
+const rearmGate = new SingleHandRearmGate();
 let safetyTransport = Promise.resolve();
 let resumePending = false;
 let resumeConfirmed = false;
@@ -297,7 +297,7 @@ async function checkRobotConnection() {
       robotTaskMode = runtime.task_mode ?? "pick_place";
       robotZLocked = runtime.z_locked === true;
       const xyErrorCm = ((runtime.grasp_xy_error_m ?? 0) * 100).toFixed(1);
-      const controlHint = runtime.paused ? "控制暂停／等待入镜确认" : "控制已恢复";
+      const controlHint = runtime.paused ? "控制暂停／等待手部识别" : "控制已恢复";
       const graspHint = runtime.gripper_closed && runtime.holding_cube
         ? "双侧接触红块，可手动抬升"
         : runtime.gripper_closed ? "夹爪已关闭；握拳上下移动控制升降"
@@ -416,7 +416,9 @@ function processRobotControl(result, timestamp) {
     return;
   }
 
-  // Re-entry also requires a stable wrist and gesture before robot motion.
+  // Re-entry is eligible immediately. The backend must still acknowledge a
+  // fresh token, and the first visible position establishes a new motion anchor.
+  let resumedThisFrame = false;
   const visibleWrist = result.landmarks?.[0]?.[0];
   const handVisibleForControl = Number.isFinite(visibleWrist?.x) && Number.isFinite(visibleWrist?.y);
   if (!handVisibleForControl) {
@@ -454,8 +456,9 @@ function processRobotControl(result, timestamp) {
         resumeConfirmed = false;
         pendingResumeToken = null;
         rearmGate.arm();
+        resumedThisFrame = true;
         // Treat the visible gesture as a fresh gesture after re-entry. The
-        // Entry observation and gesture confirmation run concurrently;
+        // Re-entry and the existing gesture confirmation run concurrently;
         // do not impose another open/close cooldown on the same held gesture.
         lastRobotGesture = "None";
         const entryGesture = rearmGate.candidate.gesture;
@@ -470,9 +473,9 @@ function processRobotControl(result, timestamp) {
         lastCloseSentAt = timestamp - GRIPPER_CLOSE_RETRY_MS;
         robotFeedback.textContent = "控制已恢复；保持当前手势即可继续操作。";
       } else if (safety.state === "ready") {
-        robotFeedback.textContent = "入镜确认完成，正在同步仿真控制…";
+        robotFeedback.textContent = "已检测到手，正在恢复仿真控制…";
       } else {
-        robotFeedback.textContent = `手已入镜，${(Math.ceil(safety.remainingMs / 100) / 10).toFixed(1)} 秒后恢复控制。`;
+        robotFeedback.textContent = "等待手部识别，机械臂暂停。";
       }
     }
     if (!rearmGate.armed) {
@@ -519,7 +522,7 @@ function processRobotControl(result, timestamp) {
     pointingExitGesture = null;
   }
   if (isPushingTask()) {
-    processPushingControl({ gesture, gestureChanged, wrist, timestamp });
+    processPushingControl({ gesture, gestureChanged, wrist, timestamp, reentered: resumedThisFrame });
     lastRobotGesture = gesture;
     return;
   }
@@ -712,7 +715,7 @@ function processRobotControl(result, timestamp) {
   lastRobotGesture = gesture;
 }
 
-function processPushingControl({ gesture, gestureChanged, wrist, timestamp }) {
+function processPushingControl({ gesture, gestureChanged, wrist, timestamp, reentered = false }) {
   // Push-T uses a closed gripper and fixed midpoint contact height. Palm and
   // fist no longer change the gripper or Z; only planar gestures move it.
   const isVerticalGesture = gesture === "Open_Palm" || gesture === "Closed_Fist";
@@ -734,7 +737,9 @@ function processPushingControl({ gesture, gestureChanged, wrist, timestamp }) {
   }
 
   if (gestureChanged) {
-    pushingPlanarGestureStartedAt = timestamp;
+    // A resumed hand establishes a fresh anchor without another entry delay.
+    // Ordinary in-frame gesture changes retain their existing confirmation.
+    pushingPlanarGestureStartedAt = reentered ? Number.NEGATIVE_INFINITY : timestamp;
     lastPlanarPoint = { x: wrist.x, y: wrist.y };
   }
   if (lastPlanarPoint && timestamp - lastControlSentAt >= CONTROL_INTERVAL_MS) {
