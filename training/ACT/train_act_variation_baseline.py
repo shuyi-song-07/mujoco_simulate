@@ -120,7 +120,7 @@ def make_parser(auxiliary: bool = False, motion: bool = False) -> argparse.Argum
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--device", choices=("cuda", "cpu", "mps"), default="cuda")
     parser.add_argument("--steps", type=int, default=40_000)
-    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--eval-split", type=float, default=0.1)
     parser.add_argument("--eval-steps", type=int, default=1000)

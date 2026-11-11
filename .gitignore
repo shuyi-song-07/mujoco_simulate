@@ -54,5 +54,8 @@ datasets/
 *.safetensors
 *.onnx
 
+*.log
+*.log.*
+
 # MuJoCo Menagerie is maintained as a separate upstream repository.
 mujoco_menagerie/
