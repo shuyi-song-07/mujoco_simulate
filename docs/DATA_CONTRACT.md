@@ -73,6 +73,8 @@ Task Binding 含 task_id、task_version、scene_id、Manifest SHA、Schema、七
 
 真实开合、接触建立/解除和物理收敛仍由原证据保护。未知手势不等于静止；是否压缩仍看原有机器人/物理规则。人工决定与自动证据分开保存。`data_ready` 表示结构可读，`training_ready/approved=false` 仍提醒质量审批没有被代码自动完成，不等于训练读取器未实现。
 
+推动任务通过冻结的 `action_contract.capabilities.independent_xy_hold=true` 声明单侧 XY 控制能力，由任务 `scene.push_alignment` 语义启用。双手身份、时效和关键点仍须有效：一侧 Unknown 时该侧发送 HOLD/零位移并保持爪宽，另一侧可发送 XY_HOLD；双方实际操作平面 XY/Z 冲突仍双侧保持。Unknown 侧恢复手势时按原100 ms确认并重建自己的手腕基准，不回放回中位移。真正丢手、无效追踪和手动暂停仍停止双臂。托盘任务及没有此能力声明的旧服务保留双手同时 XY 的前端规则。原有 S16/A14、控制频率、手势标签、物理保护和 Safe Stitch 未改变；单侧 Unknown 不意味着整帧无动作。
+
 ## 正式 Pack Reader
 
 所有正式训练经同一接口读取，不解析 Raw 重做裁剪：

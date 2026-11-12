@@ -38,6 +38,19 @@ class RateHandGuardTests(unittest.TestCase):
         p = packet(); p["delta_task_m"]["left"][2] = .001
         self.assertEqual(inspect_rate_input(p), "interaction_motion_forbidden")
 
+    def test_tracked_unknown_can_hold_beside_xy_but_not_move_or_hide_missing_hand(self):
+        for held in (0, 1):
+            modes = ['XY_HOLD', 'XY_HOLD']; modes[held] = 'HOLD'
+            shapes = ['ily', 'ily']; shapes[held] = 'unknown'
+            p = packet(modes=modes, shapes=shapes)
+            p['delta_task_m'][('left', 'right')[1-held]][0] = .001
+            self.assertIsNone(inspect_rate_input(p))
+            p['delta_task_m'][('left', 'right')[held]][0] = .001
+            self.assertEqual(inspect_rate_input(p), 'interaction_motion_forbidden')
+            p['delta_task_m'][('left', 'right')[held]][0] = 0.
+            p['telemetry']['recognition_result']['measurement']['hands'][held]['valid'] = False
+            self.assertEqual(inspect_rate_input(p), 'untrusted_hand_measurement')
+
     def test_identity_stale_missing_nan_edge_binding_and_old_protocol(self):
         for fault in ("identity", "stale", "missing", "nan", "edge", "binding", "old"):
             g = HandInputGuard()

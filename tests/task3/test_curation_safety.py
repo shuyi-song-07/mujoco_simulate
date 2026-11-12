@@ -2,8 +2,8 @@
 import copy
 import unittest
 
-from dataset.task3.curation_rules import select_rows, load_config, execution_hazards
-from tests.task3.test_intent_curation import evidence_rows, active, execution
+from dataset.task3.curation_rules import execution_hazards
+from tests.task3.test_intent_curation import evidence_rows, active, execution, select_rows, load_config
 
 
 def middle():

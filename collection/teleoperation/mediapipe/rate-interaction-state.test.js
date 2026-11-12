@@ -4,11 +4,11 @@ import {ContinuousInteractionState} from "./continuous-interaction-state.js";
 import {detectionsFromMediaPipe} from "./dual-interaction-state.js";
 import {gestureResult,gestureMeasure} from "../../../tests/task3/gesture_hand_fixture.mjs";
 const protocol="gesture-rate-gripper-v3",sides=["left","right"];
-function setup({bind=true,modeConfirmMs=200}={}) {
+function setup({bind=true,modeConfirmMs=200,independentXY=false}={}) {
   const e=new ContinuousInteractionState({wrist_filter:"ema",ema_alpha:1});let now=-40;
   e.syncHealth({task_state:"PREGRASP",gripper_latch:"CONTINUOUS",grippers:{left:{command_width_m:.08},right:{command_width_m:.08}},
     physical_contact:{control_protocol:protocol,hold_width_m:{left:null,right:null}},
-    action_contract:{control_protocol:protocol,gesture_parameters:{mode_confirm_ms:modeConfirmMs,open_score_min:.55,close_score_min:.8,motion_score_min:.75}}},0);
+    action_contract:{control_protocol:protocol,capabilities:{independent_xy_hold:independentXY},gesture_parameters:{mode_confirm_ms:modeConfirmMs,open_score_min:.55,close_score_min:.8,motion_score_min:.75}}},0);
   const s={e,tick(shapes=["ILY","ILY"],opts={}) {
     now+=opts.stepMs??40;const m=gestureMeasure(shapes,now,opts),result=gestureResult(shapes,opts);
     if(opts.invalid)m.hands[0].valid=false;
@@ -21,6 +21,56 @@ function setup({bind=true,modeConfirmMs=200}={}) {
   return s;
 }
 const noMotion=out=>sides.forEach(s=>assert.equal(Math.hypot(...out.command.delta_task_m[s]),0));
+
+test("push allows either tracked Unknown side to hold while the other sends XY with unchanged jaw widths",()=>{
+  for(const held of [0,1]) {
+    const s=setup({independentXY:true,modeConfirmMs:100});s.settle();
+    s.e.health.grippers.left.command_width_m=.025;s.e.health.grippers.right.command_width_m=.043;
+    const shapes=["ILY","ILY"];shapes[held]="UNKNOWN";s.settle(shapes);
+    const out=s.tick(shapes,{dy:[-.02,-.02]});
+    assert.equal(out.command.mode,"XY");
+    assert.deepEqual(out.command.interaction_modes,held===0?["HOLD","XY_HOLD"]:["XY_HOLD","HOLD"]);
+    assert.deepEqual(out.command.delta_task_m[sides[held]],[0,0,0]);
+    assert.ok(Math.hypot(...out.command.delta_task_m[sides[1-held]])>0);
+    assert.deepEqual(out.command.widths_m,[.025,.043]);
+    assert.equal(out.training_recordable??out.telemetry.training_recordable,true);
+  }
+});
+
+test("push recentering clears only the held wrist baseline and never replays its recenter displacement",()=>{
+  const s=setup({independentXY:true,modeConfirmMs:100});s.settle();
+  s.settle(["UNKNOWN","ILY"],{dy:[-.05,0]});
+  let out;
+  for(let i=0;i<4;i++) {
+    out=s.tick(["ILY","ILY"],{dy:[-.05,-.004*(i+1)]});
+    assert.deepEqual(out.command.delta_task_m.left,[0,0,0]);
+    assert.ok(Math.hypot(...out.command.delta_task_m.right)>0);
+  }
+  assert.deepEqual(out.command.interaction_modes,["XY_HOLD","XY_HOLD"]);
+  out=s.tick(["ILY","ILY"],{dy:[-.06,-.016]});
+  assert.ok(Math.hypot(...out.command.delta_task_m.left)>0);
+});
+
+test("push still holds both on a true XY/Z conflict and pauses for missing or untrusted measurements",()=>{
+  for(const shape of ["PALM","FIST"]) {
+    const s=setup({independentXY:true,modeConfirmMs:100});s.settle();
+    const out=s.settle(["ILY",shape],{dy:-.02});
+    assert.equal(out.reason,"mixed_motion_planes");noMotion(out);
+  }
+  for(const opts of [{single:true},{invalid:true},{stale:true},{lowIdentity:true}]) {
+    const s=setup({independentXY:true,modeConfirmMs:100});s.settle();
+    const out=s.tick(["UNKNOWN","ILY"],opts);
+    assert.equal(out.command.command,"pause");
+  }
+  const s=setup({independentXY:true});s.settle();
+  noMotion(s.settle(["UNKNOWN","UNKNOWN"]));
+  s.e.manualPaused=true;assert.equal(s.tick().command.command,"pause");
+});
+
+test("without the push capability a tracked Unknown beside XY still holds both arms",()=>{
+  const s=setup();s.settle();const out=s.settle(["UNKNOWN","ILY"],{dy:-.02});
+  assert.equal(out.reason,"mixed_motion_planes");noMotion(out);
+});
 test("100 ms current-shape confirmation holds old ramps then requests independent endpoints at the exact boundary",()=>{
   const s=setup({modeConfirmMs:100});s.settle();
   s.e.health.grippers.left.command_width_m=.025;s.e.health.grippers.right.command_width_m=.043;

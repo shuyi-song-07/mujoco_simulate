@@ -21,6 +21,18 @@ TASK = 'h_frame_push_align'
 DEMO_SEED = 10
 
 
+def reference_config():
+    """Keep the original +X contact regression independent of UI layout edits.
+
+    Its fixed waypoints validate physical transport, not the current task route.
+    The current registered layout is checked separately below.
+    """
+    config = recording_config(get(TASK))
+    config['scene']['object_position'] = [-.075, 0., .3632]
+    config['scene']['target_position'] = [.065, 0., .363]
+    return config
+
+
 def verify_inheritance(old, new):
     """Compare the compiled model and reset state, not just JSON parameters."""
     for name in ('table_geom', 'left_pedestal_geom', 'right_pedestal_geom'):
@@ -143,6 +155,42 @@ def push_demo(c, capture=None):
 
 
 class HFrameTransportTests(unittest.TestCase):
+    def test_push_tracked_hold_and_xy_reach_real_controller_independently(self):
+        from tests.task3.rate_fixture import packet
+        from simulation.mujoco.dual_arm.hand_measurement import HandInputGuard
+
+        tray = DualArmTaskController(get('tray_to_platform').config())
+        self.assertFalse(tray.action_contract()['capabilities']['independent_xy_hold'])
+        for task in (TASK, 'push_r'):
+            for held in (0, 1):
+                with self.subTest(task=task, held=held):
+                    c = DualArmTaskController(get(task).config())
+                    self.assertTrue(c.action_contract()['capabilities']['independent_xy_hold'])
+                    guard = HandInputGuard()
+                    before = c.action_vector_m().copy()
+                    actual_before = c.arms[1-held].get_actual_pose()[0].copy()
+                    modes = ['XY_HOLD', 'XY_HOLD']; modes[held] = 'HOLD'
+                    shapes = ['ily', 'ily']; shapes[held] = 'unknown'
+                    for i in range(20):
+                        p = packet(i, modes=modes, shapes=shapes)
+                        p['widths_m'] = before[[6, 13]].tolist()
+                        p['delta_task_m'][('left', 'right')[1-held]][0] = .001
+                        reason = guard.check(p, session='session', epoch=0, now_ms=p['sentAt']+10,
+                                             control_protocol=c.contact_control.control_protocol,
+                                             gesture_parameters=c.config['gesture_control'])
+                        if reason:
+                            self.assertEqual(reason, 'tracking_recovery')
+                        else:
+                            result = c.apply_command(p, now_ms=p['sentAt']+10)
+                            self.assertTrue(result['accepted'], result)
+                        c.step(1/60)
+                    after = c.action_vector_m()
+                    np.testing.assert_allclose(after[held*7:held*7+6], before[held*7:held*7+6], atol=1e-10)
+                    np.testing.assert_allclose(after[[6, 13]], before[[6, 13]], atol=1e-10)
+                    self.assertGreater(after[(1-held)*7]-before[(1-held)*7], .002)
+                    self.assertGreater(np.linalg.norm(c.arms[1-held].get_actual_pose()[0]-actual_before), .001)
+                    self.assertFalse(c.paused)
+
     def test_compiled_inheritance(self):
         old, new = [DualArmTaskController(recording_config(get(task))) for task in ('tray_to_platform', TASK)]
         verify_inheritance(old, new)
@@ -152,8 +200,14 @@ class HFrameTransportTests(unittest.TestCase):
         self.assertEqual(len(new.object_geoms), 3)
         self.assertAlmostEqual(new.model.body_mass[new.object_id], .55)
 
-    def test_scripted_real_contact_alignment(self):
-        push_demo(DualArmTaskController(get(TASK).config()))
+    def test_scripted_reference_real_contact_alignment(self):
+        push_demo(DualArmTaskController(reference_config()))
+
+    def test_current_layout_reachability_and_visibility(self):
+        from tasks.h_frame_push_align.preflight import preflight
+
+        result = preflight(get(TASK).config(), [0, 1, 2, 10, 42, 1910000])
+        self.assertEqual(result['summary']['cases_with_flags'], 0, result['summary'])
 
     def test_z_floor_stops_descent_without_blocking_xy(self):
         config = get(TASK).config()
@@ -219,7 +273,7 @@ def render_demo(output):
     output = output.resolve()
     if not output.is_relative_to(ROOT / '.local/checks'):
         raise ValueError('Write engineering media below .local/checks')
-    c = DualArmTaskController(recording_config(get(TASK)))
+    c = DualArmTaskController(reference_config())
     old = DualArmTaskController(recording_config(get('tray_to_platform')))
     camera = verify_inheritance(old, c)
     output.mkdir(parents=True, exist_ok=False)
@@ -239,7 +293,9 @@ def render_demo(output):
     finally:
         video.close()
         renderer.close()
-    result.update(oblique_camera=camera, decoded_video=decode_video(video.path, video.frames, width=640),
+    result.update(layout='fixed_original_plus_x_regression_not_current_task_layout',
+                  scene_config=c.config['scene'],
+                  oblique_camera=camera, decoded_video=decode_video(video.path, video.frames, width=640),
                   input_kind='scripted_test')
     (output / 'result.json').write_text(json.dumps(result, indent=2) + '\n', encoding='utf-8')
     return result

@@ -123,7 +123,8 @@ class MergePreparedTests(unittest.TestCase):
             self.merge()
 
     def test_safe_stitch_parameters_cannot_differ(self):
-        self.change_curation_config(1, lambda config: config['sa'].update(window_frames=config['sa']['window_frames']+1))
+        self.change_curation_config(1, lambda config: config['sa']['thresholds'].update(
+            action_position_m=config['sa']['thresholds']['action_position_m']*2))
         with self.assertRaisesRegex(ValueError, 'Safe Stitch/curation'):
             self.merge()
 

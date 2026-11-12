@@ -17,10 +17,17 @@ def stationary_middle(left_z, right_z):
 
 class HeightProtectionTests(unittest.TestCase):
     def test_complete_low_stationary_evidence_can_compress(self):
-        out = select_rows(stationary_middle(.38, .38))
-        self.assertFalse(out['rows'][80]['keep'])
-        self.assertFalse(out['rows'][80]['height_protected'])
-        self.assertTrue(out['rows'][80]['height_evidence']['both_below_threshold'])
+        from tests.task3.test_three_frame_curation import wait_rows
+        rows = wait_rows()
+        for row in rows:
+            facts = row['evidence']
+            for f in [facts, *facts['interval']['controls'], facts['next_control']]:
+                for side in ('left', 'right'):
+                    f['features'][side + '.actual_position'][1][2] = .38
+        out = select_rows(rows)
+        self.assertFalse(out['rows'][40]['keep'])
+        self.assertFalse(out['rows'][40]['height_protected'])
+        self.assertTrue(out['rows'][40]['height_evidence']['both_below_threshold'])
 
     def test_missing_physical_evidence_requires_both_low_for_fallback_label(self):
         for left, right, protected in (

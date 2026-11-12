@@ -43,7 +43,7 @@ def validate_config(config):
         "context": {"before_frames": (int, 0, 300), "after_frames": (int, 0, 300)},
         "waits": {**{k: (float, 0., 600.) for k in
                   ("minimum_prefix_s", "minimum_middle_s", "minimum_recenter_s")},
-                  "same_intent_frames": (int, 2, 600), "changed_intent_frames": (int, 2, 600),
+                  "same_intent_frames": (int, 0, 600), "changed_intent_frames": (int, 2, 600),
                   "post_release_frames": (int, 0, 300)},
         "protection": {"height_threshold_m": (float, .001, 3.),
                        "settle_seconds": (float, 1e-6, 10.),
@@ -97,9 +97,14 @@ def validate_config(config):
     # them, since their configuration fingerprints must remain reproducible.
     if isinstance(value.get('sa'), dict) and 'minimum_static_frames' in value['sa']:
         schema['sa']['minimum_static_frames'] = (int, 1, 3000)
+    if isinstance(value.get('sa'), dict) and 'stationarity_method' in value['sa']:
+        schema['sa']['stationarity_method'] = 'current_vs_previous_two'
     if isinstance(value.get('waits'), dict) and 'minimum_transition_s' in value['waits']:
         schema['waits']['minimum_transition_s'] = (float, 0., 600.)
     check(value, schema)
+    if value['sa'].get('stationarity_method') == 'current_vs_previous_two':
+        if value['sa']['window_frames'] != 2 or 'minimum_static_frames' in value['sa']:
+            raise ValueError('三帧滑窗必须使用window_frames=2，不能再叠加minimum_static_frames')
     if value["intent"]["min_distinct_inputs"] > value["intent"]["stable_frames"]:
         raise ValueError("min_distinct_inputs不能大于stable_frames")
     if value["intent"]["recenter_search_frames"] < value["intent"]["stable_frames"]:

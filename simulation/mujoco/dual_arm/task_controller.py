@@ -429,6 +429,9 @@ class DualArmTaskController:
                     contract["policy_compatibility"] = "14D-only checkpoints are incompatible; explicit 2D interaction modes and release intent are required"
                     contract["release_intent_contract"]["meaning"] = "fresh explicit RELEASE confirmation; camera requires complete-palm evidence; OPENING continuation may have false intent"
                     if self.contact_control.rate_control:
+                        # Advertised and frozen with the existing action contract.
+                        # The XY + HOLD wire format is already validated per side.
+                        contract['capabilities']['independent_xy_hold'] = bool(self.config['scene'].get('push_alignment'))
                         contract["release_intent_contract"]["meaning"] = "true exactly in Z_OPEN; free grippers open, physical grasp requires stable supported confirmation"
                         contract["policy_contract_version"] = "gesture-rate-mode-policy-v3"
                         contract["gripper_rate_contract"] = {"Z_OPEN": 1, "Z_CLOSE": -1, "XY_HOLD": 0, "HOLD": 0,

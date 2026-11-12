@@ -1,9 +1,9 @@
 """Adjacent low-change runs are candidates, not permission to skip physics."""
 import unittest
 
-from test_intent_curation import evidence_rows
+from test_intent_curation import evidence_rows, load_config, select_rows
 from test_wait_compression import wait_rows
-from dataset.task3.curation_rules import load_config, select_rows, validate_config
+from dataset.task3.curation_rules import validate_config
 
 
 class AdjacentStationarityTests(unittest.TestCase):

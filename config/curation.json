@@ -6,8 +6,7 @@
     "documentation": "_help仅为说明，不进入有效参数哈希。调整数值须重新生成新版本。"
   },
   "sa": {
-    "window_frames": 1,
-    "minimum_static_frames": 3,
+    "window_frames": 2,
     "thresholds": {
       "state_joint_rad": 0.002,
       "state_aperture_m": 0.0005,
@@ -23,10 +22,11 @@
       }
     },
     "_help": {
-      "window_frames": "相比较的历史原始帧数量，整数1–3000。当前固定使用1，即只比较上一原始帧，不累计前三帧变化；旧配置3仅用于历史复现。不要为增加静止确认长度修改此项，应改minimum_static_frames。",
-      "minimum_static_frames": "连续低变化比较次数，整数1–3000，默认3：连续3次当前帧对上一帧的五组A/S变化均严格小于阈值，回溯确认整段为静止候选（涉及4个观测帧）。一次超阈值、无效帧或源边界结束该段；不足3次保留。增大更保守，减小接纳更短候选。物理保护、最短等待时长和安全拼接仍独立核验；不等于最终保留3帧。",
-      "thresholds": "任一组达到阈值即为A/S变化；仅构造证据，最终仍检查意图及真实物理事件。"
-    }
+      "window_frames": "当前帧分别比较前两个原始帧，固定2；必须有完整连续ABC才确认。不是相邻比较连续三次，也不额外比较A与B。",
+      "thresholds": "任一组超过阈值即不满足三帧候选；等于阈值仍可成为候选，不代表自动删除。",
+      "stationarity_method": "三帧滑窗：C相对A/B的所有A/S组变化都不超过阈值，回溯标记ABC为低变化候选。后续每帧继续比较其前两帧，超阈值即结束原段。原始边界/无效数值不能跨越；真实执行、物理运动与Safe Stitch仍独立检查。"
+    },
+    "stationarity_method": "current_vs_previous_two"
   },
   "intent": {
     "stable_frames": 3,
@@ -48,21 +48,21 @@
   },
   "waits": {
     "minimum_prefix_s": 1.0,
-    "minimum_middle_s": 2.0,
-    "minimum_recenter_s": 0.2,
+    "minimum_middle_s": 0.0,
+    "minimum_recenter_s": 0.0,
     "same_intent_frames": 3,
     "changed_intent_frames": 10,
     "post_release_frames": 3,
     "_help": {
       "minimum_prefix_s": "开头准备等待候选最短仿真时长，秒0–600，默认1；增大保留更多首部。首次机器人活动前用A/S、固定初始位姿累计变化、物理与60Hz实际目标判定，不要求手势稳定；允许准备期丢手/恢复，无接触/抓放且无安全故障才删。活动前保留context.before_frames帧。",
-      "minimum_middle_s": "同意图且无回中迹象的静止核心最短时长，秒0–600，默认2；增大保留更多等待。可解释回中使用minimum_recenter_s，换意图使用minimum_transition_s，执行/安全事件另行保护；累计位移、物理与全部间隔控制核验仍同时生效。",
-      "minimum_recenter_s": "同意图回中/追踪恢复的每个稳定区间最短时长，秒0–600，默认0.2约6帧。逐段固定起点核验，后续恢复移动不会否定之前的稳定区间；达到门槛后保留same_intent_frames帧，仍需Safe Stitch通过。换意图另用minimum_transition_s。",
-      "same_intent_frames": "前后同一只手可靠意图一致时，冗余静止核心保留帧数，整数2–600，默认3约100ms，分配给两端且至少各1帧；适用XY/Z及已稳定持物等所有阶段。减小减少纯等待，增大保留更多。残余收敛、真实执行和6帧事件上下文独立保留，不消耗此预算。",
-      "changed_intent_frames": "前后同侧可靠意图改变时，冗余静止核心保留帧数，整数2–600，默认10约333ms；各侧最多一次可解释切换。减小减少换手势等待，增大保留更多。不能截断真实开合、未完成授权、释放确认、基准变化或6帧事件上下文；安全拼接另按现有物理阈值逐缺口核验。",
+      "minimum_middle_s": "普通同意图静止候选的额外时长门槛，秒0–600；当前0，三帧确认后不再等2秒。",
+      "minimum_recenter_s": "同意图回中的额外时长门槛，秒0–600；当前0，三帧确认后不再等0.2秒。",
+      "same_intent_frames": "同意图冗余等待保留预算，整数0–600，当前3：静止核心开头1帧、末尾2帧；不足3帧全部保留，不补帧。只删除经核验的纯等待；真实执行/事件上下文独立保留。首尾静止不保证下一控制tick或日志事件满足Safe Stitch，仍须核验。",
+      "changed_intent_frames": "换意图冗余等待最多保留的原始帧数，整数2–600，当前10：开头5帧、末尾5帧；不足10帧全部保留，不插值不补帧。真实执行和事件上下文独立保留，安全拼接仍需通过。",
       "post_release_frames": "确认真实释放、两爪实际全开且脱离物体、物体放稳、DONE成功之后额外保留原始帧数，整数0–300，默认3约100ms，完成帧本身另保留。增大保留更多尾部；后面的全部尾段排除，优先于低高度保护和普通事件6帧上下文，不要求尾段满1秒。只有DONE标签或张掌/开爪指令不够；完成前的真实过程不截短。",
-      "minimum_transition_s": "前后意图改变的稳定区间最短时长，秒0–600，默认0.2约6帧，保留changed_intent_frames帧；不足保留预算时不删帧，与快速同意图回中分别配置。旧冻结配置没有此项时沿用其minimum_recenter_s，不改旧参数指纹。"
+      "minimum_transition_s": "换意图静止候选的额外时长门槛，秒0–600；当前0。不足changed_intent_frames时原样保留，不补帧。"
     },
-    "minimum_transition_s": 0.2
+    "minimum_transition_s": 0.0
   },
   "protection": {
     "height_threshold_m": 0.39,

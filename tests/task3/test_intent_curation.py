@@ -6,9 +6,23 @@ import unittest
 import numpy as np
 
 from dataset.task3.curation_rules import (
-    build_windows, effective_config, group_deltas, load_config, resegment_rows,
-    select_rows, validate_config,
+    build_windows, effective_config, group_deltas, load_config as current_config, resegment_rows,
+    select_rows as current_select_rows, validate_config,
 )
+
+
+def load_config():
+    """Frozen adjacent/three-dwell policy: keep historical regression coverage."""
+    cfg = current_config()
+    cfg['sa'].pop('stationarity_method', None)
+    cfg['sa'].update(window_frames=1, minimum_static_frames=3)
+    cfg['waits'].update(minimum_middle_s=2., minimum_recenter_s=.2,
+                        minimum_transition_s=.2, same_intent_frames=3)
+    return cfg
+
+
+def select_rows(rows, config=None):
+    return current_select_rows(rows, load_config() if config is None else config)
 
 
 def evidence_rows(count=180):

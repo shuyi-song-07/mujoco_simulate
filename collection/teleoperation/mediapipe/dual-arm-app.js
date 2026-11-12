@@ -752,7 +752,9 @@ function continuousControlStatus() {
     hand_near_frame_edge:"完整双手移回内框后，等待可信追踪恢复并重建手腕基准；无需开度标定。",
     binding_complete:"身份已绑定。绑定用的张掌保持爪宽；双手先换 I Love You 或握拳，再开始控制。",
     binding_gesture_released:"绑定保护已解除；操作手势稳定 200 ms 后建立新手腕基准。",
-    mixed_motion_planes:"XY 需要双手同时 I Love You；Z 中可一侧张掌、一侧握拳。当前两侧位置与爪宽都保持。",
+    mixed_motion_planes:engine.health.action_contract?.capabilities?.independent_xy_hold===true?
+      "XY 与 Z 不能同时控制，两侧已保持。推动任务可一侧 I Love You，另一侧使用仍可追踪的未知手势保持位置和爪宽。":
+      "XY 需要双手同时 I Love You；Z 中可一侧张掌、一侧握拳。当前两侧位置与爪宽都保持。",
     gesture_mode_confirmation:"新手势确认 200 ms；过渡期间停止旧开合，保持当前爪宽。",
     gesture_motion_baseline:"新手腕基准已建立，首帧不移动；张掌持续开爪，握拳持续闭爪，I Love You 保持爪宽。",
     rate_gesture_unqualified:"当前手势未知或评分不足，保持目标；只使用 I Love You、张掌或握拳。",
@@ -813,6 +815,7 @@ function continuousControlStatus() {
       return {title:"单侧抓稳保持 · 另一侧对准",detail,state:"waiting"};
     }
     if(wire.every(mode=>mode==="XY_HOLD"))return {title:"XY 移动 · 爪宽保持",detail,state:"active"};
+    if(wire.includes("XY_HOLD"))return {title:wire[0]==="XY_HOLD"?"左臂 XY 移动 · 右臂保持":"右臂 XY 移动 · 左臂保持",detail,state:"active"};
     if(edgeTriggeredGrippers()) {
       if(sides.some(side=>side.kind==="edge_open"||side.kind==="edge_close"))return {title:"Z 升降 · 本次开合执行中",detail,state:"active"};
       if(sides.some(side=>side.kind==="edge_baseline"))return {title:"开合等待新基准",detail,state:"waiting"};

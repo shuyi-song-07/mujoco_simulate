@@ -4,7 +4,7 @@ const sides=["left","right"];
 const zeros=()=>Object.fromEntries(sides.map(s=>[s,[0,0,0]]));
 
 function packet(engine,modes,delta,widths,reason=null) {
-  engine.lastWireModes=[...modes];engine.mode=modes.every(m=>m==="XY_HOLD")?"XY":"Z";
+  engine.lastWireModes=[...modes];engine.mode=modes.includes("XY_HOLD")?"XY":"Z";
   engine.reason=reason;engine.takeover=false;
   return engine.output({command:"continuous_input",control_protocol:RATE_CONTROL_PROTOCOL,mode:engine.mode,
     interaction_modes:[...modes],delta_task_m:delta,widths_m:[...widths],
@@ -71,7 +71,11 @@ export function updateRate(engine,detections,now) {
     if(candidate==="XY_HOLD"&&x)state.motionAnchor[0]=wrist[0];
     if(y)state.motionAnchor[1]=wrist[1];
   }
-  if(modes.some(mode=>mode==="XY_HOLD")&&!modes.every(mode=>mode==="XY_HOLD")) {
+  // Push tasks may park one reliably tracked hand while the other moves.
+  // HOLD is not a competing plane; missing/invalid hands still pause above.
+  const independentXY=engine.health.action_contract?.capabilities?.independent_xy_hold===true;
+  const xyCompatible=modes.every(mode=>mode==="XY_HOLD"||(independentXY&&mode==="HOLD"));
+  if(modes.includes("XY_HOLD")&&!xyCompatible) {
     for(const side of sides)engine.interaction[side].motionAnchor=null;
     return hold(engine,"mixed_motion_planes");
   }

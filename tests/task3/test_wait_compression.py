@@ -1,8 +1,7 @@
 """Contract for compressing verified static waits, not physical execution."""
 import unittest
 
-from test_intent_curation import evidence_rows, active, execution
-from dataset.task3.curation_rules import select_rows, load_config
+from test_intent_curation import evidence_rows, active, execution, select_rows, load_config
 
 
 def wait_rows():

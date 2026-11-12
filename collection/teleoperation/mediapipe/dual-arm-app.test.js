@@ -1340,6 +1340,24 @@ async function boundLevelRateCamera(h) {
   h.enqueue("/api/dual/health",h.response(200,runtime));await h.app.checkHealth();
 }
 
+test("push page displays the active XY arm beside a tracked Unknown holding arm",async(t)=>{
+  for(const held of [0,1]) {
+    const h=makeHarness();t.after(()=>h.close());await boundLevelRateCamera(h);
+    const runtime={...h.app.runtime,action_contract:{...h.app.runtime.action_contract,
+      capabilities:{independent_xy_hold:true}}};
+    h.enqueue("/api/dual/health",h.response(200,runtime));await h.app.checkHealth();
+    for(let i=0;i<8;i++)await deliverRecognition(h,gestureResult(["ILY","ILY"]));
+    const shapes=["ILY","ILY"];shapes[held]="UNKNOWN";
+    for(let i=0;i<5;i++)await deliverRecognition(h,gestureResult(shapes,{dy:[-.004*i,-.004*i]}));
+    h.app.renderState();
+    assert.equal(h.element("control-status-title").textContent,held===0?"右臂 XY 移动 · 左臂保持":"左臂 XY 移动 · 右臂保持");
+    assert.equal(h.element("control-status").dataset.state,"active");
+    assert.equal(h.app.output.command.mode,"XY");
+    assert.deepEqual(Array.from(h.app.output.command.delta_task_m[held===0?"left":"right"]),[0,0,0]);
+    assert.ok(Math.hypot(...h.app.output.command.delta_task_m[held===0?"right":"left"])>0);
+  }
+});
+
 test("bound solo operator can start with lost hands and free partly closed jaws",async(t)=>{
   const h=makeHarness();t.after(()=>h.close());await boundLevelRateCamera(h);
   Object.assign(h.app.runtime,{contacts:{left_fingers:[false,false],right_fingers:[false,false]}});

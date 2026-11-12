@@ -434,13 +434,18 @@ def _recenter_context(rows, start, stop, cfg, diagnostics=None):
                 or interval.get('command_changed_from_previous') is True
                 or any(f.get('relative_pose', {}).get(s, {}).get('available') is not True for s in SIDES)):
             return False
-        # Current A/S stationarity is a consecutive adjacent comparison, not
-        # distance to the last sample of the entire pause.
-        sa_anchor = rows[index - 1] if index else row
-        delta = group_deltas(row['state_recorded'], row['action_recorded'],
-                             [sa_anchor['state_recorded']], [sa_anchor['action_recorded']])
-        if any(delta[key] >= cfg['sa']['thresholds'][key] for key in GROUPS):
-            return False
+        if cfg['sa'].get('stationarity_method') == 'current_vs_previous_two':
+            # Already confirmed/backfilled by the three-frame window. Do not
+            # introduce a second adjacent or consecutive-window requirement.
+            if not row['sa_stagnant']:
+                return False
+        else:
+            # Preserve the meaning of historical frozen configurations.
+            sa_anchor = rows[index - 1] if index else row
+            delta = group_deltas(row['state_recorded'], row['action_recorded'],
+                                 [sa_anchor['state_recorded']], [sa_anchor['action_recorded']])
+            if any(delta[key] >= cfg['sa']['thresholds'][key] for key in GROUPS):
+                return False
         # Per-image motion flags and the short A/S window can miss a slow
         # cumulative null-space joint change or servo opening. Compare the
         # candidate interval against its fixed first frame as well.
@@ -501,6 +506,36 @@ def _wait_exclusions(start, stop, stable_start, budget):
     remaining = budget
     first, last = remaining // 2, remaining - remaining // 2
     return list(range(min(stop, stable_start + first), max(stable_start, stop - last)))
+
+
+def _same_intent_exclusions(rows, start, stop, cfg):
+    """Zero dwell budget, with only the original anchors needed by Safe Stitch.
+
+    The unchanged seam validator remains authoritative. Moving endpoints can
+    cause its conservative repair to restore a whole gap; first try a bounded,
+    minimal original-frame anchor on each side, using that same validator.
+    No interpolation, new tolerance or extra gesture confirmation is introduced.
+    """
+    proposed = list(range(start, stop))
+    if start == 0 or stop == len(rows):
+        return proposed, []
+    from dataset.task3.sequence_stitching import _gap_check
+    initial = _gap_check(rows, start - 1, stop, cfg)
+    if initial['passed']:
+        return proposed, [start - 1, stop]
+    # Missing provenance cannot be repaired by selecting a nicer endpoint.
+    if any(reason.startswith(('missing_', 'invalid_', 'source_', 'control_epoch',
+                              'control_tick_', 'event_source_', 'execution_evidence_missing'))
+           for reason in initial['reasons']):
+        return proposed, []
+    before, after = cfg['context']['before_frames'] + 1, cfg['context']['after_frames'] + 1
+    for total in range(1, min(before + after, stop - start - 1) + 1):
+        for first in range(max(0, total - after), min(before, total) + 1):
+            last = total - first
+            if _gap_check(rows, start - 1 + first, stop - last, cfg)['passed']:
+                return list(range(start + first, stop - last)), [start - 1 + first, stop - last]
+    # The ordinary Safe Stitch pass will restore motion or mark a hard gap.
+    return proposed, []
 
 
 def _protection(rows, cfg):
@@ -777,6 +812,50 @@ def _confirm_stationary_runs(rows, minimum):
         start = stop
 
 
+def _confirm_three_frame_windows(rows):
+    """C vs A and B confirms A/B/C; each subsequent C uses its own two predecessors.
+
+    No A-vs-B veto or repeated-window confirmation. A failing C closes the
+    current run; it can begin a later, separately confirmed run. Invalid/source
+    boundaries are never crossed. Execution and physics remain independent.
+    """
+    for row in rows:
+        row['sa_stagnant'] = False
+        row['sa_stationarity'] = dict(
+            method='current_vs_previous_two', below_threshold=not row['sa_changed'],
+            confirmed=False, run_length=0, minimum_frames=3,
+            start_raw_frame=None, end_raw_frame=None)
+    start = 0
+    while start < len(rows):
+        if rows[start]['frame_role'] == 'INVALID':
+            start += 1
+            continue
+        end = start + 1
+        while (end < len(rows) and rows[end]['frame_role'] != 'INVALID'
+               and rows[end]['task_segment_id'] == rows[start]['task_segment_id']):
+            end += 1
+        cursor = start
+        while cursor + 2 < end:
+            current = cursor + 2
+            while current < end and rows[current]['sa_changed']:
+                current += 1
+            if current == end:
+                break
+            begin, stop = current - 2, current + 1
+            while stop < end and not rows[stop]['sa_changed']:
+                stop += 1
+            for row in rows[begin:stop]:
+                row['sa_stagnant'] = True
+                row['sa_changed'] = False
+                row['sa_stationarity'].update(confirmed=True, run_length=stop-begin,
+                    start_raw_frame=rows[begin]['raw_frame_index'],
+                    end_raw_frame=rows[stop-1]['raw_frame_index'])
+                row['frame_role'] = 'AMBIGUOUS_IDLE'
+                row['policy_reason'] = ['three_frame_low_change_candidate']
+            cursor = stop
+        start = end
+
+
 def select_rows(evidence_rows, config=None):
     cfg = effective_config(validate_config(config) if config is not None else load_config())
     rows = copy.deepcopy(evidence_rows)
@@ -803,7 +882,10 @@ def select_rows(evidence_rows, config=None):
         begin = max(history_start, i - cfg['sa']['window_frames'])
         delta = group_deltas(r['state_recorded'], r['action_recorded'],
                             [p['state_recorded'] for p in rows[begin:i]], [p['action_recorded'] for p in rows[begin:i]]) if valid and begin < i else None
-        changed = [k for k in GROUPS if delta is not None and delta[k] >= cfg['sa']['thresholds'][k]]
+        three_frame = cfg['sa'].get('stationarity_method') == 'current_vs_previous_two'
+        changed = [k for k in GROUPS if delta is not None and
+                   (delta[k] > cfg['sa']['thresholds'][k] if three_frame
+                    else delta[k] >= cfg['sa']['thresholds'][k])]
         r.update(task_segment_id=segment, hard_boundary=bool(hard), soft_curation_gap=False,
                  keep=True, effective_keep=True, policy_decision='keep', policy_reason=[], reason=[],
                  frame_role='INVALID' if not valid else 'ACTIVE_MOTION' if changed else 'AMBIGUOUS_IDLE',
@@ -820,14 +902,16 @@ def select_rows(evidence_rows, config=None):
             r.update(keep=False, effective_keep=False, policy_decision='exclude', policy_reason=['invalid_numeric_or_source'], review_required=True)
         elif changed:
             r['policy_reason'] = ['state_or_action_changed']
-    if 'minimum_static_frames' in cfg['sa']:
+    if cfg['sa'].get('stationarity_method') == 'current_vs_previous_two':
+        _confirm_three_frame_windows(rows)
+    elif 'minimum_static_frames' in cfg['sa']:
         _confirm_stationary_runs(rows, cfg['sa']['minimum_static_frames'])
     execution_intervals, warnings = _protection(rows, cfg)
     terminal = _terminal_release(rows, cfg)
     intervals = execution_intervals + _height_regions(rows, cfg, terminal)
     required = [r['frame_role'] in ('INVALID', 'ACTIVE_MOTION') or
-                (r.get('sa_stationarity', {}).get('below_threshold') is True
-                 and not r['sa_stationarity']['confirmed']) for r in rows]
+                (bool(r.get('sa_stationarity')) and not r['sa_stationarity']['confirmed']
+                 and (three_frame or r['sa_stationarity']['below_threshold'] is True)) for r in rows]
     for i, r in enumerate(rows):
         if r['frame_role'] == 'INVALID':
             continue
@@ -962,9 +1046,22 @@ def select_rows(evidence_rows, config=None):
                            cfg['waits'].get('minimum_transition_s', cfg['waits']['minimum_recenter_s'])
                            if phase == 'transition' else cfg['waits']['minimum_recenter_s'])
                 budget = cfg['waits']['changed_intent_frames' if recenter['intent_changed'] else 'same_intent_frames']
+                anchors = set()
                 for core in recenter['stationary_cores']:
                     if core['duration_s'] is not None and core['duration_s'] + 1e-9 >= minimum:
-                        remove.extend(_wait_exclusions(core['start_index'], core['stop_index'], core['start_index'], budget))
+                        if budget == 0:
+                            excluded, needed = _same_intent_exclusions(rows, core['start_index'], core['stop_index'], cfg)
+                            anchors.update(needed)
+                        else:
+                            excluded = _wait_exclusions(core['start_index'], core['stop_index'], core['start_index'], budget)
+                        remove.extend(excluded)
+                if budget == 0:
+                    # Neighboring candidate cores must not delete an anchor
+                    # used by a previously certified seam and merge the gaps.
+                    remove = sorted(set(remove) - anchors)
+                    removed = set(remove)
+                    for core in recenter['stationary_cores']:
+                        core['boundary_anchor_frames'] = sum(i not in removed for i in range(core['start_index'], core['stop_index']))
                 core_frames = sum(c['stop_index']-c['start_index'] for c in recenter['stationary_cores'])
                 recenter.update(retained_frame_budget=budget,
                                 stable_core_retained_frames=core_frames-len(remove),

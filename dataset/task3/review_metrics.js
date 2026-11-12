@@ -228,7 +228,7 @@
     if (budget !== null) lines.push(`稳定等待保留预算：${budget} 帧（不是毫秒）${retained !== null
       ? `；本停滞区间实际保留 ${retained} 帧，可能另含残余收敛或必要上下文` : ''}。`);
     else if (retained !== null) lines.push(`本停滞区间实际保留 ${retained} 帧。`);
-    if (minimum !== null) lines.push(`连续稳定部分至少 ${minimum} 秒仿真时间才考虑压缩。`);
+    if (minimum !== null) lines.push(minimum === 0 ? '静止候选确认后不再增加等待时长门槛。' : `连续稳定部分至少 ${minimum} 秒仿真时间才考虑压缩。`);
     if (diagnostic) lines.push(`未压缩原因：${waitReasonNames[diagnostic] || diagnostic}。`);
     return lines.length ? {before: describePair(before), after: describePair(after),
       retainedFrameBudget: budget, retainedFrames: retained, minimumDurationSeconds: minimum,
