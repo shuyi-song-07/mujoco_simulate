@@ -2,6 +2,8 @@
 
 > 本文档是项目唯一的总体 Guide，用于说明研究目标、系统结构、当前实现、任务规划、数据规范、训练评估和真机扩展路线。项目运行命令以根目录 [README.md](README.md) 为准。
 
+2026-11-12：单臂 ACT baseline 已改为 GJB 对齐协议，详见 [训练对齐说明](training/ACT/ALIGNMENT_GJB_CN.md)。历史辅助入口仍是原协议，不与新 baseline 混作单变量对照。
+
 单臂原始手部测量、命令关联与日志完整性说明见 [单臂原始数据记录](SINGLE_ARM_RAW_DATA_GUIDE_CN.md)。该记录通道不改变手势控制规则和现有训练字段。
 
 ## 1. 项目定位

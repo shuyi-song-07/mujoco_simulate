@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Train the unmodified LeRobot 0.6.1 ACT on the variation dataset.
+"""Train the GJB-aligned official ACT core on single-arm variation data.
 
 The overview RGB camera and robot state are the only policy inputs. Gesture
-fields stay in the dataset for the companion auxiliary-supervision experiment,
-but are never fed to the policy at inference time. Both entry points use this
-exact ACT setup.
+fields stay in the dataset but are never fed to this baseline. The historical
+auxiliary entry points retain their previous protocol and are not a controlled
+comparison to this newly aligned baseline until separately migrated.
 """
 
 from __future__ import annotations
@@ -123,9 +123,9 @@ def make_parser(auxiliary: bool = False, motion: bool = False) -> argparse.Argum
     )
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--device", choices=("cuda", "cpu", "mps"), default="cuda")
-    parser.add_argument("--steps", type=int, default=40_000)
+    parser.add_argument("--steps", type=int, default=40_000 if auxiliary else 60_000)
     parser.add_argument("--batch-size", type=int, default=16)
-    parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument("--num-workers", type=int, default=4 if auxiliary else 0)
     parser.add_argument("--eval-split", type=float, default=0.1)
     parser.add_argument("--eval-steps", type=int, default=1000)
     parser.add_argument("--save-freq", type=int, default=1000)
@@ -134,11 +134,20 @@ def make_parser(auxiliary: bool = False, motion: bool = False) -> argparse.Argum
         help="Track lowest validation loss in checkpoints/best (default: enabled)",
     )
     parser.add_argument("--chunk-size", type=int, default=30)
-    parser.add_argument("--seed", type=int, default=1000)
+    parser.add_argument("--seed", type=int, default=1000 if auxiliary else 20261016)
     parser.add_argument("--learning-rate", type=float, default=1e-5)
     parser.add_argument("--no-pretrained-backbone", action="store_true")
     parser.add_argument("--smoke-test", action="store_true", help="One small offline training step")
-    parser.add_argument("--print-command", action="store_true", help="Validate and print LeRobot arguments")
+    parser.add_argument("--print-command", action="store_true", help="Print aligned configuration (legacy auxiliary: LeRobot arguments)")
+    if not auxiliary:
+        parser.add_argument("--resume", type=Path, help="Resume this engine's complete last.pt")
+        parser.add_argument("--continue-from", type=Path, help="New run continuing last.pt to a larger cumulative --steps")
+        parser.add_argument("--split-file", type=Path, help="Frozen JSON with train/val episode lists; optional unit field")
+        parser.add_argument("--backbone-weights", type=Path)
+        parser.add_argument("--precision", choices=("fp32","bf16"), default="fp32")
+        parser.add_argument("--candidate-save-every", type=int, default=5000)
+        parser.add_argument("--cpu-threads", type=int, default=8)
+        parser.add_argument("--stop-after", type=int, help="Engineering stop at a complete update; retains total budget")
     if auxiliary:
         parser.add_argument("--gesture-weight", type=float, default=0.1)
     if motion:
@@ -207,6 +216,13 @@ def build_cli(args, *, auxiliary: bool) -> list[str]:
 
 
 def run(args, *, auxiliary: bool = False, install_auxiliary=None) -> None:
+    if not auxiliary:
+        # Keep the public launch command; the implementation now follows GJB.
+        if not __package__:
+            sys.path.insert(0, str(PROJECT_ROOT))
+        from training.ACT.aligned_training import run_aligned
+        run_aligned(args)
+        return
     root = args.dataset_root.expanduser().resolve()
     hand_delta_weight = getattr(args, "hand_delta_weight", 0.0)
     hand_delta_scale = getattr(args, "hand_delta_scale", 0.03)

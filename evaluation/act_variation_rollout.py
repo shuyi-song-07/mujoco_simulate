@@ -34,14 +34,13 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from simulation.mujoco.record_mujoco_panda import MujocoPandaRecorder, parse_args as recorder_args
 from simulation.mujoco.render_workers import _training_cameras
 
-DEFAULT_CHECKPOINT = PROJECT_ROOT / "outputs/act_variation_baseline/checkpoints/last/pretrained_model"
+DEFAULT_CHECKPOINT = PROJECT_ROOT / "outputs/act_variation_baseline/checkpoints/best.pt"
 DEFAULT_SCENE = PROJECT_ROOT / "simulation/mujoco/assets/franka_emika_panda/scene.xml"
 FPS = 30
 IMAGE_SHAPE = (480, 640, 3)
 AVAILABLE_CAMERAS = ("overview", "camera_2", "camera_3")
-# Preserve the checkpoint's demonstrated 100-frame action horizon. Shorter
-# horizons can be tried explicitly, but changed the successful test trajectory.
-DEFAULT_ACTION_STEPS = 100
+# Resolve from each checkpoint: new baseline K30 and historical LeRobot horizons.
+DEFAULT_ACTION_STEPS = None
 DEFAULT_MAX_XYZ_STEP_M = 0.01
 DEFAULT_MAX_JOINT_STEP_RAD = 0.03
 DEFAULT_MAX_YAW_STEP_RAD = 0.02
@@ -231,11 +230,16 @@ def checkpoint_camera_names(config) -> tuple[str, ...]:
     return camera_names
 
 
-def load_policy(checkpoint: Path, device: str, action_steps: int = DEFAULT_ACTION_STEPS):
+def load_policy(checkpoint: Path, device: str, action_steps: int | None = DEFAULT_ACTION_STEPS):
+    if checkpoint.is_file():
+        from training.ACT.aligned_inference import load_aligned_policy
+        return load_aligned_policy(checkpoint, device, action_steps)
     required = ("config.json", "model.safetensors", "policy_preprocessor.json", "policy_postprocessor.json")
     if not all((checkpoint / name).is_file() for name in required):
         raise ValueError(f"Incomplete LeRobot checkpoint: {checkpoint}")
     config = ACTConfig.from_pretrained(str(checkpoint), local_files_only=True)
+    if action_steps is None:
+        action_steps = config.chunk_size
     config.device = device
     config.pretrained_backbone_weights = None
     camera_names = checkpoint_camera_names(config)
@@ -429,6 +433,7 @@ def main() -> None:
     if screenshot_dir.exists():
         parser.error(f"Screenshot directory exists: {screenshot_dir}")
     policy, pre, post, camera_names = load_policy(checkpoint, args.device, args.action_steps)
+    args.action_steps = policy.config.n_action_steps
     rec_args = recorder_args(["--model-path", str(scene), "--random-seed", str(args.seed_base)])
     env = RolloutPanda(rec_args)
     renderer = mujoco.Renderer(env.model, height=480, width=640)

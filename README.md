@@ -181,7 +181,9 @@ python evaluation/validate_multicam_dataset.py \
 
 项目不限定只能使用 ACT。不同 policy 应拥有独立的训练目录、配置、依赖说明和输出目录，并通过清晰的数据接口读取 observation、state 和 action。
 
-### 当前提供：LeRobot ACT baseline
+### 当前提供：GJB 对齐的单臂 ACT baseline
+
+2026-11-12 起，baseline 使用与 `papera_gjb` 相同的原作者 ACT 核心与训练损失，适配当前 S9/A7 和 overview。默认60k步、batch16、K30、FP32、LR1e-5。模型、数据接口差异、续训和新权重格式见 [单臂 ACT 对齐说明](training/ACT/ALIGNMENT_GJB_CN.md)。
 
 以下命令使用统一入口启动 ACT。数据集路径必须显式传入，可按机器选择 `cuda`、`mps` 或 `cpu`：
 
@@ -190,10 +192,10 @@ python evaluation/validate_multicam_dataset.py \
   training/ACT/train_act_variation_baseline.py \
   --dataset-root /absolute/path/to/dataset \
   --output-dir /absolute/path/to/outputs/act_run \
-  --device cuda --steps 100000 --batch-size 8
+  --device cuda
 ```
 
-加入手势监督时使用 `training/ACT/train_act_variation_gesture.py`；再传入 `--hand-delta-weight 0.1` 可同时启用手部位移监督。`--repo-id` 可选，省略时自动使用 `local/<数据集目录名>`。
+历史手势/位移辅助入口仍保留原 LeRobot 协议，本轮没有改动；不能与新 baseline 当作仅辅助损失不同的公平对照。`--repo-id` 可选，省略时自动使用 `local/<数据集目录名>`。
 
 ### 新增其他 policy
 
