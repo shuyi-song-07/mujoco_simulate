@@ -433,7 +433,7 @@ def build(prepared, output, *, split_file, width=640, height=480, resume=False, 
         'config': {'image_width': width, 'image_height': height, 'cameras': ['oblique']},
         'implementation_sha256': {name: sha256(Path(__file__).with_name(name))
             for name in ('training_pack.py','video_cache.py','sequence_stitching.py',
-                         'curation_rules.py','curation_config.py')}}
+                         'curation_rules.py','curation_config.py','event_continuity.py')}}
     if output.exists() and not resume:
         raise FileExistsError(f'Choose a new output directory or use resume: {output}')
     output.mkdir(parents=True,exist_ok=resume)

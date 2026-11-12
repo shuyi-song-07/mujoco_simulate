@@ -15,6 +15,7 @@ import numpy as np
 
 from dataset.task3.curation_config import effective_config, load_config, validate_config
 from dataset.task3.frame_evidence import _rotation_distance
+from dataset.task3.event_continuity import enabled as continuity_enabled, classify_event, settled_execution
 
 VERSION = "papera-safe-sequence-1"
 SIDES = ("left", "right")
@@ -226,10 +227,23 @@ def _fact_failures(facts, cfg, *, require_rotation=False):
     return sorted(set(reasons))
 
 
-def _event_failures(events, anchor, cfg, previous_line, current_line):
+def _event_failures(events, anchor, cfg, previous_line, current_line, controls=(), certificates=None):
     failures = []
     for event in events:
         kind = event.get("kind")
+        if continuity_enabled(cfg):
+            line = event.get('source_line')
+            if (type(line) is not int or type(previous_line) is not int
+                    or type(current_line) is not int or not previous_line < line <= current_line):
+                failures.append('event_source_outside_interval')
+            if any(event.get(key) != anchor.get(key) for key in ('session','control_epoch')):
+                failures.append('event_source_context_mismatch')
+            check = classify_event(event, controls, cfg)
+            if certificates is not None:
+                certificates.append(check)
+            if check['effect'] != 'unchanged':
+                failures.extend(check['reasons'])
+            continue
         if kind not in ALLOWED_EVENTS:
             failures.append("causal_event:" + str(kind))
         elif kind == "pause_changed" and event.get("after") is True and event.get("reason") not in TRACKING_PAUSES:
@@ -281,13 +295,15 @@ def _event_failures(events, anchor, cfg, previous_line, current_line):
 
 def _gap_check(rows, left, right, cfg):
     """Check one whole proposed gap, including both retained boundary states."""
-    failures, details, maxima = [], [], {}
+    failures, details, maxima, event_checks = [], [], {}, []
     start, end = rows[left], rows[right]
     anchor = _facts(start)
     all_facts = [anchor]
     owner_indices = [left]
     for i in range(left, right + 1):
         row = rows[i]
+        if continuity_enabled(cfg) and left < i < right and row.get('human_decision') == 'exclude':
+            failures.append('manual_exclusion')
         if any(row.get(key) != start.get(key) for key in
                ("source_episode", "session", "episode_index", "control_epoch", "task_segment_id")):
             failures.append("source_or_epoch_boundary")
@@ -315,7 +331,8 @@ def _gap_check(rows, left, right, cfg):
                 or controls[-1].get("source_line") != row.get("source_line")):
             failures.append("image_control_alignment_mismatch")
         event_failures = _event_failures(interval.get("events") or [], anchor, cfg,
-                                         rows[i-1].get("source_line"), row.get("source_line"))
+                                         rows[i-1].get("source_line"), row.get("source_line"),
+                                         [_facts(rows[i-1]), *controls], event_checks)
         if event_failures:
             details.append({"raw_frame_index": row["raw_frame_index"], "reasons": sorted(set(event_failures))})
             failures.extend(event_failures)
@@ -343,6 +360,9 @@ def _gap_check(rows, left, right, cfg):
             for side in SIDES:
                 g, old = facts.get("grippers", {}).get(side, {}), prev.get("grippers", {}).get(side, {})
                 for key in ("baseline_mode", "baseline_source", "authorized_mode", "edge_event_id", "edge_count"):
+                    if (continuity_enabled(cfg) and key in ('baseline_mode','baseline_source')
+                            and settled_execution(facts) and settled_execution(prev)):
+                        continue  # Metadata only; actual targets/contact/execution are checked below.
                     if g.get(key) != old.get(key):
                         failures.append("execution_state_transition:" + side + "." + key)
                 delta = _feature_delta(facts, prev, side + ".joints")
@@ -420,11 +440,14 @@ def _gap_check(rows, left, right, cfg):
                                                "joint_speed_radps" if key.endswith(".joints") else "linear_speed_mps"]
                 if speed > limit:
                     failures.append("compressed_boundary_speed:" + key)
-    return {"passed": not failures, "reasons": sorted(set(failures)),
+    result = {"passed": not failures, "reasons": sorted(set(failures)),
             "checked_control_count": len(all_facts), "checked_raw_frame_count": right-left+1,
             "maximum_change_from_left": maxima, "causal_target_deltas": target_delta,
             "compressed_boundary_speed": endpoint_speed, "causal_targets": causal,
             "failing_rows": details}
+    if continuity_enabled(cfg):
+        result['event_continuity_checks'] = event_checks
+    return result
 
 
 def _kept(row):

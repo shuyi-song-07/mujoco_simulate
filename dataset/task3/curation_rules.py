@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import math
 import numpy as np
+from dataset.task3.event_continuity import enabled as continuity_enabled, classify_event, interval_controls
 
 from dataset.task3.curation_config import (
     CATEGORY_POLICY, GROUPS, VERSION,
@@ -66,7 +67,7 @@ def _events(row):
     return f.get('events') or f.get('interval', {}).get('events') or []
 
 
-def execution_hazards(row):
+def execution_hazards(row, config=None):
     """Factual causal hazards, shared by curation and seam verification.
 
     Modes are deliberately absent: a recorded Z_CLOSE is not an authorization,
@@ -74,7 +75,12 @@ def execution_hazards(row):
     """
     f = _facts(row)
     interval, execution = f.get('interval', {}), f.get('execution', {})
-    reasons = [e['kind'] for e in _events(row) if e.get('kind') in CAUSAL_EVENTS]
+    # Keep the established physical protection scope. Request-only evidence is
+    # checked for the whole proposed gap by Safe Stitch, not made into a new
+    # physical event (which would unnecessarily protect a motionless prefix).
+    reasons = [e['kind'] for e in _events(row) if e.get('kind') in CAUSAL_EVENTS
+               and not (continuity_enabled(config) and
+                   classify_event(e, interval_controls(f), config)['effect'] == 'unchanged')]
     if any((e.get('execution') or {}).get('sides', {}).get(side, {}).get('pending') is True
            for e in _events(row) for side in SIDES):
         reasons.append('execution_authorized_between_control_ticks')
@@ -415,7 +421,7 @@ def _recenter_context(rows, start, stop, cfg, diagnostics=None):
             return reject('safety_pause_requires_review')
         if pauses and not has_hold:
             return reject('tracking_pause_without_hold_evidence')
-        hazards = execution_hazards(row)
+        hazards = execution_hazards(row, cfg)
         if hazards or row.get('height_protected'):
             if start <= bridge_index < stop:
                 return reject('physical_event_in_wait_context')
@@ -935,7 +941,7 @@ def select_rows(evidence_rows, config=None):
         contexts.extend((j, role, 'physical_event_pre_context') for j in range(max(0, a-cfg['context']['before_frames']), a) if rows[j]['task_segment_id'] == rows[a]['task_segment_id'])
         contexts.extend((j, 'SEMANTIC_PHYSICAL_HOLD', 'physical_event_post_context') for j in range(b+1, min(len(rows), b+cfg['context']['after_frames']+1)) if rows[j]['task_segment_id'] == rows[b]['task_segment_id'])
     for i, r in enumerate(rows):
-        hazards = execution_hazards(r)
+        hazards = execution_hazards(r, cfg)
         if hazards:
             contexts.extend((j, 'SEMANTIC_PHYSICAL_HOLD', 'physical_or_task_event_context') for j in range(max(0,i-cfg['context']['before_frames']),min(len(rows),i+cfg['context']['after_frames']+1)) if rows[j]['task_segment_id']==r['task_segment_id'])
         if hazards:

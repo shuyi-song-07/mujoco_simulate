@@ -141,6 +141,19 @@ class CurationIOTests(unittest.TestCase):
         self.assertFalse(r['complete'])
         self.assertFalse(r['structural_pass'])
 
+    def test_queue_and_tracking_pause_provenance_survives_compaction(self):
+        path = self.root/'research/episode_000001.jsonl'
+        with path.open('a', encoding='utf-8') as stream:
+            for row in ({'kind':'request_queued', 'command':'telemetry', 'eventId':'queued-id'},
+                        {'kind':'request_received', 'request':{'command':'pause','reason':'hand_lost'}}):
+                stream.write(json.dumps(row)+'\n')
+        events = self.load()['timeline_events']
+        queued = next(e for e in events if e['kind'] == 'request_queued')
+        pause = next(e for e in events if e['kind'] == 'request_received')
+        self.assertEqual(queued['command'], 'telemetry')
+        self.assertEqual(queued['eventId'], 'queued-id')
+        self.assertEqual(pause['request']['reason'], 'hand_lost')
+
     def test_named_joint_mapping_and_nonfinite_state_rejected(self):
         for field in ('mapping','nonfinite','action','reference','terminal'):
             with self.subTest(field=field):

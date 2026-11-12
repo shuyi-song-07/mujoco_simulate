@@ -203,6 +203,8 @@ class SequenceStitchingTests(unittest.TestCase):
                         "reason": "workspace_limit"}]
                 if kind == "rebase":
                     rows[20]["evidence"]["interval"]["controls"][0]["grippers"]["left"]["baseline_mode"] = None
+                    # Historical frozen configs still use the original rule.
+                    self.config.pop('stitching', None)
                 out = self.build(rows)
                 self.assertEqual(out["metrics"]["safe_stitch_count"], 0)
 
@@ -230,7 +232,8 @@ class SequenceStitchingTests(unittest.TestCase):
 
     def test_manual_exclusion_is_reverified_and_never_restored(self):
         safe = self.build(cut(observations(), manual=True), restore=True)
-        self.assertEqual(safe["gaps"][0]["kind"], "safe_stitch")
+        self.assertEqual(safe["gaps"][0]["kind"], "hard_boundary")
+        self.assertIn('manual_exclusion', safe['gaps'][0]['checks']['reasons'])
         rows = cut(observations(), manual=True)
         rows[10]["evidence"]["interval"]["events"] = [{"kind": "contact_changed", "source_line": 209}]
         unsafe = self.build(rows, restore=True)
@@ -257,9 +260,10 @@ class SequenceStitchingTests(unittest.TestCase):
             "command": "continuous_input", "execution": copy.deepcopy(rows[20]["evidence"]["execution"]),
             "session": "s", "control_epoch": 1, "accepted_target": accepted}]
         result = self.build(rows)
-        self.assertIn("accepted_request_target_excursion:right.action_position_m", result["gaps"][0]["checks"]["reasons"])
+        self.assertIn("event_post_execution_target_changed", result["gaps"][0]["checks"]["reasons"])
 
     def test_accepted_request_hidden_baseline_rebuild_and_event_order_rejected(self):
+        self.config.pop('stitching', None)  # Historical certificates remain reproducible.
         for change in ("baseline", "line", "epoch"):
             rows = cut(observations())
             event = {"kind": "request_accepted", "source_line": 399,

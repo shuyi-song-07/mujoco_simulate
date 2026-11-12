@@ -338,12 +338,13 @@ def load_episode(ref: dict) -> dict:
                         compact = {k: row.get(k) for k in
                             ("kind", "source_line", "session", "control_epoch", "tick", "sim_time",
                              "wall_time_ms", "server_monotonic_ns", "event_id", "measurement_id",
-                             "reason", "drop_reason", "accepted", "clock_pair", "side", "stage")
+                             "reason", "drop_reason", "accepted", "clock_pair", "side", "stage",
+                             "command", "eventId")
                             if k in row}
                         request = row.get("request")
                         if isinstance(request, dict):
                             compact["request"] = {k: request.get(k) for k in
-                                ("command", "eventId", "measurement_id", "session", "control_epoch")}
+                                ("command", "eventId", "measurement_id", "session", "control_epoch", "reason")}
                         result["timeline_events"].append(compact)
                     yield row
 

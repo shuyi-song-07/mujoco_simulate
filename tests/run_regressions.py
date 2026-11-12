@@ -15,7 +15,7 @@ MODULES=[
     'tests.test_native_source_paths',
     'tests.test_baseline_campaign',
     *['tests.task3.'+n for n in (
-        'test_sequence_stitching','test_adjacent_stationarity','test_three_frame_curation','test_wait_compression',
+        'test_sequence_stitching','test_event_continuity','test_adjacent_stationarity','test_three_frame_curation','test_wait_compression',
         'test_height_protection','test_terminal_tail','test_frame_evidence',
         'test_curation_rules','test_curation_io','test_intent_curation','test_curation_safety','test_review_junction_sources',
         'test_merge_prepared','test_training_pack_union',

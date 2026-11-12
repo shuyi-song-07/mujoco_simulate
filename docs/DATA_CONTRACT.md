@@ -60,7 +60,7 @@ Task Binding 含 task_id、task_version、scene_id、Manifest SHA、Schema、七
 
 ## 裁剪与 Safe Stitch 时间轴
 
-正式流程：完整性检查 → 每帧事实证据 → 原有裁剪规则 → 原有 Safe Stitch → 人工覆盖校验 → Prepared → Pack。Task Adapter 提供任务事件语义；核心 `curation_rules.py`、`frame_evidence.py`、`sequence_stitching.py` 保持迁移前实现。
+正式流程：完整性检查 → 每帧事实证据 → 裁剪候选 → Safe Stitch → 人工覆盖校验 → Prepared → Pack。Task Adapter 提供任务事件语义，ACT 和 DP 读取同一份 Dataset 已认证的虚拟序列。
 
 两个时钟始终分开：
 
@@ -72,6 +72,10 @@ Task Binding 含 task_id、task_version、scene_id、Manifest SHA、Schema、七
 例如原帧100、101、200、201：只有 Dataset 明确认证101→200为安全拼接时，ACT/DP动作块可以跨越。Episode、重置、人工排除或拒绝拼接形成硬边界；未来不足30步则 Padding。DP历史观察也只在同一合法序列内取帧，首部不足时重复该序列首帧。训练不重新判断距离阈值，不根据看起来流畅的视频重新拼接。
 
 真实开合、接触建立/解除和物理收敛仍由原证据保护。未知手势不等于静止；是否压缩仍看原有机器人/物理规则。人工决定与自动证据分开保存。`data_ready` 表示结构可读，`training_ready/approved=false` 仍提醒质量审批没有被代码自动完成，不等于训练读取器未实现。
+
+`config/curation.json` 的 `stitching.event_policy=verified_execution_v1` 启用执行证据判定：`event_continuity.py` 由裁剪和拼接共同调用。普通状态上报、追踪恢复导致的拒绝/暂停、无待执行动作的基准重建及冗余释放取消，不按名称直接截断。必须配对事件前后的连续控制 tick，检查来源、事件顺序、实际接受目标、夹爪授权/执行和接触没有变化；实际执行事件的目标也须与两侧 tick 相符。事件通过后，整个缺口仍须通过物理运动、累计变化和两端因果动作检查。证明保存为 `gaps[].checks.event_continuity_checks`，不将缺失证据补成“没变化”。重置、跨会话、缺控制记录、协作冲突、手动排除及不能解释的跳变仍不能认证；真实开合和接触过程保留。保留完整原始运动时，这些运动帧可以仍属于同一连续训练序列。
+
+历史 Curation/Prepared/Pack 的冻结配置没有 `stitching` 时，继续按其原规则校验，不自动升级证书或改 CURRENT。新规则只用于重新生成的新候选结果；要改变后续训练输入，须完成新的 Prepared、Pack 和 verify-pack，显式选择该 Pack。已有训练运行仍读取原冻结路径，不受新默认配置影响。
 
 推动任务通过冻结的 `action_contract.capabilities.independent_xy_hold=true` 声明单侧 XY 控制能力，由任务 `scene.push_alignment` 语义启用。双手身份、时效和关键点仍须有效：一侧 Unknown 时该侧发送 HOLD/零位移并保持爪宽，另一侧可发送 XY_HOLD；双方实际操作平面 XY/Z 冲突仍双侧保持。Unknown 侧恢复手势时按原100 ms确认并重建自己的手腕基准，不回放回中位移。真正丢手、无效追踪和手动暂停仍停止双臂。托盘任务及没有此能力声明的旧服务保留双手同时 XY 的前端规则。原有 S16/A14、控制频率、手势标签、物理保护和 Safe Stitch 未改变；单侧 Unknown 不意味着整帧无动作。
 

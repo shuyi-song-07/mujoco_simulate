@@ -569,7 +569,7 @@ def _event(record, kind, side=None, **extra):
             **extra}
 
 
-def _request_events(episode):
+def _request_events(episode, *, execution_evidence=False):
     events, seen, warnings = [], set(), []
     for record in episode.get('executed_events', []):
         request = _dict(record.get('request')); response = _dict(record.get('result'))
@@ -581,6 +581,9 @@ def _request_events(episode):
                     'command_width_m': _number(_dict(_dict(response.get('grippers')).get(side)).get('command_width_m'))}
              for side in SIDES})
             if pc else None)
+        post_target = response.get('accepted_target')
+        if execution_evidence and post_target is None:
+            post_target = record.get('accepted_target_m')
         events.append(_event(record, 'request_accepted' if accepted else 'request_rejected',
             accepted=accepted, command=request.get('command'), reason=response.get('reason'),
             requested_interaction_modes=copy.deepcopy(request.get('interaction_modes')),
@@ -594,7 +597,13 @@ def _request_events(episode):
             actual_state_phase=record.get('actual_state_phase'),
             requested_target=response.get('requested_target'),
             projected_target=response.get('projected_target'),
-            accepted_target=response.get('accepted_target')))
+            accepted_target=post_target))
+        if execution_evidence:
+            events[-1]['requested_pause_reason'] = request.get('reason')
+            events[-1]['recorded_post_target'] = record.get('accepted_target_m')
+            events[-1]['accepted_target_basis'] = ('result.accepted_target'
+                if response.get('accepted_target') is not None else
+                'request_executed.accepted_target_m' if post_target is not None else 'unavailable')
         eid = request.get('eventId')
         if not accepted or not eid:
             continue
@@ -619,13 +628,38 @@ def _request_events(episode):
                 events.append(_event(record, 'gripper_close_executed', side, **common))
             if release or open_edge:
                 events.append(_event(record, 'gripper_open_executed', side, **common))
+    received_requests = {}
     for raw in episode.get('timeline_events', []):
         request = _dict(raw.get('request'))
+        if execution_evidence and raw.get('kind') == 'request_received' and request.get('eventId'):
+            key = (raw.get('session'), raw.get('control_epoch'), request['eventId'])
+            received_requests.setdefault(key, []).append((request, _line(raw)))
         events.append(_event(raw, 'raw_' + str(raw.get('kind')), raw.get('side'),
             reason=raw.get('reason', raw.get('drop_reason')), stage=raw.get('stage'),
             command=request.get('command'),
             event_id=raw.get('event_id', request.get('eventId')),
             measurement_id=raw.get('measurement_id', request.get('measurement_id'))))
+        if execution_evidence:
+            events[-1]['requested_pause_reason'] = request.get('reason')
+            # Queue acknowledgements record these fields directly, unlike HTTP
+            # received/executed records which contain the complete request.
+            if events[-1]['command'] is None:
+                events[-1]['command'] = raw.get('command')
+            if events[-1]['event_id'] is None:
+                events[-1]['event_id'] = raw.get('eventId')
+            # Queue acknowledgements omit the pause reason. Recover only the
+            # matching, earlier received request in this same session/epoch.
+            # This is request metadata, not a claim of earlier execution.
+            event = events[-1]
+            key = (event['session'], event['control_epoch'], event['event_id'])
+            received = received_requests.get(key, [])
+            if event['command'] == 'pause' and event['requested_pause_reason'] is None and received:
+                reasons = {r.get('reason') for r, _ in received if r.get('command') == 'pause'}
+                if (len(reasons) == 1 and None not in reasons and
+                        all(type(line) is int and type(event['source_line']) is int
+                            and line < event['source_line'] for _, line in received)):
+                    event['requested_pause_reason'] = next(iter(reasons))
+                    event['requested_pause_source_line'] = received[0][1]
     return events, warnings
 
 
@@ -736,7 +770,8 @@ def build_frame_evidence(episode, config):
                        'unsupported_frozen_sampling_contract' if not sampling_valid else None)
     raw_controls, frames = episode.get('controls', []), episode.get('frames', [])
     accepted = episode.get('accepted_events', {})
-    events, warnings = _request_events(episode)
+    from dataset.task3.event_continuity import enabled as continuity_enabled
+    events, warnings = _request_events(episode, execution_evidence=continuity_enabled(cfg))
     if not raw_controls:
         warnings.append('missing_60hz_controls')
     controls = []; previous = None; previous_raw = None; initial_command = None
@@ -926,6 +961,8 @@ def build_frame_evidence(episode, config):
         # Pack independently verify every deleted 60 Hz interval. Never use a
         # compressed array position as a raw control tick.
         interval['controls'] = [copy.deepcopy(controls[j]) for j in indices]
+        if continuity_enabled(cfg) and indices and indices[0] > 0:
+            interval['previous_control'] = copy.deepcopy(controls[indices[0]-1])
         interval['execution_available'] = bool(indices) and all(controls[j]['execution']['available'] for j in indices)
         interval['execution_pending'] = any(
             controls[j]['execution']['sides'][side]['pending'] is True for j in indices for side in SIDES)

@@ -40,6 +40,12 @@ def make_pack(root):
         entry["source_fingerprints"] = [{"path": str(media), "size": media.stat().st_size,
             "mtime_ns": media.stat().st_mtime_ns, "sha256": training_pack.sha256(media)}]
         rows = cut(observations(count))
+        # A real-log-shaped recovery event inside the gap must survive the
+        # shared Prepared -> Pack -> ACT/DP route, not just unit certification.
+        facts = rows[20]['evidence']
+        facts['interval']['events'] = [{'kind':'request_rejected', 'command':'continuous_input',
+            'reason':'tracking_recovery', 'source_line':399, 'session':entry['session'],
+            'control_epoch':1, 'accepted_target':rows[20]['action_recorded'][:]}]
         for i, row in enumerate(rows):
             row.update(session=entry["session"], source_episode=entry["key"],
                        robot_phase="free_stationary", status_summary={"paused": False},

@@ -119,7 +119,9 @@ $audit = '<实际 outputs/dataset/任务/audits/evidence_... 目录>'
 & $train dataset/manage_dataset.py --task $task reclip --audit $audit --config config/curation.json
 ```
 
-同意图静止核心默认保留 3 帧、换意图核心保留 10 帧；事件及物理运动保护可能使总保留量更大。 当前从前向后分开识别稳定区间，恢复运动不会否定之前的静止。快速回中最低0.2秒（`waits.minimum_recenter_s`），普通同意图等待仍2秒，换意图也为0.2秒（`waits.minimum_transition_s`），仍保留10帧预算，不足10帧的区间不删帧。`physical_motion.position_m` 为0.0005米即0.5毫米，容忍微小持物漂移；速度、关节、开合和接触保护不变。若仅拼接两端速度超限，先补回有限边缘帧重新核验，通过才保留中间压缩，否则恢复原帧。旧结果不自动更新，需重新生成；新结果待人工审核。详细阈值的中文说明在 `config/curation.json`。迁移没有重写这些算法；仅移除旧数据特定 Episode 的排除名单，新任务名单为空。
+同意图静止核心保留开头1帧、末尾2帧，共3帧；换意图核心保留开头5帧、末尾5帧，共10帧，不足预算原样保留。真实执行及物理运动保护可能使总保留量更大。当前三帧滑窗以C分别比较A/B，均不超阈值才确认低变化候选；`minimum_middle_s`、`minimum_recenter_s`、`minimum_transition_s` 均为0，不再额外等0.2秒或2秒。`physical_motion.position_m` 为0.0005米即0.5毫米，速度、关节、开合和接触仍独立核验。若仅拼接两端速度超限，先补回有限边缘帧重新核验，通过才保留中间压缩，否则恢复原帧。当前执行证据修正不改变这些阈值及静止保留预算。旧结果不自动更新，需重新生成；新结果待质量审核。详细参数说明在 `config/curation.json`。
+
+执行证据拼接：新候选使用 `stitching.event_policy=verified_execution_v1`。状态上报、正常回中/追踪恢复、基准重建只有经连续控制 tick 证明目标、夹爪执行和接触未变，且整个静止缺口通过物理检查后才允许拼接；每个缺口保留逐事件检查依据。真实运动与开合过程仍保留，缺来源、重置、手动排除或无法解释的跳变仍截断。ACT/DP共用认证序列，训练读取器不另做放宽。旧配置缺少该字段时按旧规则核验，旧 Pack 不自动改变；更新算法不等于更新已有训练输入，正式采用时仍需新 process → prepare → pack → verify-pack 并显式选择新 Pack。原始时间和每帧“下一合法控制 tick”动作标签保持不变。
 
 ## 3. Prepared 与 Training Pack
 
