@@ -172,6 +172,15 @@ def _save_hand_trajectory(root: Path, episode_index: int, samples: list[dict]) -
             output.write(json.dumps(sample, ensure_ascii=False, allow_nan=False) + "\n")
 
 
+def _save_research_summary(root: Path, episode_index: int, summary) -> None:
+    if summary is None:
+        return
+    directory = root / "research"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"episode_{episode_index:06d}_research.json").write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+
+
 def _dataset_features(args) -> dict:
     return {
         "observation.state": {
@@ -389,6 +398,7 @@ def training_render_worker(args, command_queue, reply_queue) -> None:
                     }
                 )
             elif kind == "save":
+                _save_research_summary(args.dataset_root, command["episode_index"], command.get("research_summary"))
                 dataset.save_episode()
                 _save_hand_trajectory(args.dataset_root, command["episode_index"],
                                       command.get("hand_trajectory_samples", []))
@@ -431,6 +441,7 @@ def training_render_worker(args, command_queue, reply_queue) -> None:
                 episode_info = None
                 reply_queue.put({"type": "saved", "inspection_error": inspection_error})
             elif kind == "save_failure":
+                _save_research_summary(args.failure_dataset_root, command["episode_index"], command.get("research_summary"))
                 failure_dataset.save_episode()
                 _save_hand_trajectory(args.failure_dataset_root, command["episode_index"],
                                       command.get("hand_trajectory_samples", []))

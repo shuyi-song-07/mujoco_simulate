@@ -19,6 +19,8 @@ from simulation.mujoco.record_mujoco_panda import (
 
 def controller():
     state = object.__new__(MujocoPandaRecorder)
+    state.mapped_control_pending = np.zeros(3)
+    state.mapped_control_pending_commands = 0
     state.model = mujoco.MjModel.from_xml_path(str(DEFAULT_MODEL_PATH))
     state.data = mujoco.MjData(state.model)
     state.action_data = mujoco.MjData(state.model)

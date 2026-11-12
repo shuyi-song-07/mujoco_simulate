@@ -44,6 +44,7 @@ createServer((request, response) => {
   if (isDualRoute ||
     pathname === "/api/health" ||
     pathname === "/api/control" ||
+    pathname === "/api/measurements" ||
     pathname === "/api/top-preview" ||
     pathname === "/api/side-preview" ||
     pathname === "/api/front-preview"
@@ -77,7 +78,7 @@ createServer((request, response) => {
     return;
   }
 
-  const publicFiles = new Set(["/", "/index.html", "/app.js", "/style.css", "/interaction-state.js",
+  const publicFiles = new Set(["/", "/index.html", "/app.js", "/style.css", "/interaction-state.js", "/hand-measurement.js", "/measurement-journal.js",
     "/dual_arm.html", "/dual-arm-app.js", "/dual-arm-style.css", "/dual-interaction-state.js", "/dual-gesture-worker.js"]);
   if (!publicFiles.has(pathname) && !pathname.startsWith("/node_modules/@mediapipe/tasks-vision/") && !pathname.startsWith("/models/")) {
     response.writeHead(404).end("Not found");

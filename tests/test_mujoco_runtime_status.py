@@ -35,11 +35,12 @@ class RuntimeStatusTest(unittest.TestCase):
             "--task-mode", task_mode,
             "--model-path", str(model_path),
             "--random-seed", "1",
-            "--dataset-root", str(self.dataset_directory / "success"),
-            "--failure-dataset-root", str(self.dataset_directory / "failure"),
+            "--dataset-root", str(self.dataset_directory / task_mode / "success"),
+            "--failure-dataset-root", str(self.dataset_directory / task_mode / "failure"),
         ])
         with patch.object(MujocoPandaRecorder, "_start_render_workers", lambda self: None):
             state = MujocoPandaRecorder(args)
+        self.addCleanup(state.research.close)
         server = GestureServer(
             queue.Queue(), 0, lambda: None, lambda: None, lambda: None,
             state.get_runtime_status,

@@ -5,6 +5,8 @@ import {
 } from "./node_modules/@mediapipe/tasks-vision/vision_bundle.mjs";
 
 import { mapPlanarMotion, pointingUpAngle, pointingControlCandidate, pointingYawFromWrist, shouldStartPlanarLock, nextPlanarAnchor, planarGestureAfterDiagonal, SingleHandRearmGate, openPalmAllowedAfterDiagonal, openPalmReadyToRelease, handClearForRelease, shouldCloseGripper } from "./interaction-state.js?v=instant-reentry-01";
+import { handMeasurement } from "./hand-measurement.js?v=raw-single-arm-01";
+import { MeasurementJournal } from "./measurement-journal.js?v=raw-single-arm-01";
 
 const video = document.querySelector("#webcam");
 const canvas = document.querySelector("#output-canvas");
@@ -96,6 +98,55 @@ let backendContext = null;
 let controlToken = null;
 let sceneRecording = false;
 let lastCommandTimestamp = 0;
+let latestRuntime = null;
+let clockPair = null;
+let currentMeasurementId = null;
+let cameraResearchSettings = null;
+let saveFlowInFlight = false;
+const measurementClientId = crypto.randomUUID();
+let measurementSequence = 0;
+const measurementJournal = new MeasurementJournal({clientId:measurementClientId,
+  send:async batch => {
+    const response = await fetch(`${robotApiBase}/measurements`, {method:"POST",
+      headers:{"Content-Type":"application/json"},body:JSON.stringify(batch),signal:AbortSignal.timeout(5000)});
+    const value = await response.json();
+    if (!response.ok || !value.ok) throw Error(value.reason ?? "原始日志写入失败");
+    return value;
+  },
+  changed:state => {
+    const el = document.querySelector("#measurement-log-state");
+    if (el) el.textContent = `原始手部记录：识别 ${state.completed} / 已落盘 ${state.written} / 待写 ${state.pending} / 丢弃 ${state.dropped}${state.error ? " · 写入异常" : ""}`;
+  }});
+
+function researchContext() {
+  return {camera:cameraResearchSettings,display_mirrored:true,inference_mirrored:false,
+    hand_selection:"first_detection_existing_control",model:"models/gesture_recognizer.task",delegate:"CPU",
+    control_config:{interval_ms:CONTROL_INTERVAL_MS,planar_sensitivity:planarSensitivity(),
+      vertical_dead_zone:verticalDeadZone(),planar_dead_zone:planarDeadZone(),
+      reentry_wait_ms:0,reentry_stable_ms:0}, task_mode:robotTaskMode};
+}
+
+function recordRawMeasurement(result, capturedAt, recognizedAt) {
+  currentMeasurementId = `${measurementClientId}:${++measurementSequence}`;
+  const split = backendContext?.lastIndexOf(":") ?? -1;
+  const measurement = handMeasurement(result,{id:currentMeasurementId,
+    session:split >= 0 ? backendContext.slice(0,split) : null,
+    epoch:split >= 0 ? Number(backendContext.slice(split+1)) : null,
+    width:video.videoWidth,height:video.videoHeight,capturedAt,
+    capturedEpochMs:performance.timeOrigin+capturedAt,recognizedEpochMs:performance.timeOrigin+recognizedAt,
+    receivedAt:recognizedAt,inferenceMs:recognizedAt-capturedAt});
+  measurementJournal.add("measurement",{measurement,clock_pair:clockPair,
+    video_media_time_s:video.currentTime,
+    capture_time_semantics:"Browser recognition input time; not a hardware exposure timestamp",
+    control:{generation:controlGeneration,armed:rearmGate.armed,
+      pointing_locked:armMotionLocked,gripper_closed:gripperClosed,
+      planar_anchor:lastPlanarPoint ? {...lastPlanarPoint} : null,
+      vertical_anchor_fist:lastFistY,vertical_anchor_palm:lastOpenPalmY}},researchContext());
+}
+
+function flushMeasurements() {
+  if (robotConnected) void measurementJournal.flush().catch(() => {});
+}
 let sceneResetInFlight = false;
 let pendingResetContext = null;
 let lastGestureReportAt = 0;
@@ -263,9 +314,13 @@ async function checkRobotConnection() {
   const generationAtRequest = controlGeneration;
   const tokenAtRequest = controlToken;
   try {
+    const requestEpochMs = Date.now();
     const response = await fetch(`${robotApiBase}/health`, { cache: "no-store" });
     if (response.ok) {
       const runtime = await response.json();
+      latestRuntime = runtime;
+      clockPair = {browser_request_epoch_ms:requestEpochMs,browser_receive_epoch_ms:Date.now(),
+        server_epoch_ms:runtime.server_epoch_ms,server_monotonic_ns:runtime.server_monotonic_ns};
       resetSceneButton.hidden = false;
       sceneRecording = runtime.recording === true || runtime.saving_episode === true;
       practiceHint.hidden = sceneRecording;
@@ -291,6 +346,11 @@ async function checkRobotConnection() {
       if (sceneResetInFlight && nextContext !== pendingResetContext) {
         sceneResetInFlight = false;
         pendingResetContext = null;
+      }
+      if (runtime.recording_error) {
+        sceneResetInFlight = false;
+        pendingResetContext = null;
+        robotFeedback.textContent = `保存未完成：${runtime.recording_error}。当前录制保留，请重试保存。`;
       }
       document.querySelector("#preview-grid").dataset.backend = "MuJoCo";
       document.querySelector("#side-preview-title").textContent = "俯视 + 侧视 + 正面";
@@ -335,18 +395,22 @@ async function sendRobotCommand(command, extra = {}) {
 
   try {
     lastCommandTimestamp = Math.max(Date.now(), lastCommandTimestamp + 0.001);
+    const packet = {
+      command, sentAt:lastCommandTimestamp,event_id:crypto.randomUUID(),
+      measurement_id:currentMeasurementId,source_context:backendContext,...extra,
+      ...(controlToken && ["open","close","start_vertical","start_planar","move_xy","set_gripper_yaw","finalize_gripper_yaw","up","down","left","right","forward","backward"].includes(command) ? {controlToken} : {}),
+    };
+    measurementJournal.add("dispatch",{event_id:packet.event_id,measurement_id:packet.measurement_id,
+      command:packet.command,packet},researchContext());
     const response = await fetch(`${robotApiBase}/control`, {
       method: "POST",
       signal: AbortSignal.timeout(400),
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        command, sentAt: lastCommandTimestamp, ...extra,
-        ...(controlToken &&
-          ["open", "close", "start_vertical", "start_planar", "move_xy", "set_gripper_yaw", "finalize_gripper_yaw", "up", "down", "left", "right", "forward", "backward"].includes(command)
-          ? { controlToken } : {}),
-      }),
+      body: JSON.stringify(packet),
     });
     const result = await response.json();
+    measurementJournal.add("control_result",{event_id:packet.event_id,http_status:response.status,
+      response:result,semantics:"HTTP queued acknowledgement is not physical execution"},researchContext());
     if (!response.ok || result.ok === false || result.accepted === false) {
       robotFeedback.textContent = `操作未执行：${result.reason ?? result.error ?? response.status}`;
       return false;
@@ -375,7 +439,7 @@ async function flushLatestMotionRequest() {
 }
 
 function sendLatestMotionCommand(command, extra = {}) {
-  pendingMotionRequest = { command, extra, generation: controlGeneration };
+  pendingMotionRequest = { command, extra:{measurement_id:currentMeasurementId,...extra}, generation: controlGeneration };
   void flushLatestMotionRequest();
 }
 
@@ -928,11 +992,13 @@ function detectVideoFrame() {
     const timestamp = performance.now();
     try {
       const result = gestureRecognizer.recognizeForVideo(video, timestamp);
+      recordRawMeasurement(result, timestamp, performance.now());
       drawHandLandmarks(result);
       renderRecognitionResults(result);
       processRobotControl(result, timestamp);
       lastVideoTime = video.currentTime;
     } catch (error) {
+      measurementJournal.add("camera_event",{event:"recognition_error",message:String(error)},researchContext());
       disarmHand("recognition_error");
       console.error(error);
       updateStatus("识别过程出现错误", "error");
@@ -975,6 +1041,9 @@ async function startCamera() {
 
     video.srcObject = mediaStream;
     await video.play();
+    const settings = mediaStream.getVideoTracks()[0].getSettings();
+    cameraResearchSettings = Object.fromEntries(["width","height","frameRate","facingMode","resizeMode"].map(k=>[k,settings[k]??null]));
+    measurementJournal.add("camera_event",{event:"camera_started",camera:cameraResearchSettings},researchContext());
 
     cameraPlaceholder.hidden = true;
     cameraButton.textContent = "关闭摄像头";
@@ -1015,6 +1084,9 @@ async function startCamera() {
 }
 
 function stopCamera() {
+  measurementJournal.add("camera_event",{event:"camera_stopped",measurement_id:currentMeasurementId},researchContext());
+  currentMeasurementId = null;
+  flushMeasurements();
   disarmHand("camera_stopped");
   if (animationFrameId) cancelAnimationFrame(animationFrameId);
   mediaStream?.getTracks().forEach((track) => track.stop());
@@ -1082,8 +1154,41 @@ recordStartButton.addEventListener("click", async () => {
   }
 });
 
+async function saveWithResearch(outcome) {
+  if (saveFlowInFlight) return false;
+  saveFlowInFlight = true;
+  try {
+    // Do not reuse a previous episode's seal from the periodic health cache.
+    const current = await fetch(`${robotApiBase}/health`,{cache:"no-store",signal:AbortSignal.timeout(1500)});
+    if (!current.ok) throw Error("无法确认当前录制状态");
+    latestRuntime = await current.json();
+    if (!latestRuntime.recording) throw Error("当前没有正在录制的 demonstration");
+    if (latestRuntime?.hand_journal_schema !== "single-hand-journal-v1") throw Error("请先重启采集程序并刷新网页");
+    let seal = latestRuntime.episode_seal;
+    const saveId = seal?.save_id ?? crypto.randomUUID();
+    if (seal && seal.outcome !== outcome) throw Error("本轮已冻结为另一保存结果，请按原结果重试");
+    if (!seal && !await sendRobotCommand("record_seal",{save_id:saveId,outcome})) return false;
+    const deadline = performance.now()+5000;
+    while (performance.now()<deadline) {
+      const response = await fetch(`${robotApiBase}/health`,{cache:"no-store",signal:AbortSignal.timeout(1500)});
+      const runtime = await response.json();
+      if (runtime.episode_seal?.save_id===saveId) {seal=runtime.episode_seal;break;}
+      await new Promise(resolve=>setTimeout(resolve,40));
+    }
+    if (!seal) throw Error("等待录制终点超时；本轮数据保留，可重试保存");
+    robotFeedback.textContent = "录制终点已固定，正在确认原始日志完整写入…";
+    const boundary = measurementJournal.freeze(seal.end_epoch_ms);
+    const durable = await measurementJournal.flushBoundary(boundary);
+    return await sendRobotCommand(outcome==="success"?"record_save":"record_failure",
+      {save_id:saveId,hand_save_boundary:durable});
+  } catch (error) {
+    robotFeedback.textContent = `保存未完成：${error.message}。当前录制保留，请重试。`;
+    return false;
+  } finally {saveFlowInFlight=false;}
+}
+
 recordSaveButton.addEventListener("click", async () => {
-  if (await sendRobotCommand("record_save")) {
+  if (await saveWithResearch("success")) {
     disarmHand("scene_reset");
     sceneResetInFlight = true;
     pendingResetContext = backendContext;
@@ -1095,7 +1200,7 @@ recordSaveButton.addEventListener("click", async () => {
 });
 
 recordFailureButton.addEventListener("click", async () => {
-  if (await sendRobotCommand("record_failure")) {
+  if (await saveWithResearch("failure")) {
     disarmHand("scene_reset");
     sceneResetInFlight = true;
     pendingResetContext = backendContext;
@@ -1117,6 +1222,7 @@ setRobotConnected(false);
 void checkRobotConnection();
 void pollSidePreview();
 window.setInterval(checkRobotConnection, 200);
+window.setInterval(flushMeasurements, 200);
 
 window.addEventListener("pagehide", () => {
   window.clearTimeout(sidePreviewPollTimer);

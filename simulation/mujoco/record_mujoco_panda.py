@@ -9,6 +9,7 @@ is never modified.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import multiprocessing as mp
 import queue
 import threading
@@ -26,8 +27,10 @@ from werkzeug.serving import WSGIRequestHandler, make_server
 
 try:
     from .hand_motion_window import FixedWindowHandDisplacement
+    from .measurement_journal import SingleArmResearchJournal, jsonable
 except ImportError:  # Direct execution with mjpython.
     from hand_motion_window import FixedWindowHandDisplacement
+    from measurement_journal import SingleArmResearchJournal, jsonable
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -192,30 +195,53 @@ class GestureServer(threading.Thread):
         side_preview_provider,
         front_preview_provider,
         status_provider,
+        research_provider=None,
     ) -> None:
         super().__init__(daemon=True)
         app = Flask(__name__)
+        app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024
         CORS(app)
 
         @app.post("/control")
         def control():
             payload = request.get_json(silent=True) or {}
+            journal = research_provider() if research_provider else None
+            event_id = payload.get("event_id") or uuid.uuid4().hex
+            if journal:
+                journal.record("control_request", event_id=event_id, payload=payload,
+                               control_epoch=journal.control_epoch)
             if payload.get("command") == "set_gripper_yaw":
                 status = status_provider()
                 if status.get("gripper_closed") or status.get("gripper_yaw_finalized"):
+                    if journal: journal.record("control_rejected", event_id=event_id, reason="orientation_locked", control_epoch=status["control_epoch"])
                     return jsonify({"ok": False, "reason": "朝向仅能在初始移动或闭爪前调整"}), 409
             if payload.get("command") == "reset":
                 status = status_provider()
                 if status["recording"] or status["saving_episode"]:
+                    if journal: journal.record("control_rejected", event_id=event_id, reason="recording", control_epoch=status["control_epoch"])
                     return jsonify({"ok": False, "reason": "请先保存当前轨迹再重置场景"}), 409
             if payload.get("command") == "resume":
                 status = status_provider()
                 expected_context = f'{status["session"]}:{status["control_epoch"]}'
                 if payload.get("controlContext") != expected_context:
+                    if journal: journal.record("control_rejected", event_id=event_id, reason="stale_context", control_epoch=status["control_epoch"])
                     return jsonify({"ok": False, "reason": "场景已变化，请重新入镜"}), 409
             if payload.get("command"):
-                command_queue.put(payload)
-            return jsonify({"ok": True})
+                command_queue.put({**payload, "event_id": event_id})
+            return jsonify({"ok": True, "queued": bool(payload.get("command")), "event_id": event_id})
+
+        @app.post("/measurements")
+        def measurements():
+            journal = research_provider() if research_provider else None
+            if journal is None:
+                return jsonify({"ok": False, "reason": "measurement_journal_unavailable"}), 409
+            try:
+                return jsonify(journal.append(request.get_json(silent=True) or {},
+                                               {"server_received_epoch_ms": time.time() * 1000}))
+            except ValueError as error:
+                return jsonify({"ok": False, "reason": str(error)}), 400
+            except OSError as error:
+                return jsonify({"ok": False, "reason": str(error)}), 503
 
         @app.get("/health")
         def health():
@@ -223,6 +249,8 @@ class GestureServer(threading.Thread):
                 {
                     "ok": True,
                     "service": "mujoco-panda-recorder",
+                    "server_epoch_ms": time.time() * 1000,
+                    "server_monotonic_ns": time.monotonic_ns(),
                     **status_provider(),
                 }
             )
@@ -416,6 +444,21 @@ class MujocoPandaRecorder:
         self.last_aux_preview_request_at = float("-inf")
         self.reset_simulation()
         self._start_render_workers()
+        provenance = jsonable({"task_mode": args.task_mode, "session": self.session,
+            "arguments": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
+            "model_sha256": hashlib.sha256(args.model_path.read_bytes()).hexdigest(),
+            "recorder_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            "source_sha256": {str(path.relative_to(REPO_ROOT)): hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in (REPO_ROOT / "teleoperation/mediapipe/app.js",
+                             REPO_ROOT / "teleoperation/mediapipe/interaction-state.js",
+                             REPO_ROOT / "teleoperation/mediapipe/hand-measurement.js",
+                             REPO_ROOT / "teleoperation/mediapipe/measurement-journal.js",
+                             REPO_ROOT / "teleoperation/mediapipe/models/gesture_recognizer.task")
+                if path.is_file()},
+            "hand_selection": "existing first detection; raw handedness retained, no dual-hand binding",
+            "human_video_recorded": False})
+        self.research = SingleArmResearchJournal(args.dataset_root / "research/session" / self.session, self.session, provenance)
+        self.research.control_epoch = self.control_epoch
 
     def _body_id(self, name: str) -> int:
         body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, name)
@@ -521,7 +564,13 @@ class MujocoPandaRecorder:
                 self.top_preview_jpeg = jpeg
 
     def reset_simulation(self) -> None:
+        self.episode_seal = None
+        self.last_recording_error = None
+        self.latest_measurement_id = None
+        self.last_processed_control_event_id = None
         self.control_epoch += 1
+        if getattr(self, "research", None) is not None:
+            self.research.control_epoch = self.control_epoch
         self.support_recovery_bodies = set()
         self.control_paused = True
         self.control_token = None
@@ -1361,6 +1410,9 @@ class MujocoPandaRecorder:
             )
         return {
             "task_mode": self.args.task_mode,
+            "hand_journal_schema": "single-hand-journal-v1",
+            "episode_seal": getattr(self, "episode_seal", None),
+            "recording_error": getattr(self, "last_recording_error", None),
             "session": self.session,
             "control_epoch": self.control_epoch,
             "paused": self.control_paused,
@@ -1647,6 +1699,12 @@ class MujocoPandaRecorder:
 
     def handle_gesture(self, payload: dict) -> None:
         command = payload.get("command")
+        if command == "record_seal":
+            if self.recording and self.episode_frames and self.episode_seal is None:
+                self.episode_seal = {"save_id": payload.get("save_id"),
+                    "outcome": payload.get("outcome"), "end_epoch_ms": time.time() * 1000,
+                    "control_epoch": self.control_epoch, "frames": self.episode_frames}
+            return
         if command == "pause":
             self.control_paused = True
             self.control_token = None
@@ -1678,6 +1736,7 @@ class MujocoPandaRecorder:
             if sent_at < self.last_gesture_command_at:
                 return
             self.last_gesture_command_at = sent_at
+            self.latest_measurement_id = payload.get("measurement_id")
             gesture = payload.get("gesture", "None")
             self.latest_gesture = gesture if gesture in GESTURE_CODES else "None"
             self.latest_gesture_score = float(np.clip(payload.get("gestureScore", 0.0), 0, 1))
@@ -1710,10 +1769,10 @@ class MujocoPandaRecorder:
             self.start_episode()
             return
         if command == "record_save":
-            self.save_episode()
+            self.save_episode(payload)
             return
         if command in {"record_failure", "record_discard"}:
-            self.save_failed_episode()
+            self.save_failed_episode(payload)
             return
         if command == "record_stop":
             self.stop_requested = True
@@ -1923,6 +1982,29 @@ class MujocoPandaRecorder:
         elif keycode in {ord("Q"), ord("q")}:
             self.stop_requested = True
 
+    def handle_recorded_control(self, payload: dict) -> None:
+        journal = getattr(self, "research", None)
+        if journal is None:
+            self.handle_gesture(payload)
+            return
+        before = self.data.ctrl.copy()
+        epoch = self.control_epoch
+        self.handle_gesture(payload)
+        if payload.get("command") in WEB_CONTROL_COMMANDS:
+            self.last_processed_control_event_id = payload.get("event_id")
+        journal.record("control_processed", event_id=payload.get("event_id"),
+            measurement_id=payload.get("measurement_id"), command=payload.get("command"),
+            control_epoch=epoch, ctrl_before=before, ctrl_after=self.data.ctrl.copy(),
+            paused=self.control_paused, motion_limit_reason=self.motion_limit_reason,
+            semantics="Processed is not an acceptance claim; compare targets, state, limits and request logs")
+
+    def log_dropped_control(self, payload: dict, reason: str) -> None:
+        journal = getattr(self, "research", None)
+        if journal:
+            journal.record("control_not_processed", event_id=payload.get("event_id"),
+                           measurement_id=payload.get("measurement_id"), reason=reason,
+                           control_epoch=self.control_epoch)
+
     def process_queued_commands(self) -> None:
         """Process controls without replaying a stale backlog of motion commands."""
         latest_motion: dict | None = None
@@ -1942,6 +2024,7 @@ class MujocoPandaRecorder:
                 try:
                     sent_at = float(payload.get("sentAt", time.time() * 1000.0))
                 except (TypeError, ValueError):
+                    self.log_dropped_control(payload, "invalid_timestamp")
                     continue
                 if (
                     sent_at > self.last_motion_command_at
@@ -1950,7 +2033,11 @@ class MujocoPandaRecorder:
                         or sent_at > float(latest_motion["sentAt"])
                     )
                 ):
+                    if latest_motion is not None:
+                        self.log_dropped_control(latest_motion, "superseded_by_newer_motion")
                     latest_motion = {**payload, "sentAt": sent_at}
+                else:
+                    self.log_dropped_control(payload, "stale_or_superseded_motion")
             else:
                 if (payload.get("command") == "close" and latest_motion is not None
                         and latest_motion["command"] != "down"):
@@ -1958,14 +2045,17 @@ class MujocoPandaRecorder:
                     # Preserve that descent; other earlier motion keeps its
                     # existing cancellation rule on the closing transition.
                     if float(latest_motion["sentAt"]) <= float(payload.get("sentAt", 0.0)):
+                        self.log_dropped_control(latest_motion, "cancelled_on_close_transition")
                         latest_motion = None
-                self.handle_gesture(payload)
+                self.handle_recorded_control(payload)
         if latest_motion is not None:
             sent_at = float(latest_motion["sentAt"])
             command_age_ms = time.time() * 1000.0 - sent_at
             if command_age_ms <= self.args.max_motion_command_age_ms:
                 self.last_motion_command_at = sent_at
-                self.handle_gesture(latest_motion)
+                self.handle_recorded_control(latest_motion)
+            else:
+                self.log_dropped_control(latest_motion, "expired_motion")
 
     def start_episode(self) -> None:
         if self.recording:
@@ -1991,6 +2081,9 @@ class MujocoPandaRecorder:
         self.mapped_control_pending_commands = 0
         self.recording = True
         self.episode_frames = 0
+        self.episode_seal = None
+        self.last_recording_error = None
+        self.episode_started_epoch_ms = time.time() * 1000
         self.attempted_episodes += 1
         print(f"[LeRobot] 开始录制 demonstration 尝试 {self.attempted_episodes}。")
         print(
@@ -2000,23 +2093,47 @@ class MujocoPandaRecorder:
             f"方块 yaw={np.rad2deg(self.current_cube_yaw):.1f}°。"
         )
 
-    def save_episode(self) -> None:
+    def export_research_for_save(self, outcome: str, payload=None):
+        journal = getattr(self, "research", None)
+        if journal is None:
+            return None
+        if self.episode_seal is None:
+            self.episode_seal = {"save_id": uuid.uuid4().hex, "outcome": outcome,
+                "end_epoch_ms": time.time() * 1000, "control_epoch": self.control_epoch,
+                "frames": self.episode_frames}
+        seal = self.episode_seal
+        boundary = payload.get("hand_save_boundary") if payload else None
+        if payload is not None and (not boundary or payload.get("save_id") != seal["save_id"]):
+            raise ValueError("请刷新网页并完成原始日志保存确认；当前录制已保留")
+        if seal["outcome"] != outcome:
+            raise ValueError("本次保存结果与已冻结的结果不一致")
+        if boundary and abs(boundary.get("end_capture_epoch_ms", -1) - seal["end_epoch_ms"]) > 1:
+            raise ValueError("原始日志与机器人录制终点不一致")
+        root = self.args.dataset_root if outcome == "success" else self.args.failure_dataset_root
+        index = self.saved_episodes if outcome == "success" else self.failed_episodes
+        return journal.export_episode(root, index, self.control_epoch,
+            self.episode_started_epoch_ms, seal["end_epoch_ms"], boundary)
+
+    def save_episode(self, payload=None) -> None:
         if not self.recording or self.episode_frames == 0:
             print("[LeRobot] 没有正在录制的数据，先按 S 开始。")
             return
         episode_frames = self.episode_frames
         self.saving_episode = True
         try:
+            research_summary = self.export_research_for_save("success", payload)
             self.training_queue.put(
                 {
                     "type": "save",
                     "episode_index": self.saved_episodes,
                     "frames": episode_frames,
                     "hand_trajectory_samples": self.hand_trajectory_samples,
+                    "research_summary": research_summary,
                 }
             )
             result = self._wait_training_reply("saved")
         except Exception as error:
+            self.last_recording_error = str(error)
             self.saving_episode = False
             print(f"[LeRobot] 保存失败，场景未重置以保护当前数据：{error}")
             return
@@ -2035,23 +2152,26 @@ class MujocoPandaRecorder:
         self.episode_frames = 0
         self.reset_simulation()
 
-    def save_failed_episode(self) -> None:
+    def save_failed_episode(self, payload=None) -> None:
         if not self.recording or self.episode_frames == 0:
             print("[LeRobot] 没有正在录制的数据，先按 S 开始。")
             return
         episode_frames = self.episode_frames
         self.saving_episode = True
         try:
+            research_summary = self.export_research_for_save("failure", payload)
             self.training_queue.put(
                 {
                     "type": "save_failure",
                     "episode_index": self.failed_episodes,
                     "frames": episode_frames,
                     "hand_trajectory_samples": self.hand_trajectory_samples,
+                    "research_summary": research_summary,
                 }
             )
             result = self._wait_training_reply("failure_saved")
         except Exception as error:
+            self.last_recording_error = str(error)
             self.saving_episode = False
             print(f"[LeRobot] 失败轨迹保存失败，场景未重置：{error}")
             return
@@ -2071,6 +2191,8 @@ class MujocoPandaRecorder:
         self.reset_simulation()
 
     def record_frame(self) -> None:
+        if getattr(self, "episode_seal", None) is not None:
+            return  # Fixed robot endpoint while browser measurements finish flushing.
         frame_timestamp_ms = time.time() * 1000.0
         gesture_fresh = time.perf_counter() - self.last_gesture_update_at < 0.5
         gesture = self.latest_gesture if gesture_fresh else "None"
@@ -2126,10 +2248,24 @@ class MujocoPandaRecorder:
         action = np.concatenate(
             [target_in_base, target_rpy, np.array([self.data.ctrl[7]])]
         ).astype(np.float32)
+        snapshot = self._render_snapshot()
+        journal = getattr(self, "research", None)
+        if journal:
+            journal.record("robot_frame", control_epoch=self.control_epoch,
+                attempt_index=self.attempted_episodes, frame_index=self.episode_frames,
+                frame_timestamp_ms=frame_timestamp_ms, sim_time=float(self.data.time),
+                observation_measurement_id=self.latest_measurement_id,
+                last_processed_control_event_id=self.last_processed_control_event_id,
+                state=state, action=action, snapshot=snapshot,
+                raw_wrist_uv=raw_wrist_uv, raw_wrist_valid=raw_wrist_valid,
+                filtered_wrist_uv=filtered_wrist_uv, filtered_wrist_valid=filtered_wrist_valid,
+                gesture=gesture, hand_delta_uv=hand_delta_uv, hand_delta_valid=hand_delta_valid,
+                mapped_control_delta_xyz_m=mapped_control_delta,
+                mapped_control_commands=mapped_control_commands)
         self.training_queue.put(
             {
                 "type": "frame",
-                "snapshot": self._render_snapshot(),
+                "snapshot": snapshot,
                 "state": state,
                 "action": action,
                 "gesture": np.array([GESTURE_CODES[gesture]], dtype=np.int64),
@@ -2190,6 +2326,7 @@ class MujocoPandaRecorder:
             self.get_side_preview,
             self.get_front_preview,
             self.get_runtime_status,
+            lambda: getattr(self, "research", None),
         )
         self.server.start()
         print(f"[手势控制] 已监听 http://127.0.0.1:{self.args.port}/control")
@@ -2266,6 +2403,8 @@ class MujocoPandaRecorder:
         self.aux_process.join(timeout=10)
         if self.server is not None:
             self.server.stop()
+        if getattr(self, "research", None) is not None:
+            self.research.close()
         print(f"[LeRobot] 录制结束，共保存 {self.saved_episodes} 个 demonstrations。")
         print(f"[LeRobot] 失败数据集共保存 {self.failed_episodes} 个 demonstrations。")
         print(f"[LeRobot] 数据集：{self.args.dataset_root}")

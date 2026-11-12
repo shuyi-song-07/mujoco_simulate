@@ -44,8 +44,10 @@
 
         <div class="controls">
           <button id="camera-button" type="button">启动摄像头</button>
-          <p class="privacy-note">视频只在当前浏览器中处理，不会上传。</p>
+          <p class="privacy-note">摄像头视频仅在本地处理；关键点和操作日志保存到本机数据集。</p>
         </div>
+
+        <p id="measurement-log-state" class="privacy-note" role="status">原始手部记录：识别 0 / 已落盘 0 / 待写 0 / 丢弃 0</p>
 
         <div id="app-notice" class="app-notice" role="alert" hidden>
           <span class="notice-icon" aria-hidden="true">!</span>
@@ -138,6 +140,6 @@
 
     </main>
 
-    <script type="module" src="./app.js?v=instant-reentry-01"></script>
+    <script type="module" src="./app.js?v=raw-single-arm-01"></script>
   </body>
 </html>
