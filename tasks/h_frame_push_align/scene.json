@@ -1,5 +1,6 @@
 {
   "scene": {
+    "initial_gripper": "closed",
     "timestep": 0.002,
     "control_hz": 60,
     "table_top_z": 0.35,
@@ -221,8 +222,8 @@
       "rail_width_m": 0.036,
       "crossbeam_width_m": 0.036,
       "crossbeam_offset_x_m": 0.025,
-      "position_tolerance_m": 0.02,
-      "yaw_tolerance_rad": 0.08726646259971647,
+      "position_tolerance_m": 0.015,
+      "yaw_tolerance_rad": 0.03499065850,
       "stable_seconds": 0.5,
       "max_tilt_rad": 0.17453292519943295
     }

@@ -118,6 +118,9 @@ class DualArmTaskController:
         self.reset()
 
     def reset(self, seed=0):
+        initial_gripper = self.config["scene"].get("initial_gripper", "open")
+        if initial_gripper not in ("open", "closed"):
+            raise ValueError("scene.initial_gripper must be open or closed")
         self.seed = int(seed)
         self.success_tail = None
         rng = np.random.default_rng(self.seed)
@@ -150,12 +153,12 @@ class DualArmTaskController:
         initial_obstacles = (hook(self.config, 'reset')(self, object_position, yaw) if self.config.get('task_binding')
                              else reset_paper_obstacles(self.model, scene, object_position, yaw))
         for arm in self.arms:
-            arm.reset()
+            arm.reset(gripper=initial_gripper)
         self.data.qvel[:] = 0
         mujoco.mj_forward(self.model, self.data)
         self.task_state = TaskState.PREGRASP
         self.control_mode = ControlMode.IDLE
-        self.gripper_latch = GripperLatch.OPEN
+        self.gripper_latch = GripperLatch.OPEN if initial_gripper == "open" else GripperLatch.CLOSED
         self.paused = False
         self.pause_reason = None
         self.failure_reason = None

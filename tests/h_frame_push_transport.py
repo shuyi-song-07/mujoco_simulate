@@ -103,7 +103,8 @@ def push_demo(c, capture=None):
             for i, side in enumerate(('left', 'right')):
                 peak_force[i] = max(peak_force[i], sum(c.contacts['finger_normal_force_n'][side]))
             max_bottom = max(max_bottom, c.contact_control.bottom_height_m)
-            min_aperture = min(min_aperture, *(arm.gripper_status()['actual_width_m'] for arm in c.arms))
+            if label != 'settle':  # This open-jaw test explicitly opens before approaching.
+                min_aperture = min(min_aperture, *(arm.gripper_status()['actual_width_m'] for arm in c.arms))
             result = monitor.update(c)
             if capture and ticks % 2 == 0:
                 capture(None)
@@ -119,7 +120,7 @@ def push_demo(c, capture=None):
     if capture:
         capture('initial')
     neutral = np.array([arm.get_actual_pose()[0] for arm in c.arms])
-    move('settle', neutral, 30)
+    move('settle', neutral, 90)
     assert np.linalg.norm(c.data.xpos[c.object_id, :2] - first[:2]) < .001
     assert c.contact_control.support_ready
     rear = c.data.xpos[c.object_id] + np.asarray(c.config['scene']['grasp_offsets']) @ c.data.xmat[c.object_id].reshape(3, 3).T
@@ -194,6 +195,9 @@ class HFrameTransportTests(unittest.TestCase):
     def test_compiled_inheritance(self):
         old, new = [DualArmTaskController(recording_config(get(task))) for task in ('tray_to_platform', TASK)]
         verify_inheritance(old, new)
+        for arm in old.arms:
+            self.assertAlmostEqual(arm.gripper_command_width_m, arm.max_gripper_width_m)
+            self.assertAlmostEqual(arm.gripper_status()['actual_width_m'], arm.max_gripper_width_m)
         target = np.flatnonzero(new.model.geom_bodyid == new.target_id)
         self.assertTrue(len(target) and not new.model.geom_contype[target].any()
                         and not new.model.geom_conaffinity[target].any())

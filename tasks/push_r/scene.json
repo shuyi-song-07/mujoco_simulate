@@ -1,5 +1,6 @@
 {
   "scene": {
+    "initial_gripper": "closed",
     "timestep": 0.002,
     "control_hz": 60,
     "table_top_z": 0.35,

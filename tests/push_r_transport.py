@@ -46,7 +46,8 @@ def push_demo(controller, capture=None):
             for i, side in enumerate(("left", "right")):
                 peak_force[i] = max(peak_force[i], sum(c.contacts["finger_normal_force_n"][side]))
             max_lift = max(max_lift, c.contact_control.bottom_height_m)
-            min_width = min(min_width, *(a.gripper_status()["actual_width_m"] for a in c.arms))
+            if label != "settle":  # This open-jaw test explicitly opens before approaching.
+                min_width = min(min_width, *(a.gripper_status()["actual_width_m"] for a in c.arms))
             result = monitor.update(c)
             if capture and ticks % 2 == 0:
                 capture(None)
@@ -62,7 +63,7 @@ def push_demo(controller, capture=None):
     if capture:
         capture("initial")
     waypoints = np.array([a.get_actual_pose()[0] for a in c.arms])
-    move("settle", waypoints, 30)
+    move("settle", waypoints, 90)
     np.testing.assert_allclose(c.data.xpos[c.object_id, :2], initial[:2], atol=.001)
     rear = c.data.xpos[c.object_id] + np.asarray(c.config["scene"]["grasp_offsets"]) @ c.data.xmat[c.object_id].reshape(3, 3).T
     waypoints = rear.copy()

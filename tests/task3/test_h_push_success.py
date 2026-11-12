@@ -42,6 +42,32 @@ class HFrameSuccessTests(unittest.TestCase):
         self.assertFalse(result["final_conditions"]["position_xy"])
         self.assertTrue(result["final_conditions"]["table_support"])
 
+    def test_closed_start_and_reset_preserve_normal_gripper_control(self):
+        from rate_fixture import pump
+        from simulation.mujoco.dual_arm.teleop_service import validate_recording_initial_state
+
+        c = self.c
+        self.assertTrue(c.get_status()["gripper_closed"])
+        for arm in c.arms:
+            np.testing.assert_allclose(c.data.qpos[arm.finger_qpos_indices], 0., atol=1e-12)
+            self.assertEqual(arm.gripper_requested_width_m, 0.)
+            self.assertEqual(arm.gripper_goal_width_m, 0.)
+        for _ in range(60):
+            c.step(1 / 60)
+        np.testing.assert_allclose(c.action_vector_m()[[6, 13]], 0., atol=1e-12)
+        for arm in c.arms:
+            self.assertLess(abs(arm.gripper_status()["actual_width_m"]), .0005)
+        validate_recording_initial_state(c.get_status(), True)
+        pump(c, ("Z_OPEN", "Z_OPEN"), 80)
+        np.testing.assert_allclose(c.action_vector_m()[[6, 13]], .08, atol=1e-6)
+        for arm in c.arms:
+            self.assertGreater(arm.gripper_status()["actual_width_m"], .079)
+        c.reset(42)
+        self.assertTrue(c.get_status()["gripper_closed"])
+        np.testing.assert_allclose(c.action_vector_m()[[6, 13]], 0., atol=1e-12)
+        for arm in c.arms:
+            np.testing.assert_allclose(c.data.qpos[arm.finger_qpos_indices], 0., atol=1e-12)
+
     def test_real_supported_pose_succeeds_after_half_second_without_grasp(self):
         self.pose_fixture()
         self.assertFalse(self.ticks(29)["task_success"])
