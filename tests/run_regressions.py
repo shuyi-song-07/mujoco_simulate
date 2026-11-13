@@ -37,7 +37,7 @@ if __name__=='__main__':
     import subprocess
     collection_only='--collection-only' in sys.argv
     names=['tests.task3.test_action_contract', 'tests.task3.test_level_gripper_control',
-           'tests.task3.test_control_computation','tests.task3.test_episode_completion',
+           'tests.task3.test_control_computation','tests.task3.test_push_retreat','tests.task3.test_episode_completion',
            'tests.task3.test_preview_cameras', 'tests.task3.test_h_push_success',
            'tests.h_frame_push_transport', 'tests.push_r_transport', 'tests.task3.test_single_push_t',
            'tests.task3.test_single_push_guard', 'tests.task3.test_single_ui_contract'] if collection_only else MODULES
