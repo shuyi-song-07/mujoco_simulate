@@ -38,12 +38,12 @@ if __name__ == "__main__":
     # Conservative Panda workspace for the Push-T task.
     _add_default("--cube-x-min", "0.46")
     _add_default("--cube-x-max", "0.54")
-    _add_default("--cube-y-min", "-0.10")
-    _add_default("--cube-y-max", "0.10")
+    _add_default("--cube-y-min", "-0.26")
+    _add_default("--cube-y-max", "0.26")
     _add_default("--plate-x-min", "0.57")
     _add_default("--plate-x-max", "0.66")
-    _add_default("--plate-y-min", "-0.14")
-    _add_default("--plate-y-max", "0.14")
+    _add_default("--plate-y-min", "-0.26")
+    _add_default("--plate-y-max", "0.26")
     _add_default("--object-min-separation", "0.14")
 
     # Curriculum stage one: randomized object yaw, fixed goal orientation.

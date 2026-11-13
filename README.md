@@ -33,7 +33,7 @@ MuJoCo 推理与量化评估
 - MuJoCo Franka Panda 单臂仿真；
 - 基于 MediaPipe 的网页手势遥操作；
 - pick-and-place 任务；
-- 固定末端工作高度的单臂 Push-T 任务；
+- 平面推动与升降重定位分开控制的单臂 Push-T 任务；
 - 任务初始位置随机化；
 - 机器人状态、action 与多视角 RGB 图像同步采集；
 - 成功 episode 与失败 episode 分开保存；
@@ -132,9 +132,19 @@ LeRobot 帧字段新增 `observation.gesture`、`observation.gesture_score`、`o
 
 ### Single-arm Push-T
 
+T 型物体的平面外轮廓为300×300毫米，高度仍为30毫米、质量0.1千克、摩擦系数不变；视觉目标同步放大并保留每侧5毫米余量。覆盖率判定同步使用新尺寸，随机布局按新轮廓检查物体与目标间距；启动器的物体/目标Y中心采样范围为±0.26米，保留桌面边界和中心可达范围检查，避免旧范围放不下两个大T。
+
 ```bash
 mjpython simulation/mujoco/record_mujoco_push_t.py
 ```
+
+Push-T 夹爪始终关闭。ILoveYou 控制 XY，Victory 左右、Thumb_Up 前后；平面移动锁住当前高度。张掌或握拳时，上下移动手控制 Z，XY 保持；可先抬起、平移到新的接触点，再下降继续推。最低下降到原来的初始接触高度，上限为0.82米，避免继续向桌面压入。切换回平面移动时不会自动降回初始平面。
+
+Push-T 网页手势的 XYZ 映射幅度为原来的50%；可加 `--push-motion-scale 0.3` 进一步减小，`--push-motion-scale 1` 恢复原幅度。pick-and-place、原有键盘规则和夹爪闭合规则保持原样。该比例写入新采集启动参数；人手原始位移标签不缩放，机械臂映射请求单独记录。新采集数据可包含升降重定位，旧数据不改写，训练与评估应注明控制版本。
+
+Push-T 原生 MuJoCo 操作窗口中，机械臂本体默认30%不透明度，两根夹指保持不透明，便于观察接触位置。网页辅助视角与录制图像仍保持原样。可加 `--push-arm-opacity 1` 恢复窗口中的不透明显示；该选项不改物理属性。
+
+Push-T 原生窗口的俯视/斜视相机距离默认扩大35%，便于看全放大后的T与操作范围；录制相机和网页视角不变。`--viewer-distance-scale 1` 恢复原窗口距离，`--viewer-distance-scale 1.5` 可再拉远；pick-and-place 默认仍为1。
 
 运行前需要允许终端和浏览器访问摄像头。建议先确认网页显示“MuJoCo 已连接”，再开始遥操作或录制。
 

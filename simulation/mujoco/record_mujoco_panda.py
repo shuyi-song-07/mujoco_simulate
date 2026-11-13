@@ -46,11 +46,11 @@ PUSH_T_INITIAL_ARM_QPOS = np.array(
 )
 
 # Push-T footprint in the body's local XY frame.  The two non-overlapping
-# rectangles form one rigid body: a 100x30 mm top bar and a 70x30 mm stem.
-PUSH_T_OBJECT_BAR_X = (0.020, 0.050)
-PUSH_T_OBJECT_BAR_Y_HALF = 0.050
-PUSH_T_OBJECT_STEM_X = (-0.050, 0.020)
-PUSH_T_OBJECT_STEM_Y_HALF = 0.015
+# rectangles form one rigid body with a 300x300 mm overall footprint.
+PUSH_T_OBJECT_BAR_X = (0.060, 0.150)
+PUSH_T_OBJECT_BAR_Y_HALF = 0.150
+PUSH_T_OBJECT_STEM_X = (-0.150, 0.060)
+PUSH_T_OBJECT_STEM_Y_HALF = 0.045
 PUSH_T_TARGET_PADDING = 0.005
 GESTURE_CODES = {
     "None": 0, "Closed_Fist": 1, "Open_Palm": 2, "Pointing_Up": 3,
@@ -108,8 +108,9 @@ def gripper_centered_over_cube(
 
 def make_push_t_sample_points(resolution: int = 81) -> np.ndarray:
     """Return uniform local-XY samples covering the physical Push-T footprint."""
-    axis = np.linspace(-0.05, 0.05, resolution)
-    xx, yy = np.meshgrid(axis, axis, indexing="xy")
+    x = np.linspace(PUSH_T_OBJECT_STEM_X[0], PUSH_T_OBJECT_BAR_X[1], resolution)
+    y = np.linspace(-PUSH_T_OBJECT_BAR_Y_HALF, PUSH_T_OBJECT_BAR_Y_HALF, resolution)
+    xx, yy = np.meshgrid(x, y, indexing="xy")
     in_bar = (
         (xx >= PUSH_T_OBJECT_BAR_X[0])
         & (xx <= PUSH_T_OBJECT_BAR_X[1])
@@ -445,6 +446,7 @@ class MujocoPandaRecorder:
         self.reset_simulation()
         self._start_render_workers()
         provenance = jsonable({"task_mode": args.task_mode, "session": self.session,
+            "push_control_protocol": "closed_gripper_xy_hold_z_reposition_v1" if args.task_mode == "push_t" else None,
             "arguments": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
             "model_sha256": hashlib.sha256(args.model_path.read_bytes()).hexdigest(),
             "recorder_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
@@ -609,6 +611,7 @@ class MujocoPandaRecorder:
             if self.z_locked
             else None
         )
+        self.push_contact_hand_z = float(self.data.xpos[self.hand_id][2])
         self.cube_over_target = False
         self.target_view_reached_with_cube = False
         self.carried_target_since = None
@@ -733,10 +736,17 @@ class MujocoPandaRecorder:
                     "half_size_m": half, "yaw_rad": yaw, "stacked_on": None,
                 })
         else:
+            object_radius = np.hypot(PUSH_T_OBJECT_BAR_X[1], PUSH_T_OBJECT_BAR_Y_HALF)
+            goal_radius = np.hypot(PUSH_T_OBJECT_BAR_X[1] + PUSH_T_TARGET_PADDING,
+                                   PUSH_T_OBJECT_BAR_Y_HALF + PUSH_T_TARGET_PADDING)
+            minimum_separation = max(self.args.object_min_separation,
+                                     object_radius + goal_radius + 0.005)
             for _ in range(1_000):
                 cube_xy = self.rng.uniform(cube_low, cube_high)
                 target_xy = self.rng.uniform(target_low, target_high)
-                if np.linalg.norm(cube_xy - target_xy) >= self.args.object_min_separation:
+                if (self._safe_xy(cube_xy, object_radius)
+                        and self._safe_xy(target_xy, goal_radius)
+                        and np.linalg.norm(cube_xy - target_xy) >= minimum_separation):
                     break
             else:
                 raise RuntimeError("Object randomization ranges cannot satisfy --object-min-separation.")
@@ -1063,6 +1073,17 @@ class MujocoPandaRecorder:
                 proposed[:2] *= (self.args.safe_reach_radius + 0.04) / planar_radius
             world_delta = proposed - target_pos
 
+        if self.args.task_mode == "push_t" and not self.z_locked:
+            proposed = target_pos + world_delta
+            floor = self.push_contact_hand_z
+            if dz < 0:
+                proposed[2] = max(proposed[2], min(floor, target_pos[2]))
+                if proposed[2] > target_pos[2] + world_delta[2] + 1e-9:
+                    self.motion_limit_reason = "已到 Push-T 初始接触高度下降限位"
+            elif dz > 0:
+                proposed[2] = min(proposed[2], max(0.82, target_pos[2]))
+            world_delta = proposed - target_pos
+
         target_hand_rotation_world = (
             base_rotation @ self.target_hand_rotation_in_base
         )
@@ -1381,17 +1402,33 @@ class MujocoPandaRecorder:
             and time.perf_counter() - self.last_gesture_update_at < 0.5
         )
 
+    def configure_operator_arm_visibility(self) -> None:
+        """Push-T operator window only; offscreen workers own opaque XML models."""
+        if self.args.task_mode != "push_t":
+            return
+        robot = {self.base_id}
+        fingers = set(self.finger_body_ids)
+        for body in range(1, self.model.nbody):
+            parent = int(self.model.body_parentid[body])
+            if parent in robot:
+                robot.add(body)
+            if parent in fingers:
+                fingers.add(body)
+        geometries = np.isin(self.model.geom_bodyid, list(robot - fingers))
+        self.model.geom_rgba[geometries, 3] = self.args.push_arm_opacity
+
     def update_viewer_camera(self, viewer) -> None:
+        distance_scale = getattr(self.args, "viewer_distance_scale", 1.0)
         if self.operator_uses_topdown():
             viewer.cam.type = mujoco.mjtCamera.mjCAMERA_FREE
             viewer.cam.lookat[:] = self.topdown_camera.lookat
-            viewer.cam.distance = self.topdown_camera.distance
+            viewer.cam.distance = self.topdown_camera.distance * distance_scale
             viewer.cam.azimuth = self.topdown_camera.azimuth
             viewer.cam.elevation = self.topdown_camera.elevation
         else:
             viewer.cam.type = mujoco.mjtCamera.mjCAMERA_FREE
             viewer.cam.lookat[:] = self.observation_camera.lookat
-            viewer.cam.distance = self.observation_camera.distance
+            viewer.cam.distance = self.observation_camera.distance * distance_scale
             viewer.cam.azimuth = self.observation_camera.azimuth
             viewer.cam.elevation = self.observation_camera.elevation
 
@@ -1616,6 +1653,9 @@ class MujocoPandaRecorder:
 
     def apply_web_motion(self, dx: float, dy: float, dz: float) -> None:
         """Record a control request accepted by the backend in robot-base metres."""
+        if getattr(getattr(self, "args", None), "task_mode", None) == "push_t":
+            scale = getattr(self.args, "push_motion_scale", 0.5)
+            dx, dy, dz = dx * scale, dy * scale, dz * scale
         self.move_hand(dx, dy, dz)
         if not hasattr(self, "mapped_control_pending"):
             self.mapped_control_pending = np.zeros(3, dtype=np.float64)
@@ -1896,12 +1936,21 @@ class MujocoPandaRecorder:
     def handle_pushing_gesture(self, payload: dict) -> None:
         """Apply pushing-only controls without changing pick-and-place rules."""
         command = payload.get("command")
-        # Push-T uses one fixed, closed pushing surface for the whole episode.
+        # Keep the pushing surface closed while allowing vertical repositioning.
         if command in {"open", "close"}:
             return
-        if command == "start_vertical":
-            return
-        if command in {"up", "down"}:
+        if command in {"start_vertical", "start_planar"}:
+            sent_at = float(payload.get("sentAt", self.last_motion_command_at))
+            if np.isfinite(sent_at):
+                self.last_motion_command_at = max(self.last_motion_command_at, sent_at)
+        if command in {"start_vertical", "up", "down"}:
+            if self.z_locked or self.vertical_anchor_xy is None:
+                self.vertical_anchor_xy = self._commanded_hand_position()[:2].copy()
+            self.set_z_lock(False, reason="vertical")
+            if command == "up":
+                self.apply_web_motion(0.0, 0.0, self.args.vertical_step)
+            elif command == "down":
+                self.apply_web_motion(0.0, 0.0, -self.args.vertical_step)
             return
         if command == "start_planar":
             self.vertical_anchor_xy = None
@@ -2051,7 +2100,9 @@ class MujocoPandaRecorder:
         if latest_motion is not None:
             sent_at = float(latest_motion["sentAt"])
             command_age_ms = time.time() * 1000.0 - sent_at
-            if command_age_ms <= self.args.max_motion_command_age_ms:
+            if self.args.task_mode == "push_t" and sent_at <= self.last_motion_command_at:
+                self.log_dropped_control(latest_motion, "superseded_by_push_mode_switch")
+            elif command_age_ms <= self.args.max_motion_command_age_ms:
                 self.last_motion_command_at = sent_at
                 self.handle_recorded_control(latest_motion)
             else:
@@ -2351,6 +2402,9 @@ class MujocoPandaRecorder:
         side_preview_interval = 1.0 / (3.0 * self.args.side_preview_fps)
         next_side_preview_time = time.perf_counter()
 
+        # Only this model feeds the native window. Training and browser views
+        # use independent models; _render_snapshot deliberately excludes RGBA.
+        self.configure_operator_arm_visibility()
         with mujoco.viewer.launch_passive(
             self.model,
             self.data,
@@ -2449,6 +2503,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--step", type=float, default=0.015)
     parser.add_argument("--vertical-step", type=float, default=0.01152)
     parser.add_argument("--max-planar-step", type=float, default=0.0216)
+    parser.add_argument("--push-motion-scale", type=float, default=0.5,
+                        help="Push-T web XYZ request multiplier in (0,1]; pick-place and keyboard unchanged")
+    parser.add_argument("--push-arm-opacity", type=float, default=0.3,
+                        help="Push-T native-window arm opacity; fingers and recorded RGB unchanged")
     parser.add_argument("--max-joint-step", type=float, default=0.08)
     parser.add_argument("--max-joint-target-lead", type=float, default=0.12)
     parser.add_argument("--max-motion-command-age-ms", type=float, default=150.0)
@@ -2473,6 +2531,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--topdown-lookat-y", type=float, default=0.0)
     parser.add_argument("--topdown-lookat-z", type=float, default=0.4)
     parser.add_argument("--topdown-distance", type=float, default=0.95)
+    parser.add_argument("--viewer-distance-scale", type=float, default=None,
+                        help="Native MuJoCo window only: default 1.35 for Push-T, 1 for pick-place")
     # Azimuth 0 displays the previous top-down image rotated 90 degrees
     # counterclockwise.  This changes only the operator view, not robot axes.
     parser.add_argument("--topdown-azimuth", type=float, default=0.0)
@@ -2522,6 +2582,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--test-motion", action="store_true")
     parser.add_argument("--test-failure", action="store_true")
     args = parser.parse_args(argv)
+    if args.viewer_distance_scale is None:
+        args.viewer_distance_scale = 1.35 if args.task_mode == "push_t" else 1.0
+    if not np.isfinite(args.viewer_distance_scale) or args.viewer_distance_scale <= 0:
+        parser.error("--viewer-distance-scale must be finite and positive.")
     if args.fps <= 0:
         parser.error("--fps must be greater than zero.")
     if args.hand_delta_window_ms is None:
@@ -2553,6 +2617,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--side-preview-fps must be greater than zero.")
     if args.max_joint_step <= 0:
         parser.error("--max-joint-step must be greater than zero.")
+    if not np.isfinite(args.push_motion_scale) or not 0 < args.push_motion_scale <= 1:
+        parser.error("--push-motion-scale must be finite and in (0,1].")
+    if not np.isfinite(args.push_arm_opacity) or not 0 < args.push_arm_opacity <= 1:
+        parser.error("--push-arm-opacity must be finite and in (0,1].")
     if args.max_joint_target_lead <= 0:
         parser.error("--max-joint-target-lead must be greater than zero.")
     if args.max_motion_command_age_ms <= 0:

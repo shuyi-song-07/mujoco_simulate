@@ -36,6 +36,8 @@ const recordFailureButton = document.querySelector("#record-failure");
 const recordStopButton = document.querySelector("#record-stop");
 const openPalmRule = document.querySelector("#open-palm-rule");
 const closedFistRule = document.querySelector("#closed-fist-rule");
+const robotHelp = document.querySelector("#robot-help");
+const pickPlaceHelp = robotHelp.textContent;
 const robotButtons = [
   resetSceneButton,
   recordStartButton,
@@ -123,7 +125,8 @@ function researchContext() {
     hand_selection:"first_detection_existing_control",model:"models/gesture_recognizer.task",delegate:"CPU",
     control_config:{interval_ms:CONTROL_INTERVAL_MS,planar_sensitivity:planarSensitivity(),
       vertical_dead_zone:verticalDeadZone(),planar_dead_zone:planarDeadZone(),
-      reentry_wait_ms:0,reentry_stable_ms:0}, task_mode:robotTaskMode};
+      reentry_wait_ms:0,reentry_stable_ms:0}, task_mode:robotTaskMode,
+    push_control_protocol:isPushingTask() ? "closed_gripper_xy_hold_z_reposition_v1" : null};
 }
 
 function recordRawMeasurement(result, capturedAt, recognizedAt) {
@@ -252,7 +255,7 @@ function setRobotConnected(isConnected) {
   } else if (!wasConnected) {
     robotFeedback.textContent =
       isPushingTask()
-        ? "MuJoCo Push-T 已连接：夹爪已闭合，推动高度固定在 T 刚体中线。"
+        ? "MuJoCo Push-T 已连接：夹爪保持闭合；张掌或握拳升降，平面手势锁住当前高度。"
         : "MuJoCo 已连接，可以启用机器人控制并开始录制。";
   }
 }
@@ -366,9 +369,11 @@ async function checkRobotConnection() {
         `${controlHint}；${runtime.motion_limit_reason || graspHint}`;
       document.querySelector("#preview-grid").dataset.grasp = runtime.gripper_approaching_cube ? "near" : "far";
       if (robotTaskMode === "push_t") {
-        openPalmRule.textContent = "夹爪保持闭合；推动高度固定";
-        closedFistRule.textContent = "夹爪保持闭合；推动高度固定";
+        robotHelp.textContent = "Push-T：夹爪始终关闭。ILoveYou 控制 XY；Victory 左右、Thumb_Up 前后，平面移动时锁住当前高度。张掌或握拳时，上下移动手控制升降，XY 保持；抬起后切回平面手势绕到新的接触点，再下降继续推。最低下降到初始接触高度。";
+        openPalmRule.textContent = "夹爪保持闭合 / 手上下控制升降";
+        closedFistRule.textContent = "夹爪保持闭合 / 手上下控制升降";
       } else {
+        robotHelp.textContent = pickPlaceHelp;
         openPalmRule.textContent = "松开夹爪 / 手上下控制升降";
         closedFistRule.textContent = "保持 50 ms 闭爪 / 手上下控制升降";
       }
@@ -780,14 +785,29 @@ function processRobotControl(result, timestamp) {
 }
 
 function processPushingControl({ gesture, gestureChanged, wrist, timestamp, reentered = false }) {
-  // Push-T uses a closed gripper and fixed midpoint contact height. Palm and
-  // fist no longer change the gripper or Z; only planar gestures move it.
+  // Palm/fist change height with the same closed pushing surface. Returning
+  // to a planar gesture captures the new height, not the initial contact plane.
   const isVerticalGesture = gesture === "Open_Palm" || gesture === "Closed_Fist";
   if (isVerticalGesture) {
-    robotFeedback.textContent =
-      "Push-T：夹爪保持闭合，推动高度固定在 T 刚体中线。";
-    lastOpenPalmY = null;
+    lastPlanarPoint = null;
+    pushingPlanarGestureStartedAt = Number.NEGATIVE_INFINITY;
+    if (gestureChanged || reentered || lastOpenPalmY === null) {
+      pendingMotionRequest = undefined;
+      void sendRobotCommand("start_vertical");
+      robotZLocked = false;
+      lastOpenPalmY = wrist.y;
+    } else if (timestamp - lastControlSentAt >= CONTROL_INTERVAL_MS) {
+      const delta = wrist.y - lastOpenPalmY;
+      if (Math.abs(delta) > verticalDeadZone()) {
+        sendLatestMotionCommand(delta < 0 ? "up" : "down");
+        lastOpenPalmY = wrist.y;
+        lastControlSentAt = timestamp;
+      }
+    }
+    robotFeedback.textContent = "Push-T：夹爪保持关闭，上下移动手调整高度；抬起后可换接触点。";
+    return;
   }
+  lastOpenPalmY = null;
 
   const isPlanarGesture =
     gesture === "Victory" || gesture === "Thumb_Up" || gesture === "ILoveYou";
@@ -801,6 +821,9 @@ function processPushingControl({ gesture, gestureChanged, wrist, timestamp, reen
   }
 
   if (gestureChanged) {
+    pendingMotionRequest = undefined;
+    void sendRobotCommand("start_planar", { lockZ: true });
+    robotZLocked = true;
     // A resumed hand establishes a fresh anchor without another entry delay.
     // Ordinary in-frame gesture changes retain their existing confirmation.
     pushingPlanarGestureStartedAt = reentered ? Number.NEGATIVE_INFINITY : timestamp;
