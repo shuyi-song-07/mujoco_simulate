@@ -10,6 +10,9 @@ import re
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = {"state": "dual_panda_q7_width_m_s16", "action": "dual_xyz_rpy_width_m_a14",
           "observation": "oblique_rgb", "state_dim": 16, "action_dim": 14}
+SINGLE_SCHEMA = {"state": "single_panda_q7_yaw_width_m_s9", "action": "single_xyz_rpy_width_m_a7",
+                 "observation": "oblique_rgb", "state_dim": 9, "action_dim": 7}
+CONTROLLER_SCHEMAS = {"dual_panda_v1": SCHEMA, "single_panda_push_v1": SINGLE_SCHEMA}
 HOOKS = ("initial_state", "configure_xml", "reset", "collection_success", "rollout_monitor", "preflight", "dataset_adapter")
 
 def sha(path):
@@ -44,9 +47,9 @@ class Task:
         if self.path.parent.name != m["task_id"] or m["status"] not in ("ready", "development"):
             raise ValueError(f"Task directory/status mismatch: {self.path}")
         self.id = m["task_id"]
-        if m["schema"] != SCHEMA:
+        if m["schema"] != CONTROLLER_SCHEMAS.get(m["controller"]):
             raise ValueError(f"{self.id}: unsupported schema; implement and register an explicit adapter first")
-        if m["controller"] != "dual_panda_v1":
+        if m["controller"] not in CONTROLLER_SCHEMAS:
             raise ValueError(f"{self.id}: unsupported controller")
         if m["status"] == "ready":
             if not m.get('evaluation_config'):
@@ -83,6 +86,9 @@ class Task:
         config = load_config(ROOT/"config/collection.json")
         patch = json.loads(local(self.manifest["scene_config"]).read_text(encoding="utf-8"))
         config["scene"].update(patch["scene"])
+        if self.manifest['controller'] == 'single_panda_push_v1':
+            from simulation.mujoco.dual_arm.config import _merge
+            _merge(config, {key: value for key, value in patch.items() if key != 'scene'})
         config["scene"]["scenario"] = self.manifest["scene_id"]
         config["task_binding"] = self.binding()
         return config

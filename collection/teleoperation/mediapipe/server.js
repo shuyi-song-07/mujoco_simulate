@@ -81,6 +81,7 @@ createServer((request, response) => {
 
   const publicFiles = new Set(["/", "/index.html",
     "/dual_arm.html", "/dual-arm-app.js", "/dual-arm-style.css", "/dual-interaction-state.js", "/dual-gesture-worker.js",
+    "/single_arm.html", "/single-arm-app.js", "/single-arm-style.css", "/single-interaction-state.js",
     "/measurement-journal.js", "/hand-measurement.js", "/continuous-interaction-state.js", "/rate-interaction-state.js"]);
   if (!publicFiles.has(pathname) && !pathname.startsWith("/node_modules/@mediapipe/tasks-vision/") && !pathname.startsWith("/models/")) {
     response.writeHead(404).end("Not found");

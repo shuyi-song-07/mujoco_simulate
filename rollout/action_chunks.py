@@ -44,7 +44,7 @@ deficient mean falls back to the newest prediction rather than an arbitrary
 orientation. Physical pose/width limits remain the executor's responsibility.
 """
     result = weights @ actions
-    for start in (3, 10):
+    for start in range(3, actions.shape[-1], 7):
         mean = sum(w * _rotation(a[start:start+3]) for w, a in zip(weights, actions))
         u, singular, vt = np.linalg.svd(mean)
         if singular[1] < 1e-8:
@@ -64,9 +64,12 @@ Explicit origins establish validity: legitimate zero targets are never used
 as missing-data sentinels. At most ``chunk_size`` chunks are retained.
 """
     def __init__(self, mode="chunked", *, chunk_size=30, n_action_steps=5,
-                 temporal_ensemble_coeff=.01):
+                 temporal_ensemble_coeff=.01, action_dim=14):
         if mode not in MODES:
             raise ValueError(f"Unknown execution schedule: {mode}")
+        if type(action_dim) is not int or action_dim not in (7,14):
+            raise ValueError('Only declared A7/A14 chunks are supported')
+        self.action_dim = action_dim
         if type(chunk_size) is not int or not 1 <= chunk_size <= 1000:
             raise ValueError("chunk_size must be an integer in [1, 1000]")
         if type(n_action_steps) is not int or not 1 <= n_action_steps <= chunk_size:
@@ -83,13 +86,13 @@ as missing-data sentinels. At most ``chunk_size`` chunks are retained.
         self.query_count = 0
 
     @classmethod
-    def from_settings(cls, settings, *, chunk_size=None):
+    def from_settings(cls, settings, *, chunk_size=None, action_dim=14):
         # Missing execution is supported only for old programmatic callers;
         # CLI settings require an explicit versioned execution field.
         return cls(settings.get("execution", LEGACY),
                    chunk_size=chunk_size or settings.get("chunk_size", 30),
                    n_action_steps=settings.get("n_action_steps", 5),
-                   temporal_ensemble_coeff=settings.get("temporal_ensemble_coeff", .01))
+                   temporal_ensemble_coeff=settings.get("temporal_ensemble_coeff", .01), action_dim=action_dim)
 
     @property
     def latest_chunk(self):
@@ -112,7 +115,7 @@ as missing-data sentinels. At most ``chunk_size`` chunks are retained.
                 chunk = np.asarray(raw_chunk, dtype=float)
             except (TypeError, ValueError) as error:
                 raise InvalidActionChunk("Model action chunk is not a numeric array") from error
-            if chunk.shape != (self.chunk_size, 14) or not np.isfinite(chunk).all():
+            if chunk.shape != (self.chunk_size, self.action_dim) or not np.isfinite(chunk).all():
                 raise InvalidActionChunk("Model action chunk has invalid shape or nonfinite values")
             if self.mode != "temporal_ensemble":
                 self._chunks.clear()

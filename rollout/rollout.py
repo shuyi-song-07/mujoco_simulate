@@ -125,8 +125,9 @@ def git_commit():
 def implementation_hashes():
     # Freeze the executor, protocol, observation adapter, physics and assets.
     paths = list((ROOT / "rollout").glob("*.py"))
-    paths += [p for p in (ROOT / "tasks").rglob('*') if p.suffix in ('.py', '.json')]
+    paths += [p for p in (ROOT / "tasks").rglob('*') if p.suffix in ('.py', '.json', '.xml')]
     paths += list((ROOT / "simulation/mujoco/dual_arm").glob("*.py"))
+    paths += list((ROOT / "simulation/mujoco/single_arm").glob("*.py"))
     paths += [ROOT / "simulation/mujoco/assets/dual_arm/dual_arm_scene.xml"]
     paths += list((ROOT / "simulation/mujoco/assets/franka_emika_panda/assets").glob("*"))
     return {str(p.relative_to(ROOT)).replace("\\", "/"): sha(p) for p in sorted(paths) if p.is_file()}
@@ -137,8 +138,9 @@ def validate_settings(settings):
     from rollout.protocol import FULL_OPEN_SUCCESS_CRITERION, HALF_OPEN_SUCCESS_CRITERION
     if settings.get('media_mode', 'all_views') not in {'all_views', 'policy_only'}:
         raise ValueError('media_mode must be all_views or policy_only')
+    single_push = settings['version'] == 'papera-single-push-t-evaluation-v1'
     if settings["version"] not in {"papera-closed-loop-evaluation-v1", "papera-closed-loop-evaluation-v2",
-                                   "papera-single-view-half-open-evaluation-v1"}:
+                                   "papera-single-view-half-open-evaluation-v1", 'papera-single-push-t-evaluation-v1'}:
         raise ValueError("Unknown evaluation settings")
     open_fraction = settings.get("success_open_fraction", 1.0)
     criterion = settings.get("success_criterion", FULL_OPEN_SUCCESS_CRITERION)
@@ -146,8 +148,12 @@ def validate_settings(settings):
             or not math.isfinite(open_fraction) or not 0 < open_fraction <= 1):
         raise ValueError("success_open_fraction must be in (0, 1]")
     expected_criterion = HALF_OPEN_SUCCESS_CRITERION if open_fraction < 1 else FULL_OPEN_SUCCESS_CRITERION
-    if criterion != expected_criterion:
+    if not single_push and criterion != expected_criterion:
         raise ValueError("success_criterion does not match success_open_fraction")
+    if single_push and (settings.get('task_id') != 'push_t' or settings.get('task_success_criterion') != 'upstream-push-t-coverage-v1'
+                        or settings.get('success_coverage') != .9 or settings.get('exit_coverage') != .85
+                        or settings.get('dwell_seconds') != .5):
+        raise ValueError('Push-T evaluation must retain the source coverage/dwell contract')
     if settings["version"] == "papera-single-view-half-open-evaluation-v1" and open_fraction != .5:
         raise ValueError("The current single-view baseline protocol freezes half-open success")
     if settings["observation_hz"] != 30 or settings["control_hz"] != 60 or settings["video_fps"] != 30:
@@ -185,7 +191,7 @@ def prepare_protocol(settings, output):
     scene_deadline = config["evaluation"]["max_episode_seconds"]
     if settings["max_seconds"] > scene_deadline:
         raise ValueError("Evaluation deadline exceeds the frozen task scene contract")
-    if settings['lift_stable_seconds'] != config['cooperation']['grasp_stable_seconds']:
+    if settings.get('task_id') != 'push_t' and settings['lift_stable_seconds'] != config['cooperation']['grasp_stable_seconds']:
         raise ValueError('Lift confirmation differs from the frozen success monitor')
     check = hook(config, 'preflight')(config, settings["test_seeds"],
                             demonstration_seeds=source["demonstration_seeds"],
@@ -267,10 +273,14 @@ def measure_intervention(requested, issued, settings):
     """Count meaningful servo-goal changes, not Euler aliases or float noise."""
     import numpy as np
     residual = np.asarray(issued, dtype=float) - np.asarray(requested, dtype=float)
-    angles = [3, 4, 5, 10, 11, 12]
+    if residual.shape not in ((7,), (14,)):
+        raise ValueError('Expected declared single/dual arm action dimensions')
+    angles = [o+i for o in range(0, len(residual), 7) for i in (3,4,5)]
+    positions = [o+i for o in range(0, len(residual), 7) for i in (0,1,2)]
+    widths = list(range(6, len(residual), 7))
     residual[angles] = (residual[angles] + np.pi) % (2*np.pi) - np.pi
-    material = (np.max(np.abs(residual[[0,1,2,7,8,9]])) >= settings.get('material_intervention_translation_m', .0001)
-        or np.max(np.abs(residual[[6,13]])) >= settings.get('material_intervention_width_m', .0001)
+    material = (np.max(np.abs(residual[positions])) >= settings.get('material_intervention_translation_m', .0001)
+        or np.max(np.abs(residual[widths])) >= settings.get('material_intervention_width_m', .0001)
         or np.max(np.abs(residual[angles])) >= settings.get('material_intervention_angle_rad', .001))
     return bool(material), residual.tolist()
 
@@ -288,7 +298,7 @@ def render_camera_names(metadata, settings):
 def initialize_worker(run_path, checkpoint, scene, settings, device, allow_overfit=False):
     import torch
     from rollout.policy import load_policy
-    from simulation.mujoco.dual_arm.task_controller import DualArmTaskController
+    from tasks.runtime import create_controller
     from simulation.mujoco.dual_arm.render_workers import MultiCameraRenderer
     torch.set_num_threads(settings["cpu_threads_per_worker"])
     torch.use_deterministic_algorithms(True)
@@ -302,7 +312,9 @@ def initialize_worker(run_path, checkpoint, scene, settings, device, allow_overf
     if settings.get("chunk_size", policy.metadata['chunk_size']) != policy.metadata['chunk_size']:
         raise ValueError("Evaluation chunk_size differs from the frozen model")
     validate_policy_settings(policy.metadata, settings)
-    controller = DualArmTaskController(config=scene)
+    controller = create_controller(scene)
+    if policy.metadata.get('state_dim', 16) != len(controller.state_vector()) or policy.metadata.get('action_dim', 14) != len(controller.action_vector_m()):
+        raise ValueError('Policy and live task robot dimensions disagree')
     camera_names = render_camera_names(policy.metadata, settings)
     if policy.metadata["cameras"] == ["oblique"]:
         from simulation.mujoco.dual_arm.training_camera import training_camera_metadata
@@ -451,6 +463,14 @@ The current Task3 model has only fixed finger-joint equalities and no mocap.
 
 def update_stage_progress(controller, evidence, stages, elapsed):
     """Diagnostic milestones only; never replace the physical success monitor."""
+    if tuple(getattr(controller, 'arm_order', ())) == ('left',):
+        flags = {'push_contact': controller.contacts.get('robot_object', False),
+                 'coverage_90_percent': evidence.get('coverage', 0.) >= .9,
+                 'success': evidence.get('task_success', False)}
+        for name, reached in flags.items():
+            if reached and name not in stages:
+                stages[name] = float(elapsed)
+        return
     flags = {
         "left_grasp": evidence.get("current_opposed_grasps", {}).get("left", False),
         "right_grasp": evidence.get("current_opposed_grasps", {}).get("right", False),
@@ -535,7 +555,7 @@ untouched, and both byte hashes plus per-camera differences are recorded.
 def run_case(job):
     import numpy as np
     import mujoco
-    from rollout.executor import PolicyExecutor
+    from rollout.executor import create_policy_executor
     from rollout.policy import InvalidPolicyPrediction
     from rollout.protocol import SuccessMonitor
     from rollout.action_chunks import ActionChunkScheduler, InvalidActionChunk
@@ -547,7 +567,7 @@ def run_case(job):
     if hasattr(policy, 'reset'):
         policy.reset(seed)
     initial_state = c.initial_state.copy()
-    executor = PolicyExecutor(c)
+    executor = create_policy_executor(c)
     if job.get("demonstration_start"):
         if not job.get("engineering_only"):
             raise ValueError("Demonstration initialization is not a benchmark case")
@@ -567,7 +587,7 @@ def run_case(job):
         initial_state['object_position'] = c.data.xpos[c.object_id].tolist()
         initial_state['settled_at_sim_time_s'] = float(c.data.time)
     from tasks.registry import hook
-    monitor = hook(c.config, "rollout_monitor")(c.config, initial_state, min_lift_m=settings["minimum_lift_m"],
+    monitor = hook(c.config, "rollout_monitor")(c.config, initial_state, min_lift_m=settings.get("minimum_lift_m", 0.),
                              minimum_open_fraction=settings.get("success_open_fraction", 1.0),
                              success_criterion=settings.get("success_criterion"))
     c.start_task_timer()
@@ -597,7 +617,8 @@ def run_case(job):
     observations, predictions, states, video_times, control_times = [], [], [], [], []
     query_mask, query_origin, selected_offset, selected_actions = [], [], [], []
     chunk_size = getattr(getattr(getattr(policy, "model", None), "config", None), "chunk_size", settings.get("chunk_size", 30))
-    scheduler = ActionChunkScheduler.from_settings(settings, chunk_size=chunk_size)
+    scheduler = ActionChunkScheduler.from_settings(settings, chunk_size=chunk_size,
+                                                   action_dim=len(c.action_vector_m()))
     stages = {}
     accepted, qpos, qvel, controls, forces, grip_forces, objects, rejects = [], [], [], [], [], [], [], []
     diagnostics_path = output / "control.jsonl.gz"
@@ -700,8 +721,8 @@ def run_case(job):
                     accepted.append(effective)
                     qpos.append(c.data.qpos.copy()); qvel.append(c.data.qvel.copy()); controls.append(c.data.ctrl.copy())
                     objects.append(c.data.qpos[c.object_qpos_adr:c.object_qpos_adr+7].copy())
-                    forces.append([*c.contacts["finger_normal_force_n"]["left"], *c.contacts["finger_normal_force_n"]["right"]])
-                    grip_forces.append([*c.contacts["left_grip_forces_n"], *c.contacts["right_grip_forces_n"]])
+                    forces.append([value for arm in c.arms for value in c.contacts["finger_normal_force_n"][arm.side]])
+                    grip_forces.append([value for arm in c.arms for value in c.contacts[f"{arm.side}_grip_forces_n"]])
                     rejects.append(not result.get("accepted", False))
                     if monitor_state.get("task_success"):
                         terminal = True
@@ -871,6 +892,9 @@ def summarize(output, metadata, rows, errors=None):
                  else "按本次记录的阈值完成抬升")
     opening_text = (f"双爪命令与实测开度均达到各自最大值的{100*open_fraction:g}%"
                     f"（标准Panda最大开度80mm时不低于{80*open_fraction:g}mm）")
+    success_text = (f"成功要求真实双爪抓持并{lift_text}、到达目标、{opening_text}、脱离手指接触并支撑停稳。")
+    if metadata.get('task_id', metadata.get('settings', {}).get('task_id')) == 'push_t':
+        success_text = '单臂 Push-T 使用源任务的 T 形覆盖率：达到 90% 并连续保持 0.5 秒；夹爪全程闭合，不要求抓取、抬升或开爪。'
     loss_html = ''
     if losses:
         loss_lines = []
@@ -892,7 +916,7 @@ table{{width:100%;border-collapse:collapse;background:white}}td,th{{padding:9px;
 </style><h1>{title}</h1><div class="card"><h2>{score}</h2><p>模型：{html.escape(str(metadata['run']))}<br>
 checkpoint：{html.escape(metadata['checkpoint'])} · 30 Hz观察，60 Hz执行，{metadata['max_seconds']:g}秒仿真时间上限。</p>
 {loss_html}
-<p>成功要求真实双爪抓持并{html.escape(lift_text)}、到达目标、{html.escape(opening_text)}、脱离手指接触并支撑停稳。未经人工干预；单个训练种子的探索结果。</p>
+<p>{html.escape(success_text)}未经人工干预；单个训练种子的探索结果。</p>
 <p>新单视角模式仅保存oblique；历史三视图依次为顶视、内侧近景、侧视。视频是实际模型执行；目标误差不是预测离线误差。
 干预率统计拒绝指令，或限速／投影后任一位置、爪宽变化达到0.1毫米、角度达到0.001弧度的控制步；角度等价表示不重复计数。不是人工接管。失败、视频与轨迹全部保留。</p>
 <p>{html.escape(camera_note)}</p></div>

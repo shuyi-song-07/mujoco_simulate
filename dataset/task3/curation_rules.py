@@ -5,6 +5,8 @@ Every original observation survives in the index, including excluded rows.
 """
 from __future__ import annotations
 
+from tasks.data_schema import (SIDES, schema_for, scoped, state_dim, action_dim, state_stride, joint_count)
+
 import copy
 import math
 import numpy as np
@@ -15,7 +17,6 @@ from dataset.task3.curation_config import (
     effective_config, load_config, validate_config,
 )
 
-SIDES = ('left', 'right')
 ACTIVE_MODES = {'XY_HOLD', 'Z_OPEN', 'Z_CLOSE'}
 PHYSICAL_EVENTS = {'contact_changed', 'grasp_stable_changed', 'task_state_changed'}
 CAUSAL_EVENTS = PHYSICAL_EVENTS | {
@@ -41,21 +42,21 @@ def _array(value, shape=None):
 
 def group_deltas(state, action, past_states, past_actions):
     """Unchanged s/a units and five-group mathematics; no gestures here."""
-    ds = np.abs(np.asarray(past_states).reshape(-1, 2, 8) - np.asarray(state).reshape(2, 8))
-    da = np.asarray(past_actions).reshape(-1, 2, 7) - np.asarray(action).reshape(2, 7)
+    ds = np.abs(np.asarray(past_states).reshape(-1, len(SIDES), state_stride()) - np.asarray(state).reshape(len(SIDES), state_stride()))
+    da = np.asarray(past_actions).reshape(-1, len(SIDES), 7) - np.asarray(action).reshape(len(SIDES), 7)
     angles = (da[:, :, 3:6] + np.pi) % (2 * np.pi) - np.pi
     return dict(zip(GROUPS, map(float, (
-        ds[:, :, :7].max(), ds[:, :, 7].max(),
+        ds[:, :, :joint_count()].max(), ds[:, :, joint_count()].max(),
         np.linalg.norm(da[:, :, :3], axis=2).max(),
         np.linalg.norm(angles, axis=2).max(), np.abs(da[:, :, 6]).max()))))
 
 
 def _physical_state_changed(row, anchor, cfg):
     """Cumulative actual joint/width motion at the existing physical tolerances."""
-    delta = np.abs(np.asarray(row['state_recorded']).reshape(2, 8)
-                   - np.asarray(anchor['state_recorded']).reshape(2, 8))
-    return bool(delta[:, :7].max() >= cfg['physical_motion']['joint_rad']
-                or delta[:, 7].max() >= cfg['physical_motion']['aperture_m'])
+    delta = np.abs(np.asarray(row['state_recorded']).reshape(len(SIDES), state_stride())
+                   - np.asarray(anchor['state_recorded']).reshape(len(SIDES), state_stride()))
+    return bool(delta[:, :joint_count()].max() >= cfg['physical_motion']['joint_rad']
+                or delta[:, joint_count()].max() >= cfg['physical_motion']['aperture_m'])
 
 
 def _facts(row):
@@ -308,7 +309,7 @@ def _initial_activity_boundary(rows, cfg):
                 or _physical_state_changed(row, initial, cfg)):
             return i
         # Objects/actual end effectors can drift without changed target labels.
-        for key in ('object', 'left.actual', 'right.actual'):
+        for key in ('object', *(s + '.actual' for s in SIDES)):
             if key == 'object':
                 now, start = f.get('object', {}), _facts(initial).get('object', {})
                 p, p0 = _array(now.get('position'), (3,)), _array(start.get('position'), (3,))
@@ -383,7 +384,7 @@ def _recenter_context(rows, start, stop, cfg, diagnostics=None):
     has_hold = any(value in (None, 'HOLD') for pair in sequence for value in pair)
     # Each side may switch from its old mode to its new one once. An unrelated
     # third mode or a reversal remains a real semantic boundary for review.
-    for side in range(2):
+    for side in range(len(SIDES)):
         old, new = before['modes'][side], after['modes'][side]
         if SIDES[side] not in comparable:
             # No cross-hand substitution. Unobserved context is allowed only
@@ -728,7 +729,7 @@ def _terminal_release(rows, cfg):
 
 
 def _height_regions(rows, cfg, terminal=None):
-    """Both sites below threshold is a fallback for absent physical evidence."""
+    """All declared sites below threshold is a fallback for absent evidence."""
     threshold = cfg['protection']['height_threshold_m']
     for i, row in enumerate(rows):
         features = _facts(row).get('features', {})
@@ -737,15 +738,14 @@ def _height_regions(rows, cfg, terminal=None):
         available = all(value is not None for value in positions.values())
         row['height_evidence'] = {
             'available': available, 'threshold_m': threshold,
-            'left_z_m': None if positions['left'] is None else float(positions['left'][2]),
-            'right_z_m': None if positions['right'] is None else float(positions['right'][2]),
-            'comparison': 'both_strictly_below',
+            **{f'{s}_z_m': None if positions[s] is None else float(positions[s][2]) for s in SIDES},
+            'comparison': 'both_strictly_below' if len(SIDES) == 2 else 'all_declared_arms_strictly_below',
             'coordinate': 'actual_end_effector_site_world_m',
         }
         low = available and all(value[2] < threshold for value in positions.values())
         missing = physical_evidence_missing(row)
         tail_excluded = bool(terminal and i > terminal['last_kept_index'])
-        row['height_evidence']['both_below_threshold'] = bool(low)
+        row['height_evidence']['both_below_threshold' if len(SIDES) == 2 else 'all_declared_arms_below_threshold'] = bool(low)
         row['height_evidence']['physical_evidence_missing'] = missing
         row['height_evidence']['fallback_required'] = bool(missing)
         row['height_protected'] = bool(low and missing and not tail_excluded)
@@ -769,12 +769,12 @@ def _height_regions(rows, cfg, terminal=None):
         boundary = i < len(rows) and rows[i]['hard_boundary']
         if start is not None and (not protected or boundary):
             intervals.append({
-                'phase': 'height', 'side': 'both', 'start_index': start,
+                'phase': 'height', 'side': 'both' if len(SIDES) == 2 else SIDES[0], 'start_index': start,
                 'start_raw_frame_index': rows[start]['raw_frame_index'],
                 'end_raw_frame_index': rows[i-1]['raw_frame_index'],
                 'start_time_s': rows[start]['original_time_s'],
                 'end_time_s': rows[i-1]['original_time_s'],
-                'threshold_m': threshold, 'comparison': 'both_strictly_below',
+                'threshold_m': threshold, 'comparison': 'both_strictly_below' if len(SIDES) == 2 else 'all_declared_arms_strictly_below',
                 'end_reason': 'height_region_or_source_boundary', 'review_required': True,
             })
             start = None
@@ -862,9 +862,12 @@ def _confirm_three_frame_windows(rows):
         start = end
 
 
+@scoped
 def select_rows(evidence_rows, config=None):
     cfg = effective_config(validate_config(config) if config is not None else load_config())
     rows = copy.deepcopy(evidence_rows)
+    if any(schema_for(r) != schema_for() for r in rows):
+        raise ValueError('Mixed robot schemas cannot share a curation episode')
     if not rows:
         raise ValueError('完整证据帧索引不能为空')
     segment, history_start = -1, 0
@@ -872,8 +875,8 @@ def select_rows(evidence_rows, config=None):
         r.pop('sa_stationarity', None)
         f = _facts(r)
         source = f.get('source', {})
-        valid = (source.get('valid') is True and _array(r.get('state_recorded'), (16,)) is not None
-                 and _array(r.get('action_recorded'), (14,)) is not None and _number(r.get('original_time_s')) is not None)
+        valid = (source.get('valid') is True and _array(r.get('state_recorded'), (state_dim(),)) is not None
+                 and _array(r.get('action_recorded'), (action_dim(),)) is not None and _number(r.get('original_time_s')) is not None)
         hard = i == 0 or source.get('hard_boundary') is True or not valid
         if i:
             p = rows[i - 1]
@@ -898,8 +901,7 @@ def select_rows(evidence_rows, config=None):
                  stagnant_run_id=None, grasp_protected=False, release_protected=False,
                  protection_by_side={s: [] for s in SIDES}, protection_start_event=[], protection_end_event=[],
                  review_required=False, training_approved=False, curation_approved=False, review_status='pending',
-                 accepted_left_intent=f.get('accepted_intent', {}).get('left', {}).get('mode'),
-                 accepted_right_intent=f.get('accepted_intent', {}).get('right', {}).get('mode'),
+                 **{f'accepted_{s}_intent': f.get('accepted_intent', {}).get(s, {}).get('mode') for s in SIDES},
                  pre_intent=None, post_intent=None, phase_pause_interpretation=None,
                  sa_window={'history_start_raw_frame': rows[begin]['raw_frame_index'], 'history_count': i-begin,
                             'maximum_changes': delta, 'changed_groups': changed},
@@ -928,7 +930,8 @@ def select_rows(evidence_rows, config=None):
             required[i] = True
         elif r['height_protected']:
             r['frame_role'] = 'LOW_HEIGHT_PROTECTED'
-            r['policy_reason'] = ['both_actual_ee_low_missing_physical_evidence_fallback']
+            r['policy_reason'] = ['both_actual_ee_low_missing_physical_evidence_fallback'
+                                  if len(SIDES) == 2 else 'actual_ee_low_missing_physical_evidence_fallback']
             required[i] = True
         elif f.get('motion', {}).get('moving') is True:
             r['frame_role'] = 'ACTIVE_MOTION' if r['sa_changed'] else 'SEMANTIC_PHYSICAL_HOLD'
@@ -1022,7 +1025,7 @@ def select_rows(evidence_rows, config=None):
             task_done=all(_facts(r).get('task',{}).get('done') is True and _facts(r).get('task',{}).get('success') is True for r in part)
             settled=_object_settled(_window(rows,start,cfg['protection']['settle_seconds']),cfg)
             changed_anywhere = any(len({pair[side] for pair in seq if pair[side] in ACTIVE_MODES}) > 1
-                                   for side in range(2))
+                                   for side in range(len(SIDES)))
             no_prefix_contact = all(
                 _facts(rows[i]).get('contact', {}).get(side, {}).get('any_finger') is False
                 for i in same_segment if i < stop for side in SIDES)
@@ -1208,6 +1211,7 @@ def resegment_rows(rows):
     return segments, cuts
 
 
+@scoped
 def derive_episode(episode, config=None):
     from dataset.task3.frame_evidence import build_frame_evidence
     cfg=validate_config(config) if config is not None else load_config()
@@ -1218,6 +1222,7 @@ def derive_episode(episode, config=None):
     return out
 
 
+@scoped
 def build_windows(rows, length=30, observation_horizon=1, stride=1, pad=True):
     """Return bounded, masked source-index windows; never synthesize terminals.
 

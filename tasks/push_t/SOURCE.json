@@ -1,0 +1,14 @@
+{
+  "repository": "https://github.com/shuyi-song-07/mujoco_simulate",
+  "branch": "codex/mujoco_pickandplace_variation",
+  "commit": "0d504758b89551a07b905e87e3fbbead396551f7",
+  "files": {
+    "panda.xml": "e5b010e0238e1e158f26727dc5bfb141d38f7ea6e7514332fe3afa4bb69531de",
+    "push_t_scene.xml": "8fd8bd69d87ba9ac9df51f1ebf044c9b36cd22c11c4388261f5261271ce505c5"
+  },
+  "adaptations": [
+    "Runtime namespaced single Panda left_*; cube->cooperative_object; target_plate->target; add hand-origin end-effector site.",
+    "Original mesh, physical parameters, extra gripper yaw, and coverage definition retained.",
+    "Metric A7 action contract and existing shared recording/log pipeline."
+  ]
+}

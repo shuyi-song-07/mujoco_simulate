@@ -5,6 +5,8 @@ No command changes raw episodes or starts training.
 """
 from __future__ import annotations
 
+from tasks.data_schema import (SIDES, descriptor, scoped, state_dim, action_dim, state_width_indices, action_width_indices)
+
 from dataset.task3.review_sources import select_review_sources
 
 import argparse
@@ -28,7 +30,6 @@ from dataset.task3.review_server import load_reviews, serve_review, validate_fra
 
 
 VERSION = "papera-curation-run-v1"
-SIDES = ("left", "right")
 CATEGORIES = ("ILoveYou", "Open_Palm", "Closed_Fist")
 POLICY = "papera-intent-aware"
 
@@ -92,9 +93,11 @@ def implementation_fingerprints():
     root = Path(__file__).resolve().parents[2]
     paths = sorted((root / "dataset/task3").glob("*.py"))
     paths.append(root / "dataset/manage_dataset.py")
+    paths.append(root / "tasks/data_schema.py")
     return {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
 
 
+@scoped
 def write_analysis_artifacts(directory, derived):
     """Readable facts/decisions with raw indexes; never a compressed time axis."""
     directory = Path(directory)
@@ -105,10 +108,10 @@ def write_analysis_artifacts(directory, derived):
             "raw_frame_index": row["raw_frame_index"], "sim_time": row["original_time_s"],
             "source_control_tick": row.get("source_control_tick"),
             "control_epoch": row.get("control_epoch"),
-            "left_control_mode": row.get("accepted_left_intent", modes.get("left")),
-            "right_control_mode": row.get("accepted_right_intent", modes.get("right")),
-            "gripper_command": [(row.get("action_recorded") or [None] * 14)[i] for i in (6, 13)],
-            "gripper_actual_position": [(row.get("state_recorded") or [None] * 16)[i] for i in (7, 15)],
+            **{f"{side}_control_mode": row.get(f"accepted_{side}_intent", modes.get(side))
+               for side in SIDES},
+            "gripper_command": [(row.get("action_recorded") or [None] * action_dim())[i] for i in action_width_indices()],
+            "gripper_actual_position": [(row.get("state_recorded") or [None] * state_dim())[i] for i in state_width_indices()],
             "task_state": row.get("status_summary", {}).get("task_state"),
             "source_refs": row.get("source_refs"),
             "physical_and_intent_evidence": row.get("evidence", {}),
@@ -155,6 +158,7 @@ def quality_metrics(episode):
     return out
 
 
+@scoped
 def _audit_one(ref, config, output, check_videos):
     directory = output / "episodes" / ref["key"]
     directory.mkdir(parents=True, exist_ok=False)
@@ -322,6 +326,7 @@ def apply_review(rows, review):
     return rows
 
 
+@scoped
 def normalized_geometry(rows, measurements):
     """Keep both raw coordinate systems and a wrist-relative, scale-normalized target.
 
@@ -329,11 +334,11 @@ def normalized_geometry(rows, measurements):
     Invalid/missing targets are zero-filled with explicit masks, never class 0.
     """
     n = len(rows)
-    arrays = {name: np.zeros((n, 2, 21, 3), np.float32) for name in
+    arrays = {name: np.zeros((n, len(SIDES), 21, 3), np.float32) for name in
               ("hand_image", "hand_model_world", "hand_normalized")}
-    arrays.update({name: np.zeros((n, 2), bool) for name in
+    arrays.update({name: np.zeros((n, len(SIDES)), bool) for name in
                    ("category_mask", "geometry_mask", "task_geometry_mask", "raw_geometry_present")})
-    arrays["category_id"] = np.full((n, 2), -1, np.int16)
+    arrays["category_id"] = np.full((n, len(SIDES)), -1, np.int16)
     for i, row in enumerate(rows):
         for j, side in enumerate(SIDES):
             aux = row["auxiliary"][side]
@@ -370,6 +375,7 @@ def optional_file_sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
 
 
+@scoped
 def prepared_rows(rows, review, review_mode):
     """Use the frozen policy once; retain explicit human exclusions in auto mode.
 
@@ -401,6 +407,7 @@ def prepared_rows(rows, review, review_mode):
     return rows
 
 
+@scoped
 def prepare(run, output, *, review_mode='reviewed'):
     if review_mode not in ('auto', 'reviewed'):
         raise ValueError('review_mode must be auto or reviewed')
@@ -488,7 +495,7 @@ def prepare(run, output, *, review_mode='reviewed'):
         arrays.update(state=np.asarray([r["state_recorded"] for r in kept], np.float32),
             action_recorded=np.asarray([r["action_recorded"] for r in kept], np.float32),
             next_control_target=np.asarray([r["next_control_target"]["action"] if r["next_control_target"] else
-                                            [0.] * 14 for r in kept], np.float32),
+                                            [0.] * action_dim() for r in kept], np.float32),
             next_control_target_mask=np.asarray([bool(r["next_control_target"]) for r in kept]),
             raw_frame_index=np.asarray([r["raw_frame_index"] for r in kept], np.int64),
             segment_id=np.asarray([r["segment_id"] for r in kept], np.int64),
@@ -550,11 +557,11 @@ def prepare(run, output, *, review_mode='reviewed'):
         "review_binding": reviews["binding"], "config": manifest["config"],
         "config_sha256": manifest["config_sha256"],
         "effective_config_sha256": manifest["effective_config_sha256"],
-        "categories": list(CATEGORIES), "hand_order": list(SIDES),
+        "categories": list(CATEGORIES), "hand_order": list(SIDES), "data_schema": descriptor(),
         "geometry_normalization": "(model_world_landmark - wrist_0) / distance(5,17); not robot-world coordinates",
         "action_alignment": {"action_recorded": "issued target before current post-step snapshot",
             "next_control_target": "immediately following legal 60Hz control tick in the original epoch, never a compressed-array tick"},
-        'cameras': ['oblique'], 'state_dim': 16, 'action_dim': 14,
+        'cameras': ['oblique'], 'state_dim': state_dim(), 'action_dim': action_dim(),
         "episodes": outputs, "curation_approved": human_reviewed,
         'training_candidate': not manifest.get('engineering_only', False), "training_approved": False, "training_ready": False,
         "training_compatibility": {"status": "requires_training_pack",

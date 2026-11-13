@@ -25,7 +25,7 @@ Task Binding 含 task_id、task_version、scene_id、Manifest SHA、Schema、七
 
 构建时实际读取原metadata，核对其冻结记录，不能仅靠手写proof取得资格；联合输入还需逐条经过原NPZ/index/sequence因果与拼接检查。Pack随后内嵌这些已核来源，小元数据及每条来源关系在轻量读取时仍验证，但不要求原电脑、原Prepared目录或Raw在线。排除名单取来源并集，重复episode、来源错配、不同相机/场景及split交叉均拒绝。提供的master split冻结到联合Prepared，Pack不得静默改用另一份划分。
 
-任务目录只允许本工程中的资源。模型创建、随机初态、reset、采集终态、Rollout monitor、评估前检查和 Dataset 事实语义通过任务钩子连接，签名见 [ADD_TASK.md](ADD_TASK.md)。执行器本身仍为共享 `dual_panda_v1`。
+任务目录只允许本工程中的资源。模型创建、随机初态、reset、采集终态、Rollout monitor、评估前检查和 Dataset 事实语义通过任务钩子连接，签名见 [ADD_TASK.md](ADD_TASK.md)。执行器按Schema选择 `dual_panda_v1` 或 `single_panda_push_v1`。
 
 ## Raw 契约
 
@@ -40,6 +40,12 @@ Task Binding 含 task_id、task_version、scene_id、Manifest SHA、Schema、七
 录制输出视角与物理任务绑定分开：`collection.config.recording_config(task)` 在任务配置上应用输出选择，得到的完整配置及指纹写入 Raw；历史冻结配置不应用当前选项。任务、相机定义、State/Action Schema和裁剪不因此改变。新采集为 oblique 单视角，历史 top/front/oblique、top/front/side 三视角及 top/front/side/oblique 四视角继续兼容；不接受意外缺失一两路的混合布局。Training Pack 仍只构建 oblique 图像输入。
 
 ## State / Action / 相机
+
+单臂 `push_t` 例外：Raw版本 `single-panda-push-v1`，具名Schema在 `tasks/data_schema.py`。State为 `[left_joint1..7, left_gripper_yaw_rad, left_finger_width]`（9维）；Action为一臂的xyz/rpy/爪宽（7维）。源Panda额外Yaw关节必须保留，实测宽度为两指总和，源传动上限0.10 m；Push-T目标宽度固定0。手势监督与有效Mask只有一个控制通道，形状中的臂轴为1；`bound_side=left`是机器人通道，`raw_label`仍记录真人识别左右手。原双臂的16/14维和两手记录不变。
+
+单臂沿用30Hz原始图像、60Hz连续控制、物理快照及测量/执行事件，裁剪阈值、三帧判断、Safe Stitch规则和下一控制tick动作对齐不变。数据层按冻结Schema读取维度；额外Yaw也计入运动判断。固定爪不虚构抓稳/放爪事件：实际接触与物体速度仍保护运动；不能套用托盘释放收尾清理来删除Push-T帧。历史外部单臂zip不因这个新入口自动变为合格原件。
+
+单臂相机参数来自 `tasks/push_t/scene.json`，覆盖共享视角默认值；oblique命名复用项目约定，但位置使用上游实际录制的145°自由相机，不能与双臂同名视角混淆。ACT按来源Schema创建S9/A7输入输出投影及一手辅助头，拒绝双臂checkpoint；当前DP仍为S16/A14。
 
 `config/collection.json.training_camera` 的 `papera-oblique-config-v1` 允许调整 distance、azimuth、elevation、lookat；名称 oblique、透视投影、640×480 和 30 fps 保持当前契约。每次采集冻结完整相机参数和 spec_sha256，改变任一视角参数会改变指纹；回放使用来源配置，不套用当前视角。历史 `task3-oblique-v1` 仍严格核对原固定参数，不能修改旧记录以冒充新视角。Task Binding 和 Pack/Rollout 的相机来源一致性检查继续生效。
 

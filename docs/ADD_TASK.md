@@ -1,6 +1,6 @@
 # 接入一个新任务
 
-当前支持共享 Panda 双臂、S16/A14 和单 oblique 模型输入。新物体/任务可以复用执行器；不同机器人自由度、Action Schema 或传感器不能静默套用这个接口。
+当前注册两种执行器：Panda双臂 `dual_panda_v1`（S16/A14），以及单臂Push-T `single_panda_push_v1`（S9/A7）。模型图像均为单 oblique。新物体/任务可以复用匹配的执行器；不同机器人自由度、Action Schema 或传感器不能静默套用接口。
 
 ## 1. 建立目录并注册
 
@@ -27,7 +27,7 @@ Copy-Item tasks/tray_to_platform/evaluation.json tasks/new_task/evaluation.json
 - 七个 hooks 均指向 `tasks.new_task.scene:函数名`。
 - `source_files` 列出 `tasks/new_task/scene.py` 及其自定义任务代码；共享逻辑也须列入，确保变动能被指纹发现。
 - 共享 Panda 模型可保留当前 `model_xml`、`mesh_directory`。新模型放 `tasks/new_task/assets/`，更改这两个路径；mesh 目录中的实际资源参与绑定。
-- `controller="dual_panda_v1"` 与 `schema` 保留。`evaluation_config` 可引用共享配置，或指向该任务自己的评估 JSON。
+- 双臂任务保留 `controller="dual_panda_v1"` 与S16/A14 `schema`；单臂参考 `tasks/push_t/task.json`，不能只删掉右臂XML而仍声明双臂维度。`evaluation_config` 可引用共享配置，或指向该任务自己的评估 JSON。
 
 Registry 实现是 `tasks/registry.py`，扫描 `tasks/*/task.json`。不会根据 XML 文件名自动推断任务；未知 ID、缺字段、缺资源、错误 hook、development 状态均明确失败。
 

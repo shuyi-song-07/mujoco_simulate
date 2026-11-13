@@ -7,6 +7,8 @@ source files are never opened for writing.
 """
 from __future__ import annotations
 
+from tasks.data_schema import (SIDES, schema_for, scoped, state_dim, action_dim, joint_count, action_width_indices)
+
 import copy
 import hashlib
 import json
@@ -20,14 +22,12 @@ import pyarrow.parquet as pq
 
 from dataset.task3.validate_recordings import audit_hand_timeline, read_snapshots
 from dataset.task3.source_paths import dataset_path
-from simulation.mujoco.dual_arm.action_contract import ACTION_NAMES_V2, STATE_NAMES, V2
 
 CAMERAS = ("top", "front", "side")  # Legacy three-camera layout.
 SINGLE_VIEW_CAMERAS = ("oblique",)
 COLLECTION_CAMERAS = (*CAMERAS, *SINGLE_VIEW_CAMERAS)
 CURRENT_THREE_CAMERAS = ('top', 'front', 'oblique')
 SUPPORTED_CAMERA_LAYOUTS = (CURRENT_THREE_CAMERAS, CAMERAS, SINGLE_VIEW_CAMERAS, COLLECTION_CAMERAS)
-SIDES = ("left", "right")
 POLICIES = {"palm_fist_edge_v1", "palm_fist_edge_v2", "palm_fist_level_v2"}
 AUDIT_VERSION = "papera-curation-io-v2-camera-layout"
 _HASH_CACHE: dict[tuple, str] = {}
@@ -189,6 +189,7 @@ def _nonfinite(value: Any, prefix: str = "") -> str | None:
     return None
 
 
+@scoped
 def load_episode(ref: dict) -> dict:
     """Load one episode; stream its research file once through the provenance audit.
 
@@ -421,6 +422,7 @@ def _historical_advisory(message: str, metadata: dict) -> bool:
     })
 
 
+@scoped
 def audit_episode(episode: dict, check_videos: bool = True) -> dict:
     """Verify structure/provenance; never mark human quality review as passed."""
     ref, m = episode["ref"], episode["metadata"]
@@ -449,15 +451,15 @@ def audit_episode(episode: dict, check_videos: bool = True) -> dict:
         snap, rows, frames, controls = (episode[k] for k in ("snapshots", "parquet_rows", "frames", "controls"))
         n = len(rows)
         check(n > 0, "empty_episode")
-        check(m.get("schema_version") == shared.get("schema_version") == V2, "schema_mismatch")
-        check(m.get("gripper_trigger_policy") in POLICIES, "unsupported_gripper_trigger_policy")
+        check(m.get("schema_version") == shared.get("schema_version") == schema_for().version, "schema_mismatch")
+        check(m.get("gripper_trigger_policy") in ({"push_locked_v1"} if len(SIDES) == 1 else POLICIES), "unsupported_gripper_trigger_policy")
         check(m.get("control_interface_version") == "gesture-rate-gripper-v3", "unsupported_control_interface")
         check(info.get("fps") == 30, "requires_30hz")
         check(m.get("sampling_policy", {}).get("version") == "raw_fixed_phase_v2", "raw_sampling_policy_mismatch")
-        for key, names in (("action", ACTION_NAMES_V2), ("observation.state", STATE_NAMES)):
+        for key, names in (("action", schema_for().action_names), ("observation.state", schema_for().state_names)):
             check(info.get("features", {}).get(key, {}).get("names") == names, f"feature_names_mismatch:{key}")
-        check(m.get("action_names") == ACTION_NAMES_V2 and m.get("state_names") == STATE_NAMES, "frozen_field_names_mismatch")
-        check(m.get("action_units") == ["m", "m", "m", "rad", "rad", "rad", "m"] * 2, "action_units_mismatch")
+        check(m.get("action_names") == schema_for().action_names and m.get("state_names") == schema_for().state_names, "frozen_field_names_mismatch")
+        check(m.get("action_units") == ["m", "m", "m", "rad", "rad", "rad", "m"] * len(SIDES), "action_units_mismatch")
         check(m.get("training_views") == "opaque", "training_view_style_not_frozen")
         digest = hashlib.sha256(json.dumps(m["config"], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         check(digest == m.get("config_hash") == shared.get("config_hash") == entry.get("config_hash"), "frozen_config_hash_mismatch")
@@ -499,7 +501,7 @@ def audit_episode(episode: dict, check_videos: bool = True) -> dict:
         dims = m["model_dimensions"]
         check(all(type(dims[k]) is int and dims[k] > 0 for k in ("nq", "nv", "nu", "nbody")), "invalid_model_dimensions")
         shapes = {"time": (), "qpos": (dims["nq"],), "qvel": (dims["nv"],), "ctrl": (dims["nu"],),
-            "body_pos": (dims["nbody"], 3), "body_quat": (dims["nbody"], 4), "state": (16,), "action": (14,)}
+            "body_pos": (dims["nbody"], 3), "body_quat": (dims["nbody"], 4), "state": (state_dim(),), "action": (action_dim(),)}
         for name, shape in shapes.items():
             check(snap[name].shape == (n, *shape) and np.isfinite(snap[name]).all(), f"snapshot_invalid:{name}")
         for name, column in (("state", "observation.state"), ("action", "action")):
@@ -507,17 +509,20 @@ def audit_episode(episode: dict, check_videos: bool = True) -> dict:
             check(values.shape == snap[name].shape and np.isfinite(values).all(), f"parquet_invalid:{column}")
             check(np.allclose(values, snap[name], atol=1e-6, rtol=0), f"parquet_snapshot_mismatch:{name}")
             check(np.allclose([r[name] for r in frames], snap[name], atol=1e-6, rtol=0), f"research_snapshot_mismatch:{name}")
-        check(np.all((snap["action"][:, [6, 13]] >= 0) & (snap["action"][:, [6, 13]] <= .080001)), "action_claw_width_out_of_bounds")
+        check(np.all((snap["action"][:, action_width_indices()] >= 0) & (snap["action"][:, action_width_indices()] <= (.100001 if len(SIDES) == 1 else .080001))), "action_claw_width_out_of_bounds")
         recovered, joint_ids = [], []
         for side in SIDES:
             mapping = m["joint_mapping"][side]
             js, fingers = mapping["qpos_indices"], mapping["finger_qpos_indices"]
-            check(len(js) == 7 and len(fingers) == 2 and len(mapping["joint_names"]) == 7, f"joint_mapping_size:{side}")
+            extras = mapping.get("additional_qpos_indices", [])
+            check(len(extras) == joint_count()-7 and len(mapping.get("additional_joint_names", [])) == joint_count()-7, f"extra_joint_mapping_size:{side}")
+            js = js + extras
+            check(len(js) == joint_count() and len(fingers) == 2 and len(mapping["joint_names"]) == 7, f"joint_mapping_size:{side}")
             check(all(type(j) is int and 0 <= j < dims["nq"] for j in js + fingers), f"joint_mapping_bounds:{side}")
             joint_ids += js + fingers
             recovered.extend(snap["qpos"][:, j] for j in js)
             recovered.append(snap["qpos"][:, fingers].sum(axis=1))
-        check(len(set(joint_ids)) == 18, "joint_mapping_overlap")
+        check(len(set(joint_ids)) == len(SIDES)*(joint_count()+2), "joint_mapping_overlap")
         adr, dof = m["object_qpos_adr"], m["object_dof_adr"]
         check(type(adr) is int and 0 <= adr <= dims["nq"]-7 and
               not (set(range(adr, adr+7)) & set(joint_ids)), "invalid_object_qpos_mapping")
@@ -535,8 +540,8 @@ def audit_episode(episode: dict, check_videos: bool = True) -> dict:
                 check(source is not None and source["request"].get("measurement_id") == mid, "action_source_reference_mismatch")
             oid = row.get("observation_measurement_id")
             check(not oid or oid in episode["measurements"], "observation_reference_missing")
-            check(np.isfinite(row["state"]).all() and len(row["state"]) == 16, "control_state_invalid")
-            check(np.isfinite(row["action"]).all() and len(row["action"]) == 14, "control_action_invalid")
+            check(np.isfinite(row["state"]).all() and len(row["state"]) == state_dim(), "control_state_invalid")
+            check(np.isfinite(row["action"]).all() and len(row["action"]) == action_dim(), "control_action_invalid")
         terminal, ts = episode["terminal"], episode["terminal_snapshot"]
         if not engineering:
             check(terminal["status"]["task_state"] == "DONE" and terminal["status"].get("success") is True, "successful_terminal_state_missing")

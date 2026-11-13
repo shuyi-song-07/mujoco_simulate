@@ -6,6 +6,8 @@ Only recorded gesture confidence thresholds may vary between collections.
 """
 from __future__ import annotations
 
+from tasks.data_schema import (schema_for, schema_context, scoped, state_dim, action_dim)
+
 import copy
 from datetime import datetime, timezone
 import hashlib
@@ -86,6 +88,7 @@ def _excluded(config, selection):
     return result
 
 
+@scoped
 def validate_manifest(manifest):
     """Validate frozen union declarations without Raw, video or live task access.
 
@@ -93,16 +96,15 @@ def validate_manifest(manifest):
     builder verifies actual metadata before writing this explicit source ledger;
     later Pack readers check the same ledger and episode associations unchanged.
     """
-    from tasks.registry import SCHEMA
 
     if not isinstance(manifest, dict) or not all(field in manifest for field in UNION_FIELDS):
         raise ValueError('Missing explicit Prepared collection union provenance')
     canonical = manifest.get('task_binding')
     proof = manifest['dataset_collection_compatibility']
     if (manifest.get('pipeline_stage') != 'prepared' or not manifest.get('complete')
-            or not isinstance(canonical, dict) or canonical.get('schema') != SCHEMA
+            or not isinstance(canonical, dict) or schema_for(canonical) != schema_for(manifest)
             or manifest.get('cameras') != ['oblique']
-            or manifest.get('state_dim') != 16 or manifest.get('action_dim') != 14
+            or manifest.get('state_dim') != state_dim() or manifest.get('action_dim') != action_dim()
             or canonical.get('task_id') != manifest.get('task_id')
             or not isinstance(proof, dict) or proof.get('version') != VERSION
             or proof.get('learning_domain_task_binding') != canonical
@@ -254,6 +256,16 @@ def _metadata_evidence(entry, binding):
 
 
 def merge_prepared(prepared_roots, output, *, split_file=None):
+    roots = list(prepared_roots)
+    try:
+        schemas = [schema_for(_json(Path(path) / 'manifest.json')) for path in roots]
+    except ValueError as exc:
+        raise ValueError('Prepared task/scene/camera/schema/collection domain differs') from exc
+    with schema_context(schemas[0] if schemas else None):
+        return _merge_prepared(roots, output, split_file=split_file)
+
+
+def _merge_prepared(prepared_roots, output, *, split_file=None):
     """Copy/link immutable Prepared episodes into one explicit learning domain.
 
     Only Prepared metadata and its NPZ/index/sequence files are read. Original
@@ -275,8 +287,8 @@ def merge_prepared(prepared_roots, output, *, split_file=None):
     common = ('task_id', 'engineering_only', 'sequence_contract', 'cameras', 'state_dim', 'action_dim',
               'categories', 'hand_order', 'geometry_normalization', 'action_alignment', 'review_mode')
     for manifest in manifests:
-        if (manifest.get('cameras') != ['oblique'] or manifest.get('state_dim') != 16
-                or manifest.get('action_dim') != 14
+        if (manifest.get('cameras') != ['oblique'] or manifest.get('state_dim') != state_dim()
+                or manifest.get('action_dim') != action_dim()
                 or any(manifest.get(k) != manifests[0].get(k) for k in common)
                 or not _same_domain(manifest.get('task_binding'), canonical)):
             raise ValueError('Prepared task/scene/camera/schema/collection domain differs')

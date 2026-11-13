@@ -6,11 +6,12 @@ physical facts remain unavailable, never inferred from gesture or mode names.
 """
 from __future__ import annotations
 
+from tasks.data_schema import (SIDES, descriptor, scoped, state_dim, action_dim, state_stride, joint_count)
+
 import copy
 import bisect
 import numpy as np
 
-SIDES = ('left', 'right')
 VERSION = 'papera-frame-evidence-v2-execution'
 
 
@@ -47,6 +48,12 @@ def _snapshot(snapshots, index):
     return snapshots[index] if index < len(snapshots) else {}
 
 def _rotation_distance(a, b):
+    if a.shape != b.shape:
+        # Image snapshots store wxyz; intervening control rows store xmat.
+        # Compare the same physical rotations, retaining the same tolerance.
+        a, b = _rotation_matrix(a), _rotation_matrix(b)
+        if a is None or b is None:
+            return float('inf')
     if a.shape == (4,):
         aa, bb = np.linalg.norm(a), np.linalg.norm(b)
         if aa < 1e-9 or bb < 1e-9:
@@ -58,13 +65,13 @@ def _features(frame, snap, metadata):
     status = _dict(frame.get('status'))
     features = {}
     missing = []; invalid = False
-    state = _array(snap.get('state', snap.get('state16', frame.get('state'))), (16,))
-    action = _array(snap.get('action', snap.get('action14', frame.get('action'))), (14,))
+    state = _array(snap.get('state', snap.get('state16', frame.get('state'))), (state_dim(),))
+    action = _array(snap.get('action', snap.get('action14', frame.get('action'))), (action_dim(),))
     if state is None or action is None:
         return features, ['invalid_state_or_action'], True
     for j, side in enumerate(SIDES):
-        features[f'{side}.joints'] = ('joint', state[j * 8:j * 8 + 7])
-        features[f'{side}.actual_aperture'] = ('aperture', state[j * 8 + 7:j * 8 + 8])
+        features[f'{side}.joints'] = ('joint', state[j * state_stride():j * state_stride() + joint_count()])
+        features[f'{side}.actual_aperture'] = ('aperture', state[j * state_stride() + joint_count():j * state_stride() + state_stride()])
         features[f'{side}.target_position'] = ('position', action[j * 7:j * 7 + 3])
         features[f'{side}.target_rpy'] = ('rpy', action[j * 7 + 3:j * 7 + 6])
         features[f'{side}.target_aperture'] = ('aperture', action[j * 7 + 6:j * 7 + 7])
@@ -321,7 +328,7 @@ def _accepted_intent(control, accepted, episode, alignment=None):
             reasons.append('request_context_mismatch')
         accepted_modes = response.get('interaction_modes')
         accepted_mode = (accepted_modes.get(side) if isinstance(accepted_modes, dict) else
-                         accepted_modes[side_index] if isinstance(accepted_modes, list) and len(accepted_modes) == 2 else None)
+                         accepted_modes[side_index] if isinstance(accepted_modes, list) and len(accepted_modes) == len(SIDES) else None)
         if mode not in ('XY', 'XY_HOLD', 'Z_OPEN', 'Z_CLOSE', 'HOLD') or accepted_mode != mode:
             reasons.append('accepted_mode_unavailable_or_mismatch')
         if not measurement or measurement.get('accepted_recognition') is not True:
@@ -384,8 +391,8 @@ def _accepted_intent(control, accepted, episode, alignment=None):
 def _physics(control, snapshot, metadata, previous, physical_cfg):
     status = _dict(control.get('status')); pc = _dict(status.get('physical_contact'))
     features, missing, invalid = _features(control, snapshot, metadata)
-    state = _array(snapshot.get('state', control.get('state')), (16,))
-    action = _array(snapshot.get('action', control.get('action')), (14,))
+    state = _array(snapshot.get('state', control.get('state')), (state_dim(),))
+    action = _array(snapshot.get('action', control.get('action')), (action_dim(),))
     time = _number(control.get('sim_time')); dt = None
     if previous is not None:
         previous_time = _number(previous.get('sim_time'))
@@ -398,7 +405,7 @@ def _physics(control, snapshot, metadata, previous, physical_cfg):
         edge = _dict(_dict(pc.get('gripper_edge')).get(side))
         actual = _number(g.get('actual_width_m'))
         if actual is None and state is not None:
-            actual = float(state[j*8+7])
+            actual = float(state[j*state_stride()+joint_count()])
         command = _number(g.get('command_width_m'))
         if command is None and action is not None:
             command = float(action[j*7+6])
@@ -446,7 +453,7 @@ def _physics(control, snapshot, metadata, previous, physical_cfg):
             'position': rotation.T @ (p-position) if available else None,
             'rotation': rotation.T @ r if available else None,
             'basis': 'actual_ee_in_actual_object_frame' if available else 'unavailable'}
-    ee_speeds = _array(status.get('ee_speeds_mps'), (2,))
+    ee_speeds = _array(status.get('ee_speeds_mps'), (len(SIDES),))
     reasons = []
     for label, v, threshold in (
         ('object_linear_velocity', linear, physical_cfg['linear_speed_mps']),
@@ -502,7 +509,7 @@ def _execution_state(pc, metadata, grippers):
     strategy = frozen if frozen is not None else configured
     recorded = pc.get('gripper_trigger_policy')
     shared_reasons = []
-    if strategy not in ('level_v1', 'palm_fist_edge_v1', 'palm_fist_edge_v2', 'palm_fist_level_v2'):
+    if strategy not in (('push_locked_v1',) if len(SIDES) == 1 else ('level_v1', 'palm_fist_edge_v1', 'palm_fist_edge_v2', 'palm_fist_level_v2')):
         shared_reasons.append('frozen_gripper_strategy_unavailable')
     if frozen is not None and configured is not None and frozen != configured:
         shared_reasons.append('frozen_gripper_strategy_mismatch')
@@ -526,8 +533,10 @@ def _execution_state(pc, metadata, grippers):
                 authorization = edge['authorized_mode'] in ('Z_OPEN', 'Z_CLOSE')
                 if edge['authorized_mode'] not in (None, 'Z_OPEN', 'Z_CLOSE'):
                     reasons.append('edge_authorization_invalid')
-        elif strategy in ('level_v1', 'palm_fist_level_v2'):
+        elif strategy in ('level_v1', 'palm_fist_level_v2', 'push_locked_v1'):
             authorization = False  # Level execution is described by actual rate flags.
+        if strategy == 'push_locked_v1' and (g['command_width_m'] != 0 or g['goal_width_m'] != 0 or g['rate_enabled'] is not False or opening is not False or armed is not False):
+            reasons.append('push_gripper_lock_not_proven')
         confirming = cycle == 'CONFIRMING' or (progress is not None and progress > 0 and opening is not True)
         # Some historical edge controllers retain a CLOSE edge after the
         # physical grasp latched. It cannot continue closing while the verified
@@ -667,7 +676,7 @@ def _next_target(current, following):
     """The very next observed 60 Hz row, never a later image or reused tick."""
     if following is None:
         return None
-    a = _array(following.get('action'), (14,))
+    a = _array(following.get('action'), (action_dim(),))
     t0, t1 = _number(current.get('sim_time')), _number(following.get('sim_time'))
     line0, line1 = _line(current), _line(following)
     if (type(current.get('tick')) is not int or following.get('tick') != current['tick'] + 1 or
@@ -685,7 +694,7 @@ def _next_target(current, following):
 
 def _command_values(control):
     """Recorded accepted targets, not hand intent or requested GUI targets."""
-    action = _array(control.get('action'), (14,))
+    action = _array(control.get('action'), (action_dim(),))
     grippers = _dict(_dict(control.get('status')).get('grippers'))
     goals = [_number(_dict(grippers.get(side)).get('goal_width_m')) for side in SIDES]
     return action, goals
@@ -738,6 +747,7 @@ def _command_activity(control, previous, initial, source, thresholds):
             'reasons': reasons}
 
 
+@scoped
 def build_frame_evidence(episode, config):
     """Return complete raw-frame facts and compact, ordered control/event tables.
 
@@ -790,12 +800,12 @@ def build_frame_evidence(episode, config):
             reasons.append(sampling_reason)
         if facts['invalid']:
             reasons.append('invalid_numeric')
-        if _array(raw.get('state'), (16,)) is None or _array(raw.get('action'), (14,)) is None:
+        if _array(raw.get('state'), (state_dim(),)) is None or _array(raw.get('action'), (action_dim(),)) is None:
             reasons.append('invalid_state_or_action')
         if _number(raw.get('sim_time')) is None:
             reasons.append('invalid_sim_time')
         if fi is not None:
-            for name, shape in (('state', (16,)), ('action', (14,))):
+            for name, shape in (('state', (state_dim(),)), ('action', (action_dim(),))):
                 observed = _array(raw.get(name), shape)
                 image_value = _array(frames[fi].get(name), shape)
                 snapshot_value = _array(snap.get(name), shape)
@@ -920,16 +930,9 @@ def build_frame_evidence(episode, config):
         interval = {'control_indices': indices, 'event_indices': [e['index'] for e in interval_events],
             'events': interval_events,
             'mode_sequence': [{'tick': controls[j]['tick'], 'source_line': controls[j]['source_line'],
-                'left': controls[j]['accepted_intent']['left']['mode'],
-                'right': controls[j]['accepted_intent']['right']['mode'],
-                'left_reliable': controls[j]['accepted_intent']['left']['reliable'],
-                'right_reliable': controls[j]['accepted_intent']['right']['reliable'],
-                'left_measurement_id': controls[j]['accepted_intent']['left']['measurement_id'],
-                'right_measurement_id': controls[j]['accepted_intent']['right']['measurement_id'],
-                'left_event_id': controls[j]['accepted_intent']['left']['event_id'],
-                'right_event_id': controls[j]['accepted_intent']['right']['event_id'],
-                'left_hand_condition': controls[j]['accepted_intent']['left']['hand_condition'],
-                'right_hand_condition': controls[j]['accepted_intent']['right']['hand_condition']}
+                **{s: controls[j]['accepted_intent'][s]['mode'] for s in SIDES},
+                **{s + '_' + k: controls[j]['accepted_intent'][s][k] for s in SIDES
+                   for k in ('reliable', 'measurement_id', 'event_id', 'hand_condition')}}
                 for j in indices],
             'safety_pause': any(controls[j]['paused'] is True for j in indices),
             'pause_reasons': list(dict.fromkeys(controls[j]['pause_reason'] for j in indices
@@ -975,7 +978,7 @@ def build_frame_evidence(episode, config):
         snap = _snapshot(episode.get('snapshots', {}), fi)
         row = {'source_episode': ref.get('key'), 'session': ref.get('session', frame.get('session')),
             'episode_index': ref.get('episode_index'), 'raw_frame_index': frame.get('frame_index', fi),
-            'source_line': line, 'source_control_tick': frame.get('tick'), 'control_epoch': frame.get('control_epoch'),
+            'data_schema': descriptor(), 'source_line': line, 'source_control_tick': frame.get('tick'), 'control_epoch': frame.get('control_epoch'),
             'original_time_s': _number(frame.get('sim_time')), 'original_wall_time_ms': frame.get('wall_time_ms'),
             'original_monotonic_ns': frame.get('server_monotonic_ns'),
             'recorded_video_time_s': fi*observation_period if observation_period is not None else None,

@@ -68,15 +68,19 @@ def _source_pairs(provenance):
             ("train.py", "trainer_source_sha256")) if provenance.get("data_contract") == "papera-safe-stitch-act-v1" else SOURCE_PAIRS
 
 
-def validate_statistics(stats, split):
+def validate_statistics(stats, split, *, schema=None):
     """Reject bad units/dimensions/scales before normalizing any observation."""
+    from tasks.data_schema import schema_for
+    layout = schema_for(schema)
+    angles = [o+i for o in range(0, layout.action_dim, 7) for i in (3,4,5)]
     if (stats.get("version") != "train-only-zscore-circular-rpy-v1"
             or stats.get("fit_split") != "train"
             or stats.get("training_keys") != split["train"]
-            or stats.get("angle_columns") != list(ANGLE_COLUMNS)):
+            or stats.get("angle_columns") != angles):
         raise ValueError("Normalization contract or training split mismatch")
-    for key, length in (("state_mean", 16), ("state_std", 16), ("action_mean", 14),
-                        ("action_std", 14), ("action_angle_reference", 14)):
+    for key, length in (("state_mean", layout.state_dim), ("state_std", layout.state_dim),
+                        ("action_mean", layout.action_dim), ("action_std", layout.action_dim),
+                        ("action_angle_reference", layout.action_dim)):
         values = np.asarray(stats[key], dtype=np.float64)
         if values.shape != (length,) or not np.isfinite(values).all():
             raise ValueError(f"Invalid normalization array: {key}")
@@ -125,7 +129,13 @@ def _verify_single_pack(run_dir, provenance, verify_cache):
                                                      manifest["config"]["image_height"]]):
         raise ValueError("Single-view manifest/statistics/split differs from frozen training")
     statistics_split = dict(split, train=binding["train_keys"])
-    validate_statistics(stats, statistics_split)
+    from tasks.data_schema import schema_for
+    layout = schema_for(manifest)
+    model_layout = ACTConfig(**provenance['model'])
+    if (binding.get('state_dim'), binding.get('action_dim')) != (layout.state_dim, layout.action_dim) or (
+            model_layout.state_dim, model_layout.action_dim) != (layout.state_dim, layout.action_dim):
+        raise ValueError('Checkpoint/Pack robot schema mismatch')
+    validate_statistics(stats, statistics_split, schema=layout)
     if verify_cache:
         checked = training_pack.verify(pack, check_hashes=False)
         rebuilt = pack_data.prepare_pack(pack, selected_train_keys=binding["train_keys"],
@@ -302,6 +312,8 @@ def _verify(run_dir, checkpoint, verify_cache, allow_overfit=False):
     if not ckpt.get("model") or any(not torch.isfinite(v).all().item()
             for v in ckpt["model"].values() if torch.is_tensor(v) and (v.is_floating_point() or v.is_complex())):
         raise ValueError("Checkpoint has missing or nonfinite model weights")
+    from tasks.data_schema import schema_for
+    layout = schema_for(manifest) if single_view else schema_for()
     metadata = {
         "version": "papera-exploratory-inference-v1", "run_dir": str(run_dir),
         "run_signature": run["signature"], "variant": provenance["variant"],
@@ -313,8 +325,10 @@ def _verify(run_dir, checkpoint, verify_cache, allow_overfit=False):
         "full_cache_verified": False, "verification": "format_and_interfaces",
         "training_precision": config["precision"],
         "cameras": ["oblique"] if single_view else list(CAMERAS), "training_camera_configs": camera_configs,
-        "state_names": list(STATE_NAMES), "action_names": list(ACTION_NAMES),
-        "action_units": list(ACTION_UNITS), "action_alignment": expected_alignment,
+        "state_names": list(layout.state_names), "action_names": list(layout.action_names),
+        "action_units": (['m']*3+['rad']*3+['m'])*len(layout.arm_order), "action_alignment": expected_alignment,
+        "state_dim": layout.state_dim, "action_dim": layout.action_dim,
+        "schema_version": layout.version, "arm_order": list(layout.arm_order),
         "chunk_size": model_config.chunk_size, "source_image_shape": [480, 640, 3],
         "model_image_shape": ([1, 3, *reversed(provenance["pack_binding"]["image_size"])]
                               if single_view else [3, 3, 240, 320]),
@@ -378,9 +392,10 @@ def prepare_observation(images, state, normalizer, *, cameras=CAMERAS, image_siz
     if not isinstance(images, Mapping) or set(images) != set(cameras):
         raise ValueError(f"Exactly {cameras} RGB camera observations are required")
     state = np.asarray(state)
-    if (state.shape != (16,) or not np.issubdtype(state.dtype, np.number)
+    expected_state_shape = normalizer.state_mean.shape
+    if (expected_state_shape not in ((16,), (9,)) or state.shape != expected_state_shape or not np.issubdtype(state.dtype, np.number)
             or np.iscomplexobj(state) or not np.isfinite(state).all()):
-        raise ValueError("Robot state must be 16 finite joint-angle/actual-width values")
+        raise ValueError("Robot state must match the verified finite joint-angle/actual-width schema")
     prepared = []
     for name in cameras:
         image = np.asarray(images[name])
@@ -401,7 +416,7 @@ def prepare_observation(images, state, normalizer, *, cameras=CAMERAS, image_siz
 
 
 class Policy:
-    """Frozen eval-mode ACT; predicts one raw 30x14 target chunk per observation."""
+    """Frozen eval-mode ACT; predicts the verified task's target chunk."""
     def __init__(self, run_dir, checkpoint="best", device="cuda", *, verify_cache=False, allow_overfit=False):
         self.metadata, ckpt, stats = _verify(run_dir, checkpoint, verify_cache, allow_overfit)
         self.device = torch.device(device)
@@ -436,7 +451,7 @@ class Policy:
         """Internal path also permits exact cached-observation engineering checks."""
         image_array = np.asarray(image_array)
         normalized_state = np.asarray(normalized_state)
-        if (image_array.shape != tuple(self.metadata["model_image_shape"]) or normalized_state.shape != (16,)
+        if (image_array.shape != tuple(self.metadata["model_image_shape"]) or normalized_state.shape != (self.model.config.state_dim,)
                 or not np.isfinite(image_array).all() or not np.isfinite(normalized_state).all()
                 or image_array.min() < 0 or image_array.max() > 1):
             raise ValueError("Invalid prepared observation")
@@ -445,7 +460,7 @@ class Policy:
         with precision_context(self.device, self.precision):
             output = self.model(images, state)  # No hand labels, no future actions, z=0.
         pred = output["action"].float().cpu().numpy()[0]
-        if pred.shape != (self.model.config.chunk_size, 14) or not np.isfinite(pred).all():
+        if pred.shape != (self.model.config.chunk_size, self.model.config.action_dim) or not np.isfinite(pred).all():
             raise InvalidPolicyPrediction("Model prediction has invalid shape/nonfinite values")
         action = self.normalizer.decode_action(pred)
         if not np.isfinite(action).all():

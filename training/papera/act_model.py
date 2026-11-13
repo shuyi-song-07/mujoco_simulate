@@ -2,7 +2,7 @@
 
 The original DETRVAE, Post-LN/ReLU transformer, positional encodings, image
 backbone graph and latent fusion are imported directly. Task-specific changes
-are S16 input projections, A14 targets, K30/camera configuration, finite padded
+are declared S16/A14 or S9/A7 projections, K30/camera configuration, finite padded
 actions, and observation-only auxiliary heads outside the baseline graph.
 """
 from __future__ import annotations
@@ -52,8 +52,8 @@ class ACTConfig:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"{name} must be a positive integer")
-        if (self.state_dim, self.action_dim) not in ((16, 14), (14, 14)) or self.num_cameras not in (1,3):
-            raise ValueError("Task3 requires state=16/action=14; the explicit official reference uses S14/A14, with 1 or 3 cameras")
+        if (self.state_dim, self.action_dim) not in ((16, 14), (14, 14), (9, 7)) or self.num_cameras not in (1,3):
+            raise ValueError("Supported layouts: dual S16/A14, single Push-T S9/A7, official reference S14/A14; 1 or 3 cameras")
         if self.hidden_dim % self.heads or self.hidden_dim % 4:
             raise ValueError("hidden_dim must be divisible by heads and by 4")
         if not math.isfinite(self.dropout) or not 0 <= self.dropout < 1:
@@ -92,13 +92,15 @@ def build_official_model(c):
     posterior = TransformerEncoder(TransformerEncoderLayer(c.hidden_dim, c.heads,
         c.feedforward_dim, c.dropout, activation="relu", normalize_before=False),
         c.posterior_layers, norm=None)
-    # In the pinned ACT source state_dim names the output action width. All
-    # three action projections remain A14. Only two qpos inputs become S16.
+    # In the pinned source state_dim names the output action width. The wrapper
+    # adapts declared input/output widths, preserving upstream math.
     model = DETRVAE([joined], transformer, posterior, state_dim=c.action_dim,
         num_queries=c.chunk_size, camera_names=[f"camera_{i}" for i in range(c.num_cameras)])
     if c.state_dim != 14:
         model.input_proj_robot_state = nn.Linear(c.state_dim, c.hidden_dim)
         model.encoder_joint_proj = nn.Linear(c.state_dim, c.hidden_dim)
+    if c.action_dim != 14:
+        model.encoder_action_proj = nn.Linear(c.action_dim, c.hidden_dim)
     if c.latent_dim != model.latent_dim:
         model.latent_dim = c.latent_dim
         model.latent_proj = nn.Linear(c.hidden_dim, 2 * c.latent_dim)
@@ -116,8 +118,8 @@ class ACTPolicy(nn.Module):
         # These heads never enter the original ACT forward graph, and their
         # initialization does not advance the baseline model's random stream.
         with torch.random.fork_rng(devices=[]):
-            self.gesture_head = nn.Linear(c.hidden_dim + c.state_dim, 6)
-            self.skeleton_head = nn.Linear(c.hidden_dim + c.state_dim, 2*21*3)
+            self.gesture_head = nn.Linear(c.hidden_dim + c.state_dim, (c.action_dim // 7)*3)
+            self.skeleton_head = nn.Linear(c.hidden_dim + c.state_dim, (c.action_dim // 7)*21*3)
             self.stage_head = nn.Linear(c.hidden_dim + c.state_dim, c.stage_classes)
         self.register_buffer("image_mean", torch.tensor([.485,.456,.406]).reshape(1,1,3,1,1))
         self.register_buffer("image_std", torch.tensor([.229,.224,.225]).reshape(1,1,3,1,1))
@@ -193,8 +195,8 @@ class ACTPolicy(nn.Module):
         summary = torch.cat((torch.stack(pooled,dim=1).mean(dim=1),state),dim=-1)
         return {"action":action,"mu":mu,"logvar":logvar,"posterior_mask":posterior_mask,
             "is_pad_logits":pad_logits,
-            "gesture_logits":self.gesture_head(summary).reshape(batch,2,3),
-            "skeleton":self.skeleton_head(summary).reshape(batch,2,21,3),
+            "gesture_logits":self.gesture_head(summary).reshape(batch,c.action_dim // 7,3),
+            "skeleton":self.skeleton_head(summary).reshape(batch,c.action_dim // 7,21,3),
             "stage_logits":self.stage_head(summary),"variant":c.variant}
 
     @torch.no_grad()

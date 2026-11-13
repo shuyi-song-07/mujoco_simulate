@@ -164,7 +164,10 @@ def validate(model, loader, normalizer, device, precision="bf16", max_batches=No
     xyz_sum = grip_sum = angle_sum = 0.; physical_count = 0
     valid_action_sum = 0.; valid_action_coordinates = 0
     horizons = {}
-    confusion = np.zeros((2, 3, 3), dtype=np.int64)
+    action_dim = getattr(model.config, 'action_dim', 14)
+    arm_count = action_dim // 7
+    offsets = tuple(range(0, action_dim, 7))
+    confusion = np.zeros((arm_count, 3, 3), dtype=np.int64)
     stage_correct = stage_count = 0
     try:
         for number, cpu_batch in enumerate(loader):
@@ -195,23 +198,23 @@ def validate(model, loader, normalizer, device, precision="bf16", max_batches=No
                 row = horizons.setdefault(h, {"samples": 0, "xyz": 0., "grip": 0., "rpy": 0.})
                 supported = valid[:, h]
                 row["samples"] += int(supported.sum())
-                for offset in (0, 7):
+                for offset in offsets:
                     estimate, target = pred[supported, h], actual[supported, h]
                     row["xyz"] += float(np.linalg.norm(
                         estimate[:, offset:offset + 3] - target[:, offset:offset + 3], axis=-1).sum())
                     row["grip"] += float(np.abs(estimate[:, offset + 6] - target[:, offset + 6]).sum())
                     delta = estimate[:, offset + 3:offset + 6] - target[:, offset + 3:offset + 6]
                     row["rpy"] += float(np.abs((delta + np.pi) % (2 * np.pi) - np.pi).sum())
-            for offset in (0, 7):
+            for offset in offsets:
                 xyz_sum += float(np.linalg.norm(pred[..., offset:offset+3] - actual[..., offset:offset+3], axis=-1)[valid].sum())
                 grip_sum += float(np.abs(pred[..., offset+6] - actual[..., offset+6])[valid].sum())
                 delta = pred[..., offset+3:offset+6] - actual[..., offset+3:offset+6]
                 wrapped = (delta + np.pi) % (2 * np.pi) - np.pi
                 angle_sum += float(np.abs(wrapped)[valid].sum())
-            physical_count += int(valid.sum()) * 2
+            physical_count += int(valid.sum()) * arm_count
             predicted_class = out["gesture_logits"].argmax(-1).cpu().numpy()
             labels, mask = b["gesture"].cpu().numpy(), b["gesture_mask"].cpu().numpy()
-            for side in range(2):
+            for side in range(arm_count):
                 for true, estimated in zip(labels[mask[:, side], side], predicted_class[mask[:, side], side]):
                     confusion[side, int(true), int(estimated)] += 1
             stage_correct += int((out["stage_logits"].argmax(-1) == b["stage"]).sum().cpu())
@@ -229,7 +232,7 @@ def validate(model, loader, normalizer, device, precision="bf16", max_batches=No
             "valid_action_coordinates": valid_action_coordinates, "prior_only": True,
             "success_rate": None}
         for h, row in horizons.items():
-            arms = row["samples"] * 2
+            arms = row["samples"] * arm_count
             result.update({
                 f"h{h}_valid_samples": row["samples"],
                 f"h{h}_xyz_error_mm": row["xyz"] / arms * 1000 if arms else None,
@@ -430,8 +433,10 @@ def validate_config(config):
         raise ValueError("Historical three-view exact resume requires num_workers=0")
     if "pack_path" in config:
         fields = config["model"]
-        if (fields["state_dim"], fields["action_dim"], fields["num_cameras"], fields["chunk_size"]) != (16, 14, 1, 30):
-            raise ValueError("Current baseline requires one camera, S16, A14 and K30")
+        from tasks.data_schema import schema_for
+        layout = schema_for(config.get('task_binding', {}))
+        if (fields["state_dim"], fields["action_dim"], fields["num_cameras"], fields["chunk_size"]) != (layout.state_dim, layout.action_dim, 1, 30):
+            raise ValueError("Current baseline requires one camera, declared S16/A14 or single Push-T S9/A7 and K30")
         if any(key in config for key in ("dataset", "data_preparation", "sequence_data")):
             raise ValueError("Safe Stitch configuration cannot contain legacy data-processing options")
         image_size = config.get("image_size")
@@ -1003,6 +1008,9 @@ def main(argv=None):
         config["candidate_save_every"] = args.candidate_save_every
     from tasks.registry import get
     task = get(args.task)
+    if not args.config and not args.resume and not args.continue_from:
+        schema = task.manifest['schema']
+        config['model'].update(state_dim=schema['state_dim'], action_dim=schema['action_dim'])
     if args.resume or args.continue_from:
         if config.get('task_id') != task.id or config.get('task_binding') != task.binding():
             raise ValueError('Resume task or sources differ from frozen training configuration')

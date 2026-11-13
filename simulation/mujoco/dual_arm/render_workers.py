@@ -28,6 +28,7 @@ from simulation.mujoco.dual_arm.action_contract import V2, ACTION_NAMES_V2
 
 
 def dataset_features(width=640, height=480, schema_version=None, *, config=None):
+    from tasks.data_schema import schema_for, SINGLE
     if config is not None:
         settings = config['recording']
         width, height = settings['width'], settings['height']
@@ -36,6 +37,10 @@ def dataset_features(width=640, height=480, schema_version=None, *, config=None)
         "observation.state": {"dtype": "float32", "shape": (16,), "names": STATE_NAMES},
         "action": {"dtype": "float32", "shape": (14,), "names": ACTION_NAMES_V2 if schema_version == V2 else ACTION_NAMES},
     }
+    schema = schema_for(config)
+    if schema == SINGLE:
+        features['observation.state'].update(shape=(schema.state_dim,), names=schema.state_names)
+        features['action'].update(shape=(schema.action_dim,), names=schema.action_names)
     features.update({f"observation.images.{name}": {
         "dtype": "video", "shape": (height, width, 3), "names": ["height", "width", "channels"]
     } for name in recording_camera_names(config)})
@@ -93,7 +98,11 @@ def apply_snapshot(model, data, snapshot):
 
 def robot_geom_ids(model):
     """Panda body descendants only, excluding table, object and base pedestals."""
-    roots = {model.body(name).id for name in ("left_link0", "right_link0")}
+    roots = {mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, name)
+             for name in ("left_link0", "right_link0")}
+    roots.discard(-1)
+    if not roots:
+        raise ValueError('No registered Panda body root in rendering model')
     return tuple(index for index, body in enumerate(model.geom_bodyid)
                  if model.body_rootid[body] in roots)
 
@@ -146,8 +155,9 @@ def apply_operator_view(scene, model, camera, config):
     """
     alpha = float(config.get("operator_view", {}).get("top_robot_alpha", 1.0))
     robot_geoms = set(robot_geom_ids(model))
-    diagnostic_sites = {model.site(name).id for name in
+    diagnostic_sites = {mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, name) for name in
                         ("left_ee", "right_ee", "left_grasp_site", "right_grasp_site")}
+    diagnostic_sites.discard(-1)
     for geom in scene.geoms[:scene.ngeom]:
         if geom.objtype == mujoco.mjtObj.mjOBJ_SITE and geom.objid in diagnostic_sites:
             geom.rgba[3] = 0
@@ -197,7 +207,7 @@ class InspectionVideos:
 
 
 def recording_worker(config, command_queue, reply_queue):
-    from .task_controller import DualArmTaskController
+    from tasks.runtime import create_controller
     cache = Path(__file__).resolve().parents[3] / ".cache/huggingface"
     os.environ.setdefault("HF_HOME", str(cache))
     os.environ.setdefault("HF_DATASETS_CACHE", str(cache / "datasets"))
@@ -208,7 +218,7 @@ def recording_worker(config, command_queue, reply_queue):
     pending = None
     persisted = 0
     try:
-        controller = DualArmTaskController(config=config)
+        controller = create_controller(config)
         settings = config.get("recording", {})
         fps, width, height = settings.get("fps", 30), settings.get("width", 640), settings.get("height", 480)
         camera_names = recording_camera_names(config)
@@ -265,7 +275,7 @@ def recording_worker(config, command_queue, reply_queue):
                 if outcome not in datasets:
                     datasets[outcome] = LeRobotDataset.create(
                         repo_id=command["repo_id"], fps=fps, root=destination,
-                        robot_type="dual_panda", features=dataset_features(config=config),
+                        robot_type="single_panda" if len(controller.arms) == 1 else "dual_panda", features=dataset_features(config=config),
                         use_videos=True, video_backend="pyav", streaming_encoding=True,
                         rgb_encoder=RGBEncoderConfig(vcodec="h264", crf=23, preset="veryfast"),
                         encoder_threads=2,
@@ -332,10 +342,10 @@ def recording_worker(config, command_queue, reply_queue):
 
 
 def preview_worker(config, snapshots, outputs, ready):
-    from .task_controller import DualArmTaskController
+    from tasks.runtime import create_controller
     renderer = None
     try:
-        controller = DualArmTaskController(config=config)
+        controller = create_controller(config)
         renderer = MultiCameraRenderer(controller.model, 640, 480, camera_names=OPERATOR_CAMERAS, config=config)
         ready.put({"type": "ready"})
         while True:

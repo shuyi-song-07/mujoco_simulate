@@ -73,7 +73,8 @@ def start(args):
             handle=(logs/f'{name}.log').open('w',encoding='utf-8');handles.append(handle)
             processes.append(subprocess.Popen(cmd,cwd=ROOT,env=child_env,stdout=handle,stderr=subprocess.STDOUT,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0))
-        url=f'http://127.0.0.1:{args.web_port}/dual_arm.html'
+        page = 'single_arm.html' if task.manifest['controller'] == 'single_panda_push_v1' else 'dual_arm.html'
+        url=f'http://127.0.0.1:{args.web_port}/{page}'
         deadline=time.monotonic()+120
         while time.monotonic()<deadline:
             if any(p.poll() is not None for p in processes): raise RuntimeError(f'Service exited; inspect {logs}')

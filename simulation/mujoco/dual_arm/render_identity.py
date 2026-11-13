@@ -31,7 +31,7 @@ def render_identity(config: dict, model=None) -> dict:
     """
     import mujoco
     from .config import DEFAULT_SCENE_PATH
-    from .task_controller import create_model
+    from tasks.runtime import create_model
     from .render_workers import apply_snapshot
     from .training_camera import training_camera_metadata
 

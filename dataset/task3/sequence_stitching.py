@@ -7,6 +7,8 @@ training_time_s is the retained observation index divided by the recorded 30 Hz.
 """
 from __future__ import annotations
 
+from tasks.data_schema import (SIDES, scoped, state_dim, action_dim, joint_count)
+
 import copy
 import math
 from collections import Counter
@@ -18,7 +20,6 @@ from dataset.task3.frame_evidence import _rotation_distance
 from dataset.task3.event_continuity import enabled as continuity_enabled, classify_event, settled_execution
 
 VERSION = "papera-safe-sequence-1"
-SIDES = ("left", "right")
 ROW_FIELDS = ("training_frame_index", "training_time_s", "train_sequence_id",
               "sequence_frame_index", "sequence_time_s", "causal_target_valid",
               "causal_target_reason", "stitch_gap_before", "virtual_clock_valid")
@@ -78,7 +79,7 @@ def _action(facts):
 def _state(facts):
     values = []
     for side in SIDES:
-        for key, shape in (("joints", (7,)), ("actual_aperture", (1,))):
+        for key, shape in (("joints", (joint_count(),)), ("actual_aperture", (1,))):
             field = facts.get("features", {}).get(f"{side}.{key}")
             vector = _array(field[1], shape) if isinstance(field, (list, tuple)) and len(field) == 2 else None
             if vector is None:
@@ -96,7 +97,7 @@ def _causal_target(row):
     if not isinstance(following, dict):
         return False, "missing_next_control_evidence"
     source = following.get("source") or {}
-    action = _array(target.get("action"), (14,))
+    action = _array(target.get("action"), (action_dim(),))
     actual = _action(following)
     if action is None or actual is None or not np.array_equal(action, actual):
         return False, "next_target_action_mismatch"
@@ -147,7 +148,7 @@ def _feature_delta(first, second, key):
             return float(_rotation_distance(av, bv))
         if av.shape != bv.shape:
             return None
-        expected = (7,) if kind == "joint" else (1,) if kind == "aperture" else (3,)
+        expected = (joint_count(),) if kind == "joint" else (1,) if kind == "aperture" else (3,)
         if av.shape != expected:
             return None
         delta = av - bv
@@ -187,7 +188,7 @@ def _fact_failures(facts, cfg, *, require_rotation=False):
     for label, value, shape, limit in (
             ("object_linear_velocity", obj.get("linear_velocity"), (3,), cfg["physical_motion"]["linear_speed_mps"]),
             ("object_angular_velocity", obj.get("angular_velocity"), (3,), cfg["physical_motion"]["angular_speed_radps"]),
-            ("ee_velocity", motion.get("ee_speeds_mps"), (2,), cfg["physical_motion"]["linear_speed_mps"])):
+            ("ee_velocity", motion.get("ee_speeds_mps"), (len(SIDES),), cfg["physical_motion"]["linear_speed_mps"])):
         velocity = _array(value, shape)
         if velocity is None:
             reasons.append("velocity_evidence_missing:" + label)
@@ -256,7 +257,7 @@ def _event_failures(events, anchor, cfg, previous_line, current_line, controls=(
                 failures.append("accepted_request_execution_unknown")
             if any(execution.get("sides", {}).get(side, {}).get("pending") is not False for side in SIDES):
                 failures.append("accepted_request_pending_execution")
-            target, accepted = _action(anchor), _array(event.get("accepted_target"), (14,))
+            target, accepted = _action(anchor), _array(event.get("accepted_target"), (action_dim(),))
             if target is None or accepted is None:
                 failures.append("accepted_request_target_missing")
             else:
@@ -312,8 +313,8 @@ def _gap_check(rows, left, right, cfg):
         if row.get("frame_role") == "INVALID" or _facts(row).get("source", {}).get("valid") is not True:
             failures.append("invalid_original_frame")
         reasons = _fact_failures(_facts(row), cfg, require_rotation=True)
-        for key, factual, shape in (("state_recorded", _state(_facts(row)), (16,)),
-                                    ("action_recorded", _action(_facts(row)), (14,))):
+        for key, factual, shape in (("state_recorded", _state(_facts(row)), (state_dim(),)),
+                                    ("action_recorded", _action(_facts(row)), (action_dim(),))):
             recorded = _array(row.get(key), shape)
             if recorded is None or factual is None or not np.array_equal(recorded, factual):
                 reasons.append("recorded_array_evidence_mismatch:" + key)
@@ -430,8 +431,7 @@ def _gap_check(rows, left, right, cfg):
     endpoint_speed = {}
     period = anchor.get("source", {}).get("observation_period_s")
     if period == 1/30:
-        for key in ("object.position", "object.rotation", "left.actual_position", "right.actual_position",
-                    "left.joints", "right.joints", "left.actual_aperture", "right.actual_aperture"):
+        for key in ('object.position', 'object.rotation', *(s + '.' + k for s in SIDES for k in ('actual_position', 'joints', 'actual_aperture'))):
             delta = _feature_delta(_facts(end), anchor, key)
             if delta is not None:
                 speed = delta / period
@@ -555,6 +555,7 @@ def _raw_boundary(previous, row):
                 or row.get("raw_frame_index") != previous.get("raw_frame_index", -2)+1)
 
 
+@scoped
 def build_sequence_contract(rows, config=None, *, restore_boundaries=True):
     """Return copied raw rows, gaps, sequences and independently certified clocks."""
     cfg = effective_config(validate_config(config) if config is not None else load_config())
@@ -642,6 +643,7 @@ def build_sequence_contract(rows, config=None, *, restore_boundaries=True):
             "gaps": gaps, "sequences": sequences, "metrics": metrics}
 
 
+@scoped
 def verify_sequence_contract(rows, sequence, config=None):
     """Recompute all seam certificates and per-row clocks; reject stale metadata."""
     expected = build_sequence_contract(rows, config, restore_boundaries=False)

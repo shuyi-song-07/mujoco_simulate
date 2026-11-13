@@ -22,14 +22,15 @@ MODULES=[
         'test_single_view_prepared_pack','test_measurement_journal','test_hand_measurement','test_review_server','test_review_preview',
         'test_gesture_hand_guard','test_rate_hand_guard','test_rate_config','test_recorded_rate_audit',
         'test_level_gripper_control','test_operator_view','test_training_camera','test_raised_placement',
-        'test_highwall_platform','test_platform_success')],
+        'test_highwall_platform','test_platform_success','test_single_arm_data_schema')],
     *['tests.papera.'+n for n in ('test_safe_stitch_data','test_act_model','test_action_chunks',
         'test_policy_executor','test_training_loop','test_training_engine','test_act_reference',
         'test_reference_compatibility','test_checkpoint_candidates','test_check_training_pack','test_diffusion_model',
         'test_diffusion_data','test_diffusion_training','test_diffusion_rollout','test_diffusion_official',
         'test_rollout_collection_sources','test_rollout_checkpoint_selection','test_rollout_lock',
         'test_rollout_candidates','test_gesture_auxiliary','test_gesture_continuation',
-        'test_loss_reporting','test_training_plots','test_policy_comparison','test_smoke_continuation_guard','test_rollout_reporting')]
+        'test_loss_reporting','test_training_plots','test_policy_comparison','test_smoke_continuation_guard','test_rollout_reporting',
+        'test_single_arm_act','test_single_push_executor')]
 ]
 if __name__=='__main__':
     import json
@@ -38,7 +39,8 @@ if __name__=='__main__':
     names=['tests.task3.test_action_contract', 'tests.task3.test_level_gripper_control',
            'tests.task3.test_control_computation','tests.task3.test_episode_completion',
            'tests.task3.test_preview_cameras', 'tests.task3.test_h_push_success',
-           'tests.h_frame_push_transport', 'tests.push_r_transport'] if collection_only else MODULES
+           'tests.h_frame_push_transport', 'tests.push_r_transport', 'tests.task3.test_single_push_t',
+           'tests.task3.test_single_push_guard', 'tests.task3.test_single_ui_contract'] if collection_only else MODULES
     if '--with-upstream' in sys.argv and not collection_only:
         names = [*names, 'tests.papera.test_act_official']
     result=unittest.TextTestRunner(verbosity=1).run(unittest.defaultTestLoader.loadTestsFromNames(names))

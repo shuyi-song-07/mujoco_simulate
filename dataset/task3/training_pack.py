@@ -6,6 +6,8 @@ is applied: every retained Prepared frame has exactly one cache row.
 """
 from __future__ import annotations
 
+from tasks.data_schema import (SIDES, schema_for, descriptor, scoped, state_dim, action_dim)
+
 import argparse
 import copy
 from datetime import datetime, timezone
@@ -95,6 +97,7 @@ def session_split(entries, split_file):
     return result
 
 
+@scoped
 def _load_prepared(root):
     root = Path(root).resolve()
     manifest = json.loads((root/'manifest.json').read_text(encoding='utf-8'))
@@ -152,6 +155,7 @@ def _validate_source_split(prepared, split):
         raise ValueError('Pack split differs from the frozen Prepared union split')
 
 
+@scoped
 def _validate_pack_sources(manifest, frozen):
     if not (_has_source_provenance(manifest) or _has_source_provenance(frozen)):
         return
@@ -169,7 +173,7 @@ def _validate_pack_sources(manifest, frozen):
     if (manifest.get('task_id') != frozen.get('task_id')
             or manifest.get('task_binding') != frozen.get('task_binding')
             or manifest.get('engineering_only') != frozen.get('engineering_only')
-            or manifest.get('state_dim') != 16 or manifest.get('action_dim') != 14):
+            or manifest.get('state_dim') != state_dim() or manifest.get('action_dim') != action_dim()):
         raise ValueError('Pack learning domain or schema differs from its frozen Prepared')
     for entry in entries:
         original = originals[entry['key']]
@@ -215,6 +219,7 @@ def _validate_pack_contract(pack, manifest, *, check_hashes=True):
             raise ValueError('Pack sequence/config contract differs from its frozen Prepared')
 
 
+@scoped
 def derive_arrays(arrays, rows, *, fps, sequence=None, config=None):
     """Validate the kept-frame join and causal target without changing values."""
     kept = [row for row in rows if row.get('keep')]
@@ -222,10 +227,10 @@ def derive_arrays(arrays, rows, *, fps, sequence=None, config=None):
     n = len(kept)
     if not n or not np.array_equal(ids, [r['raw_frame_index'] for r in kept]) or np.any(np.diff(ids) <= 0):
         raise ValueError('Prepared arrays and retained original frame indexes disagree')
-    required = {'state': (n,16), 'action_recorded': (n,14), 'next_control_target': (n,14),
-        'next_control_target_mask': (n,), 'category_id': (n,2), 'category_mask': (n,2),
-        'hand_image': (n,2,21,3), 'hand_model_world': (n,2,21,3), 'hand_normalized': (n,2,21,3),
-        'geometry_mask': (n,2), 'task_geometry_mask': (n,2), 'raw_geometry_present': (n,2),
+    required = {'state': (n,state_dim()), 'action_recorded': (n,action_dim()), 'next_control_target': (n,action_dim()),
+        'next_control_target_mask': (n,), 'category_id': (n,len(SIDES)), 'category_mask': (n,len(SIDES)),
+        'hand_image': (n,len(SIDES),21,3), 'hand_model_world': (n,len(SIDES),21,3), 'hand_normalized': (n,len(SIDES),21,3),
+        'geometry_mask': (n,len(SIDES)), 'task_geometry_mask': (n,len(SIDES)), 'raw_geometry_present': (n,len(SIDES)),
         'source_control_tick': (n,), 'control_epoch': (n,), 'original_time_s': (n,),
         'source_control_tick_mask': (n,), 'control_epoch_mask': (n,),
         'task_segment_id': (n,), 'contiguous_fragment_id': (n,), 'segment_id': (n,)}
@@ -293,8 +298,8 @@ def derive_arrays(arrays, rows, *, fps, sequence=None, config=None):
         if row.get('robot_phase') not in STAGES:
             raise ValueError('Unknown robot phase; cannot invent supervision')
         stages.append(STAGES.index(row['robot_phase']))
-        modes.append([row.get('accepted_left_intent'), row.get('accepted_right_intent')])
-        for side_index, side in enumerate(('left','right')):
+        modes.append([row.get('accepted_' + side + '_intent') for side in SIDES])
+        for side_index, side in enumerate(SIDES):
             aux = row['auxiliary'][side]
             category = aux.get('category')
             category_id = CATEGORIES.index(category) if category in CATEGORIES else -1
@@ -363,8 +368,8 @@ def temporal_diagnostics(arrays, rows, *, fps, modes=None):
             gaps.append({'previous_raw_frame': int(ids[i-1]), 'next_raw_frame': int(ids[i]),
                 'removed_frames': int(ids[i]-ids[i-1]-1), 'original_delta_s': dt,
                 'causes': causes, 'gap_evidence': rows[i].get('gap_before')})
-        previous_mode = modes[i-1] if modes else [rows[i-1].get('accepted_left_intent'), rows[i-1].get('accepted_right_intent')]
-        mode = modes[i] if modes else [rows[i].get('accepted_left_intent'), rows[i].get('accepted_right_intent')]
+        previous_mode = modes[i-1] if modes else [rows[i-1].get('accepted_' + side + '_intent') for side in SIDES]
+        mode = modes[i] if modes else [rows[i].get('accepted_' + side + '_intent') for side in SIDES]
         stage_changed = rows[i].get('robot_phase') != rows[i-1].get('robot_phase')
         if stage_changed or mode != previous_mode:
             transitions.append({'previous_raw_frame': int(ids[i-1]), 'raw_frame': int(ids[i]),
@@ -414,6 +419,7 @@ def _source_oblique_hash(entry, source):
     return current
 
 
+@scoped
 def build(prepared, output, *, split_file, width=640, height=480, resume=False, continue_on_error=False):
     prepared, output = Path(prepared).resolve(), Path(output).resolve()
     if not isinstance(width,int) or not isinstance(height,int) or min(width,height) < 32:
@@ -434,6 +440,7 @@ def build(prepared, output, *, split_file, width=640, height=480, resume=False, 
         'implementation_sha256': {name: sha256(Path(__file__).with_name(name))
             for name in ('training_pack.py','video_cache.py','sequence_stitching.py',
                          'curation_rules.py','curation_config.py','event_continuity.py')}}
+    binding['implementation_sha256']['tasks/data_schema.py'] = sha256(Path(__file__).resolve().parents[2]/'tasks/data_schema.py')
     if output.exists() and not resume:
         raise FileExistsError(f'Choose a new output directory or use resume: {output}')
     output.mkdir(parents=True,exist_ok=resume)
@@ -506,9 +513,9 @@ def build(prepared, output, *, split_file, width=640, height=480, resume=False, 
         'remaining_gate': 'Data contract verified; quality approval and explicit training invocation remain separate. Engineering data is never formal training data.',
         'created_at': datetime.now(timezone.utc).isoformat(),'binding': binding,
         'review_mode': manifest['review_mode'],'human_reviewed': manifest['human_reviewed'],
-        'cameras': ['oblique'],'state_dim': 16,'action_dim': 14,
+        'cameras': ['oblique'],'state_dim': state_dim(),'action_dim': action_dim(),
         'config': binding['config'], 'action_alignment': ALIGNMENT,
-        'categories': manifest['categories'],'hand_order': manifest['hand_order'],'stages': list(STAGES),
+        'data_schema': descriptor(), 'categories': manifest['categories'],'hand_order': manifest['hand_order'],'stages': list(STAGES),
         'episodes': results,'episode_count': len(results),'frame_count': sum(e['frames'] for e in results),
         'frame_filter_applied': False,'normalization_applied': False,
         'split': split, 'files': [file_record(output/name,output)
@@ -612,6 +619,7 @@ def _checked_manifest(pack, checked, key):
     return manifest
 
 
+@scoped
 def read_episode(pack,key,*,verify_files=True,checked=None,include_evidence=True):
     """Read through one official interface; workers may reuse full verification.
 
@@ -636,8 +644,7 @@ def _verify_contents(pack,manifest,*,check_hashes=True):
         from tasks.artifacts import fields
     else:
         # Offline training consumes the Pack's frozen task, not today's scene
-        # code. Still require an explicit, internally consistent S16/A14 task.
-        from tasks.registry import SCHEMA
+        # code. Still require an explicit, internally consistent registered robot schema.
 
         def fields(value):
             binding = value.get('task_binding')
@@ -645,10 +652,10 @@ def _verify_contents(pack,manifest,*,check_hashes=True):
                     or binding.get('version') != 'papera-task-binding-v1'
                     or not binding.get('task_id')
                     or binding.get('task_id') != value.get('task_id')
-                    or binding.get('schema') != SCHEMA
+                    or schema_for(binding) != schema_for(value)
                     or not binding.get('task_version') or not binding.get('scene_id')
                     or not isinstance(value.get('engineering_only'), bool)):
-                raise ValueError('Missing/incompatible frozen task identity or S16/A14 schema')
+                raise ValueError('Missing/incompatible frozen task identity or robot schema')
             return {name: value[name] for name in ('task_id','task_binding','engineering_only')}
     if fields(manifest)!=fields(frozen_prepared):
         raise ValueError('Pack/Prepared task or engineering provenance mismatch')
@@ -678,6 +685,7 @@ def _verify_contents(pack,manifest,*,check_hashes=True):
         'training_started': False,'training_interface': 'training.papera.pack_data.SafeStitchDataset','manifest': manifest}
 
 
+@scoped
 def verify(pack, *, check_hashes=True):
     """Validate a frozen Pack, optionally hashing every stored file.
 

@@ -138,10 +138,12 @@ def prepare_pack(pack_path, selected_train_keys=None, chunk_size=30, *, checked=
     if not isinstance(checked, training_pack.VerifiedPack):
         raise ValueError("checked must be the live official verify result")
     manifest = checked["manifest"]
+    from tasks.data_schema import schema_for
+    layout = schema_for(manifest)
     if (not checked.get("valid") or manifest.get("version") != training_pack.VERSION
             or manifest.get("sequence_contract") != SEQUENCE_VERSION
             or manifest.get("cameras") != list(CAMERAS)
-            or manifest.get("state_dim") != 16 or manifest.get("action_dim") != 14
+            or manifest.get("state_dim") != layout.state_dim or manifest.get("action_dim") != layout.action_dim
             or manifest.get("action_alignment") != training_pack.ALIGNMENT):
         raise ValueError("A complete current Safe Stitch single-oblique Pack is required")
     split = copy.deepcopy(manifest["split"])
@@ -164,7 +166,7 @@ def prepare_pack(pack_path, selected_train_keys=None, chunk_size=30, *, checked=
                                      for field in ("state", "action", "action_mask")}
         finally:
             _close_episode(episode)
-    stats = fit_statistics(stats_arrays, train_keys)
+    stats = fit_statistics(stats_arrays, train_keys, schema=layout)
     counts = {}
     for side, keys in (("train", train_keys), ("val", split["val"])):
         counts[side] = {"episodes": len(keys)}
@@ -175,7 +177,7 @@ def prepare_pack(pack_path, selected_train_keys=None, chunk_size=30, *, checked=
     binding = PreparedPack(version=VERSION, pack_path=str(root),
         manifest_sha256=file_sha256(root/"manifest.json"), pack_version=manifest["version"],
         sequence_contract=manifest["sequence_contract"], action_alignment=manifest["action_alignment"],
-        cameras=list(CAMERAS), state_dim=16, action_dim=14, chunk_size=chunk_size,
+        cameras=list(CAMERAS), state_dim=layout.state_dim, action_dim=layout.action_dim, chunk_size=chunk_size,
         image_size=list(image_size), cached_image_size=[manifest["config"]["image_width"],
                                                        manifest["config"]["image_height"]],
         image_transform="whole_frame_PyAV_RGB24_reformat_then_CHW_float32_div255",

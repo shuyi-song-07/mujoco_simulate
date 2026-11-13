@@ -173,12 +173,24 @@ def load_scene_provenance(pack_dir, raw_root=None):
         if not path.is_file() or _sha(path) != source["sha256"]:
             raise ValueError(f"Raw source metadata missing or changed: {path}")
         metadata = _read(path)
+        from tasks.data_schema import schema_for, SINGLE
+        layout = schema_for(manifest)
         if single_view:
-            from simulation.mujoco.dual_arm.action_contract import STATE_NAMES, ACTION_NAMES_V2
-            if (metadata.get("state_names") != STATE_NAMES or metadata.get("action_names") != ACTION_NAMES_V2
-                    or metadata.get("action_units") != ["m", "m", "m", "rad", "rad", "rad", "m"]*2):
+            if (metadata.get("state_names") != layout.state_names or metadata.get("action_names") != layout.action_names
+                    or metadata.get("action_units") != ["m", "m", "m", "rad", "rad", "rad", "m"]*len(layout.arm_order)):
                 raise ValueError("Frozen source state/action fields or units differ from the policy")
-        config = load_config(metadata["config"])
+        if layout == SINGLE:
+            # Its camera definition and fixed-closed policy are intentionally
+            # not accepted by the dual-arm configuration parser. Preserve the
+            # hash-verified frozen task config; validate its explicit contract.
+            config = copy.deepcopy(metadata['config'])
+            if (schema_for(config) != SINGLE or config.get('recording', {}).get('schema_version') != SINGLE.version
+                    or config.get('gesture_control', {}).get('gripper_trigger_policy') != 'push_locked_v1'
+                    or config.get('scene', {}).get('initial_gripper') != 'closed'
+                    or config.get('task_binding') != manifest.get('task_binding')):
+                raise ValueError('Frozen single Push-T configuration/schema mismatch')
+        else:
+            config = load_config(metadata["config"])
         if config_hash(config) != metadata["config_hash"]:
             raise ValueError(f"Frozen config hash mismatch: {path}")
         binding = episode.get('source_task_binding', manifest.get('task_binding'))
@@ -324,7 +336,7 @@ def _waypoint_checks(controller, position, yaw, label):
 
 def preflight_cases(config, seeds, demonstration_seeds=(), engineering_seeds=()):
     """Preserve specified order and every seed, reporting rather than filtering."""
-    from simulation.mujoco.dual_arm.task_controller import DualArmTaskController
+    from tasks.runtime import create_controller
     from simulation.mujoco.dual_arm.rigid_control import rz
 
     seeds = list(seeds)
@@ -333,7 +345,7 @@ def preflight_cases(config, seeds, demonstration_seeds=(), engineering_seeds=())
     overlap = sorted(set(seeds) & (set(demonstration_seeds) | set(engineering_seeds)))
     if overlap:
         raise ValueError(f"Case seeds overlap source/engineering seeds: {overlap}")
-    controller = DualArmTaskController(config=config)
+    controller = create_controller(config)
     table_half = np.asarray(config["scene"]["table_half_size_xy"])
     rows = []
     for seed in seeds:

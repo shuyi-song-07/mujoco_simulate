@@ -1,4 +1,6 @@
 """Shared raw hand-timeline and snapshot checks used by the formal audit."""
+from tasks.data_schema import (SIDES, schema_for, scoped, action_dim)
+
 import argparse
 import copy
 import hashlib
@@ -10,7 +12,6 @@ import pyarrow.parquet as pq
 
 ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT))
-from simulation.mujoco.dual_arm.action_contract import V2, ACTION_NAMES_V2, STATE_NAMES
 from simulation.mujoco.dual_arm.recording_timeline import (
     CONTROL_INTERFACE_VERSION, HAND_SUPERVISION_VERSION, INTENT_TRAINING_TIMELINE,
     GESTURE_INTERFACE_VERSION, GESTURE_SUPERVISION_VERSION, SUPPORTED_CONTROL_INTERFACES,
@@ -22,7 +23,6 @@ from simulation.mujoco.dual_arm.recording_timeline import (
 )
 from simulation.mujoco.dual_arm.hand_measurement import inspect_measurement, inspect_release_intent
 
-SIDES = ('left', 'right')
 
 
 def audit_control_labels(event, frozen, sources, check):
@@ -38,7 +38,8 @@ def audit_control_labels(event, frozen, sources, check):
     check(labels.get('version') == protocol, 'control label version mismatch')
     trigger = frozen.get('gripper_trigger_policy')
     edge = rate and trigger in EDGE_POLICY_VERSIONS
-    if rate and trigger == LEVEL_TRIGGER_POLICY:
+    push_locked = schema_for(frozen).version == 'single-panda-push-v1' and trigger == 'push_locked_v1'
+    if rate and trigger in (LEVEL_TRIGGER_POLICY, 'push_locked_v1'):
         check(contact.get('gripper_trigger_policy') == trigger, 'level policy missing from physical status')
         check(labels.get('gripper_trigger_policy') == trigger, 'level policy missing from control labels')
     if edge:
@@ -68,7 +69,7 @@ def audit_control_labels(event, frozen, sources, check):
         'release_opening': lambda v: type(v) is bool,
         'release_armed': lambda v: type(v) is bool,
         'release_progress_s': lambda v: type(v) in (int, float) and np.isfinite(v) and v >= 0,
-        'hold_width_m': lambda v: v is None or (type(v) in (int, float) and np.isfinite(v) and 0 <= v <= .080001),
+        'hold_width_m': lambda v: v is None or (type(v) in (int, float) and np.isfinite(v) and 0 <= v <= (.100001 if len(SIDES) == 1 else .080001)),
         'release_intent_event_id': lambda v: v is None or isinstance(v, str) and bool(v),
         'release_event_id': lambda v: v is None or isinstance(v, str) and bool(v),
     }
@@ -109,7 +110,7 @@ def audit_control_labels(event, frozen, sources, check):
                 suspended = edge and mode == 'HOLD' and (contact.get('gripper_edge', {}).get(side) or {}).get('state') == 'HOLD' and (contact.get('gripper_edge', {}).get(side) or {}).get('authorized_mode') == 'Z_OPEN'
                 check(not opening or mode=='Z_OPEN' or suspended,
                       'rate opening requires continuing Z_OPEN mode or authorized edge suspension')
-                check(contact['aperture_direct_enabled'][side] is False and operation_held is None,
+                check(contact['aperture_direct_enabled'][side] is False and (operation_held == 0. if push_locked else operation_held is None),
                       'rate control cannot enable direct aperture or a permanent operator lock')
             else:
                 check(not intent or mode=='RELEASE','raw release intent outside RELEASE mode')
@@ -146,7 +147,9 @@ def audit_control_labels(event, frozen, sources, check):
         reasons = []
         if paused: reasons.append('paused_or_interface')
         if held is not None:
-            reasons.append('interrupted_release_hold' if rate and contact.get('rate_interrupted_release_hold', {}).get(side) else 'grasp_hold')
+            reasons.append('push_gripper_lock' if push_locked else 'interrupted_release_hold' if rate and contact.get('rate_interrupted_release_hold', {}).get(side) else 'grasp_hold')
+        if push_locked:
+            check(not any(contact[k][side] for k in ('release_intent', 'release_executed', 'release_opening', 'release_armed')) and held == 0. and operation_held == 0., 'single push locked gripper authorization changed')
         if intent and held is not None: reasons.append('release_confirmation')
         if opening: reasons.append('release_execution')
         if gesture:
@@ -223,6 +226,7 @@ def read_snapshots(directory, *, allow_partial_last=False):
     return {k:np.concatenate([b[k] for b in blocks]) for k in blocks[0]}
 
 
+@scoped
 def audit_hand_timeline(research, frozen):
     """Check provenance independently of the recorder's validity labels."""
     errors=[];measurements={};executed={};received={};coverage=0;epochs=set();control_sources={}
@@ -230,19 +234,20 @@ def audit_hand_timeline(research, frozen):
     versioned = protocol in SUPPORTED_CONTROL_INTERFACES
     gesture = protocol == GESTURE_INTERFACE_VERSION
     rate = protocol == RATE_INTERFACE_VERSION
+    push_locked = schema_for(frozen).version == 'single-panda-push-v1'
     timing={'version':'guard-time-or-receipt-execution-bounds-v1','exact_checks':0,
             'bounded_checks':0,'uncertain_checks':0,'uncertain_events':[]}
     def check(ok,message):
         if not ok and message not in errors:errors.append(message)
     def mask_valid(mask):
-        return isinstance(mask,dict) and set(mask)=={'left','right'} and all(type(v) is bool for v in mask.values())
+        return isinstance(mask,dict) and set(mask)==set(SIDES) and all(type(v) is bool for v in mask.values())
     configured=(frozen.get('config') or {}).get('contact_control',{}).get('control_protocol')
     if configured in SUPPORTED_CONTROL_INTERFACES:
         check(protocol==configured, 'configured control protocol requires versioned intent metadata')
     if versioned:
         check(frozen.get('hand_supervision_version') == (RATE_SUPERVISION_VERSION if rate else GESTURE_SUPERVISION_VERSION if gesture else HAND_SUPERVISION_VERSION), 'frozen hand supervision version mismatch')
         level = rate and (frozen.get('config') or {}).get('gesture_control', {}).get('gripper_trigger_policy') == LEVEL_TRIGGER_POLICY
-        check(frozen.get('confirmation_gate') == {'categorical_gesture':gesture or rate,'continuous_aperture':False,'release_intent':not level},
+        check(frozen.get('confirmation_gate') == {'categorical_gesture':gesture or rate,'continuous_aperture':False,'release_intent':not level and not push_locked},
               'frozen confirmation gates mismatch')
         if gesture:
             check(frozen.get('interaction_mode_contract')==INTERACTION_MODE_CONTRACT,
@@ -254,7 +259,7 @@ def audit_hand_timeline(research, frozen):
                   'gesture policy incompatibility marker missing')
             check((frozen.get('pinch_mapping_contract') or {}).get('version') in ('anchored-piecewise-v1','anchored-piecewise-v2'),
                   'pinch takeover mapping contract missing')
-        if rate:
+        if rate and not push_locked:
             check(frozen.get('interaction_mode_contract')==RATE_MODE_CONTRACT,
                   'rate interaction mode policy contract missing or changed')
             trigger = (frozen.get('config') or {}).get('gesture_control', {}).get('gripper_trigger_policy', 'level_v1')
@@ -297,9 +302,19 @@ def audit_hand_timeline(research, frozen):
                    'edge-palm-confirmed-opening-v1' if edge else 'fresh-palm-rate-opening-v3'),
                   'fresh categorical opening semantics missing')
             check('pinch_mapping_contract' not in frozen,'rate metadata cannot declare pinch takeover')
+        if push_locked:
+            check(rate and frozen.get('gripper_trigger_policy') == 'push_locked_v1', 'single push must declare locked gripper policy')
+            check(frozen.get('policy_contract_version') == 'single-push-rate-v1', 'single push policy contract missing')
+            push_modes = frozen.get('interaction_mode_contract') or {}
+            expected_modes = {**RATE_MODE_CONTRACT, 'names': [s+'.interaction_mode' for s in SIDES],
+                              'shape': [len(SIDES)], 'required_for_policy': False}
+            check(all(push_modes.get(k) == v for k, v in expected_modes.items()),
+                  'single push interaction modes contract mismatch')
+            check(frozen.get('aperture_calibration') == RATE_CALIBRATION, 'single push calibration contract mismatch')
+            check((frozen.get('config') or {}).get('gesture_control', {}).get('gripper_trigger_policy') == 'push_locked_v1', 'single push configured lock mismatch')
         contract = frozen.get('release_intent_contract') or {}
-        check(contract.get('names') == ['left.release_intent','right.release_intent'] and contract.get('shape') == [2]
-              and contract.get('type') == 'bool' and contract.get('required_for_policy') is True,
+        check(contract.get('names') == [s+'.release_intent' for s in SIDES] and contract.get('shape') == [len(SIDES)]
+              and contract.get('type') == 'bool' and contract.get('required_for_policy') is (not push_locked),
               'separate release intent policy contract missing')
         timeline=frozen.get('intent_training_timeline')
         check(timeline==INTENT_TRAINING_TIMELINE and isinstance(timeline,dict)
@@ -327,16 +342,16 @@ def audit_hand_timeline(research, frozen):
             result=event['result']
             if versioned and result.get('control_protocol') == protocol:
                 intent=result.get('release_intent');aid=request.get('eventId')
-                valid_intent = isinstance(intent,list) and len(intent)==2 and all(type(v) is bool for v in intent)
-                requested_intent=request.get('release_intent',[False,False])
-                valid_request=(isinstance(requested_intent,list) and len(requested_intent)==2
+                valid_intent = isinstance(intent,list) and len(intent)==len(SIDES) and all(type(v) is bool for v in intent)
+                requested_intent=request.get('release_intent',[False]*len(SIDES))
+                valid_request=(isinstance(requested_intent,list) and len(requested_intent)==len(SIDES)
                                and all(type(v) is bool for v in requested_intent))
                 check(valid_intent,'accepted action release intent must be two booleans')
                 check(valid_intent and valid_request and intent==requested_intent,
                       'accepted release intent differs from request')
                 modes=result.get('interaction_modes')
                 if gesture or rate:
-                    mode_valid=isinstance(modes,list) and len(modes)==2 and all(m in (RATE_INTERACTION_MODES if rate else INTERACTION_MODES) for m in modes)
+                    mode_valid=isinstance(modes,list) and len(modes)==len(SIDES) and all(m in (RATE_INTERACTION_MODES if rate else INTERACTION_MODES) for m in modes)
                     check(mode_valid,'accepted interaction modes must be two supported modes')
                     adapter=result.get('interaction_mode_adapter')
                     if adapter is None:
@@ -348,14 +363,14 @@ def audit_hand_timeline(research, frozen):
                               and adapter.get('network_eligible') is False and adapter.get('interaction_modes')==modes
                               and request.get('command')!='continuous_input' and request.get('interaction_modes') is None,
                               'invalid trusted-only interaction mode adapter')
-                    check(not valid_intent or not mode_valid or all(intent[i] is (modes[i]=='Z_OPEN') if rate else not intent[i] or modes[i]=='RELEASE' for i in range(2)),
+                    check(not valid_intent or not mode_valid or all(intent[i] is (modes[i]=='Z_OPEN') if rate else not intent[i] or modes[i]=='RELEASE' for i in range(len(SIDES))),
                           'accepted release intent differs from interaction mode')
                 check(isinstance(aid,str) and bool(aid) and aid not in control_sources,
                       'control intent action ID missing or repeated')
                 valid_targets=True
                 for key in ('requested_target','projected_target'):
                     value=result.get(key)
-                    good=isinstance(value,list) and len(value)==14 and all(type(v) in (int,float) and np.isfinite(v) for v in value)
+                    good=isinstance(value,list) and len(value)==action_dim() and all(type(v) in (int,float) and np.isfinite(v) for v in value)
                     check(good,'accepted versioned action has invalid '+key)
                     valid_targets=valid_targets and good
                 if valid_intent and valid_targets and isinstance(aid,str) and aid:
@@ -385,7 +400,7 @@ def audit_hand_timeline(research, frozen):
                             overrides=({'left': {'Z_CLOSE': parameters['left_close_score_min']}}
                                        if 'left_close_score_min' in parameters else None)
                             problem=inspect_rate_input(restored,parameters=parameters,
-                                                       score_thresholds_by_side=overrides)
+                                                       score_thresholds_by_side=overrides, arm_order=tuple(SIDES))
                             check(problem is None,'accepted rate mode disagrees with recorded hand input: '+str(problem))
                         elif gesture:
                             from simulation.mujoco.dual_arm.hand_measurement import inspect_gesture_input
@@ -436,9 +451,9 @@ def audit_hand_timeline(research, frozen):
                                 timing['uncertain_checks']+=1
                                 timing['uncertain_events'].append({'event_id':aid,'age_lower_ms':lower,
                                     'age_upper_ms':upper,'guard_time_known':False})
-                    pair=[h for h in m['hands'] if h.get('bound_side') in ('left','right') and h.get('valid') is True]
-                    check(m.get('accepted_recognition') is True and len(pair)==2 and
-                          {h['bound_side'] for h in pair}=={'left','right'},'accepted action lacks two trusted recognized hands')
+                    pair=[h for h in m['hands'] if h.get('bound_side') in SIDES and h.get('valid') is True]
+                    check(m.get('accepted_recognition') is True and len(pair)==len(SIDES) and
+                          {h['bound_side'] for h in pair}==set(SIDES),'accepted action lacks two trusted recognized hands')
                     calibration=telemetry.get('aperture_calibration')
                     check(telemetry.get('calibrated') is True and isinstance(calibration,dict) and
                           (calibration==RATE_CALIBRATION if rate else calibration.get('phase')=='READY') and calibration==frozen.get('aperture_calibration'),

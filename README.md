@@ -1,4 +1,4 @@
-# Paper A：双臂任务的采集、数据与学习工程
+# Paper A：机械臂任务的采集、数据与学习工程
 
 
 本工程将同一套 Panda 双臂控制器、数据处理和策略训练接入任务注册表。研究对照为 **ACT Baseline / ACT + Gesture** 和 **Diffusion Policy（DP）Baseline / DP + Gesture**。四组部署时都只输入单 oblique RGB 和机器人状态；手势类别仅在辅助模型训练时使用，不作为推理输入。设计、标签含义和公平对照约束见 [Gesture 辅助监督](docs/GESTURE_AUXILIARY_EXPERIMENT.md)。
@@ -23,11 +23,16 @@ flowchart LR
 
 | task_id | 场景 | 状态 |
 |---|---|---|
+| `push_t` | 单臂 Panda 推动红色 T 形物体覆盖白色目标；复用指定上游场景 | ready；独立 S9/A7，待真人试操 |
 | `tray_to_platform` | 高侧壁空托盘，搬运到28×36 cm的实体高台，当前高度3 cm | ready；已有真人示范及模型闭环评估，结果与范围见第6.4节 |
 | `h_frame_push_align` | 双臂 H 形框架推动与精确归位 | ready；工程试推已验证 |
 | `push_r` | 双臂推动带孔洞和斜腿的 R 形刚体归位 | ready；真实接触平移、转向及稳定归位已验证，待真人试操 |
 
 ready 表示现有实现可加载，不表示新任务的真人采集质量或模型成功率已经验证。新增任务自动发现，不需要修改固定任务枚举。
+
+单臂 Push-T：在采集菜单输入 `push_t`，或运行 `& $collect -m collection start --task push_t`。它打开 `single_arm.html`：一只手张掌稳定2秒绑定，ILoveYou控制XY，张掌/握拳控制Z，夹爪始终闭合用于推动。丢手、未知手势或暂停后保持目标，恢复时重新建立手腕基准。只有点击开始录制后才保存示范，任务完成后仍须手动保存。
+
+场景来自指定分支 `codex/mujoco_pickandplace_variation` 的提交 `0d504758b89551a07b905e87e3fbbead396551f7`；参数与出处见 `tasks/push_t/scene.json`、`assets/` 和 `SOURCE.json`。单臂保存真实9维状态（7关节+额外夹爪Yaw+实测爪宽）、7维米制动作与一只控制手的日志；不补造第二臂。沿用裁剪和Safe Stitch判据，只按真实臂数读取证据。ACT已接入该Schema；DP仍只支持原双臂，不能直接用现有DP命令训练单臂Pack。操作及验证范围见 [单臂Push-T](docs/RUN_PIPELINE.md#单臂-push-tpush_t)。
 
 ## 目录职责
 

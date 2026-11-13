@@ -1,0 +1,19 @@
+main { max-width:none; padding:16px 22px; }
+.page-header { margin-bottom:12px; }
+.workspace { grid-template-columns:minmax(0, 3fr) minmax(320px, 1fr); gap:14px; }
+.main-view { display:grid; grid-template-columns:minmax(0,2fr) minmax(0,1fr); gap:10px 14px; }
+.main-view > .panel-title,.main-view > .control-row { grid-column:1 / -1; }
+.main-view > .image-frame { align-self:center; }
+.auxiliary { grid-template-columns:1fr; margin:0; }
+.panel { padding:13px; }
+.recording-toolbar { margin:10px 0; }
+.record-buttons { display:flex; flex-wrap:wrap; margin:0; }
+.record-buttons button { flex:1 1 100px; }
+.camera-frame { width:100%; aspect-ratio:4/3; }
+.camera-frame video,.camera-frame canvas { object-fit:contain; }
+.hand-cards { grid-template-columns:1fr; }
+#binding-progress { margin-top:10px; }
+#record-feedback { margin-top:6px; font-size:12px; }
+#control-recording-note { font-weight:600; }
+@media(max-width:1000px) { .workspace { grid-template-columns:1fr; } .camera-frame { max-width:640px; margin:auto; } }
+@media(max-width:600px) { main { padding:10px; } .main-view { display:block; } .auxiliary { grid-template-columns:1fr 1fr; margin-top:10px; } .page-header { align-items:start; } .page-header > span { display:none; } }

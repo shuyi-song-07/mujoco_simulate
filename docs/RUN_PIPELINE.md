@@ -805,6 +805,38 @@ Get-Content '<Logs目录>/web.log' -Tail 30
 高台任务现在不要求对齐目标朝向：完整落在高台支撑范围内且通过实际松爪、稳定及抓持历史等物理条件即可进入 DONE。部署 Rollout 使用相同规则。朝向差数字仍可供观察，但不再阻止成功；悬空、仍接触夹爪、越出台面或放回原桌面仍不成功。升级后重启采集服务并 Ctrl+F5，已运行进程不会自动加载新规则。
 
 
+## 单臂 Push-T（push_t）
+
+这是独立的新采集任务，不会转换或覆盖之前外部压缩包的数据。场景固定来源于用户指定 GitHub 分支的 `0d504758b89551a07b905e87e3fbbead396551f7` 提交。`tasks/push_t/assets/` 保存两个源XML；`SOURCE.json` 保存出处和哈希；`scene.py` 只按工程接口重命名并添加辅助相机/site，原机器人、桌面、T物体的质量、尺寸、摩擦和传动保留。
+
+```powershell
+Set-Location 'D:\轻量化数据采集\paperA'
+$envs = Get-Content config/environments.json -Raw -Encoding UTF8 | ConvertFrom-Json
+$collect = $envs.collection_python
+$train = $envs.training_python
+& $collect -m collection start --task push_t --operator-id operator01
+```
+
+也可双击 `START-PAPERA.cmd`，选择 `push_t`。默认打开 `http://127.0.0.1:8014/single_arm.html`；端口使用现有配置。若其他采集还开着，先保存/放弃并正常退出，再启动。摄像头画面完整显示、镜像用于操作，内框表示可信范围，不是图像裁剪。
+
+1. 启动摄像头，只将一只控制手完整放入内框，张掌稳定2秒绑定。默认自动选择唯一的手，也可选择MediaPipe左/右手标签。
+2. 点击“开始录制”，确认录制帧数增长后操作。ILoveYou移动XY；张掌或握拳沿Z升降。Push-T始终闭爪，不用抓取/释放手势控制爪宽。
+3. 用真实接触将红色T推到白色目标。覆盖率达到0.90并持续0.5秒才完成；采用上游覆盖率定义，不用托盘“双抓后松爪”的判据。
+4. 暂停/重定位、未知手势、手出框时保持目标；恢复后先重新建立手腕基准，再继续移动，不能把回中位移当作机器人指令。
+5. 完成后手动“保存成功”。失败可保存失败或放弃。完成不会自动保存，练习不生成成功示范。三路操作预览为oblique/top/front，原始视频及模型输入只保存oblique。
+
+正式原件在 `datasets/push_t/`，服务日志在 `logs/push_t/`；工程脚本样本仅在 `.local/checks/single_arm_push_t/`，标记 `scripted_test`，不能用于论文成功率。后续按本文第2～4节使用 `$task='push_t'` 执行原有审计、裁剪、审核、Prepared、Pack和ACT入口。原始手势测量、关键点、实际接受动作、连续控制、物理快照均保留，不能只复制视频来做裁剪。
+
+单臂的S9/A7与单手标签由 `tasks/data_schema.py` 明确声明。沿用原裁剪阈值与Safe Stitch数学，只将读取的臂数、维度和真实Push接触含义适配到新任务；不伪造右臂、右手或开爪事件。ACT支持该契约，官方网络数学未改；双臂Checkpoint不能直接用于单臂。当前DP尚未接入S9/A7，不能认为所有既有模型都已完成单臂训练验证。
+
+调参主要在 `tasks/push_t/scene.json`：`scene.push_t` 控制上游初态范围、覆盖率和持续时间；`training_camera` 是源录制斜视的lookat、distance（米）、azimuth/elevation（度）；`scene.cameras` 是辅助视角。默认斜视距1.0m、水平145°、俯仰−25°、中心[0.48,0,0.48]。桌面顶Z=0.40m，长宽0.80×1.00m；T物体总质量0.10kg。更改物理尺寸还需改资产XML并重新验证，不要只改说明字段。场景/相机修改后会变更来源绑定，应在正式采集前确定，不混用不同版本的数据。
+
+已有工程验证覆盖：源物理参数逐项比较、真实接触+X推动归位、±Y两个方向推动响应、空闲稳定、单手身份/时效/暂停恢复、301帧对应10秒、网页三路预览，以及独立工程数据的处理链。定向脚本验证不等于所有随机初态都能自动完成；IK限速保护也不等于提前保证每个笛卡尔目标可达。最终仍需真人完成一次未录制试推和一次正式录制，检查控制方向、出框恢复、结束按钮与保存内容。
+
+2026-11-13 工程验收：两条脚本记录共602原始帧，原规则裁剪后448帧，视频完整解码、索引、下一控制tick动作及Pack校验通过。ACT Baseline和Gesture各做3步小模型反传、保存再加载，以及2秒无窗口回放；各有60次观察、120个控制步、61帧视频且无基础设施错误。两次均超时、保护干预率100%，只证明接口可运行，不代表学会任务。详见 `.local/checks/single_arm_push_t/latest_data_pipeline.json` 和 `ui_act_rollout_validation.json`。
+
+主要回归667项通过（3项条件跳过），单臂前端10项和JS→Python契约3项通过。采集回归中的两个旧H形双臂用例仍失败，已在本轮修改前源码加原有未提交修改的独立副本中复现相同结果；日志 `baseline_hframe_regressions.log` 保留证据，本轮没有修改该任务的成功标准或你的双臂推移修改。Checkpoint仍严格校验源码指纹；共享入口有变动时，历史双臂权重需要使用对应保存源码，未添加跳过校验的白名单。
+
 ## 采集保存使用独显（2026-11-03）
 
 本机对**当前Windows用户**的`D:\Conda\envs\mujoco_repro\python.exe`设置`GpuPreference=2;`（高性能）。注册表键为`HKCU\Software\Microsoft\DirectX\UserGpuPreferences`，值名是该Python的完整路径。相机仍是单oblique640×480/30Hz，保存流程、原始日志和物理快照不变；未启用裁剪或启动训练。

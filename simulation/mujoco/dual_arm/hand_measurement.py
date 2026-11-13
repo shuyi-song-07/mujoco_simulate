@@ -114,7 +114,7 @@ def inspect_gesture_input(payload, *, parameters=None):
     return None
 
 
-def inspect_rate_input(payload, *, parameters=None, score_thresholds_by_side=None):
+def inspect_rate_input(payload, *, parameters=None, score_thresholds_by_side=None, arm_order=("left", "right")):
     """V3 raw category checks, with an explicit offline-only historical override.
 
     Live callers retain the existing common thresholds. Dataset auditing may
@@ -122,6 +122,8 @@ def inspect_rate_input(payload, *, parameters=None, score_thresholds_by_side=Non
     lowers the right-hand threshold or changes the recorded hand evidence.
     """
     p = {**RATE_PARAMETERS, **(parameters or {})}
+    if tuple(arm_order) not in (("left",), ("left", "right")):
+        return 'invalid_arm_order'
     if score_thresholds_by_side is not None:
         if (not isinstance(score_thresholds_by_side, dict) or
                 set(score_thresholds_by_side) not in (set(), {'left'})):
@@ -136,11 +138,11 @@ def inspect_rate_input(payload, *, parameters=None, score_thresholds_by_side=Non
     if payload.get("control_protocol") != RATE_PROTOCOL:
         return "gesture_control_protocol_required"
     modes = payload.get("interaction_modes")
-    if (not isinstance(modes, (list, tuple)) or len(modes) != 2 or
+    if (not isinstance(modes, (list, tuple)) or len(modes) != len(arm_order) or
             any(type(m) is not str or m not in {"XY_HOLD", "Z_OPEN", "Z_CLOSE", "HOLD"} for m in modes)):
         return "invalid_interaction_modes"
     intent = payload.get("release_intent")
-    if not isinstance(intent, (list, tuple)) or len(intent) != 2 or any(type(v) is not bool for v in intent):
+    if not isinstance(intent, (list, tuple)) or len(intent) != len(arm_order) or any(type(v) is not bool for v in intent):
         return "invalid_release_intent"
     if any(flag != (mode == "Z_OPEN") for flag, mode in zip(intent, modes)):
         return "release_intent_mode_mismatch"
@@ -158,7 +160,7 @@ def inspect_rate_input(payload, *, parameters=None, score_thresholds_by_side=Non
         return "palm_binding_guard"
     expected = {"XY_HOLD": ("ILoveYou", p["motion_score_min"]),
                 "Z_OPEN": ("Open_Palm", p["open_score_min"]), "Z_CLOSE": ("Closed_Fist", p["close_score_min"])}
-    for side, mode in zip(("left", "right"), modes):
+    for side, mode in zip(arm_order, modes):
         pair = [h for h in measurement["hands"] if isinstance(h, dict) and h.get("bound_side") == side]
         if len(pair) != 1 or pair[0].get("valid") is not True:
             return "untrusted_hand_measurement"
@@ -264,7 +266,10 @@ def inspect_measurement(measurement, *, session, epoch):
 
 class HandInputGuard:
     """Independent backend enablement for continuous HTTP camera input."""
-    def __init__(self):
+    def __init__(self, arm_order=("left", "right")):
+        if tuple(arm_order) not in (("left",), ("left", "right")):
+            raise ValueError('Unsupported arm order')
+        self.arm_order = tuple(arm_order)
         self.context = None
         self.seen = set()
         self.invalidate()
@@ -295,14 +300,14 @@ class HandInputGuard:
             self.invalidate(); self.reason = "measurement_history_full_reset_scene"; return self.reason
         self.seen.add(mid)
         stamp = m["capture_epoch_ms"]
-        pair = [next((h for h in m["hands"] if h.get("bound_side") == s), None) for s in ("left", "right")]
+        pair = [next((h for h in m["hands"] if h.get("bound_side") == s), None) for s in self.arm_order]
         rate = control_protocol == RATE_PROTOCOL
         aperture = telemetry.get('aperture_calibration')
         calibration_good = (isinstance(aperture, dict) and
             (aperture == {"phase": "NOT_REQUIRED", "reason": "categorical_rate_control"} if rate
              else aperture.get("phase") == "READY"))
         good = (payload.get("measurement_id") == mid and payload.get("sentAt") == stamp and 0 <= now_ms-stamp <= 150
-                and m.get("accepted_recognition") is True and len(m["hands"]) == 2
+                and m.get("accepted_recognition") is True and len(m["hands"]) == len(self.arm_order)
                 and all(h and h.get("valid") is True for h in pair) and telemetry.get("calibrated") is True
                 and calibration_good)
         if not good:
@@ -314,7 +319,7 @@ class HandInputGuard:
             if np.any(image[:, :2] < .06) or np.any(image[:, :2] > .94):
                 self.invalidate(); self.reason = "hand_near_frame_edge"; return self.reason
         gesture = control_protocol == GESTURE_PROTOCOL
-        reason = (inspect_rate_input(payload, parameters=gesture_parameters) if rate else
+        reason = (inspect_rate_input(payload, parameters=gesture_parameters, arm_order=self.arm_order) if rate else
                   inspect_gesture_input(payload, parameters=gesture_parameters) if gesture
                   else inspect_release_intent(payload, threshold=release_threshold))
         if reason:

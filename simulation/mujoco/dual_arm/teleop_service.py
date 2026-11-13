@@ -32,6 +32,8 @@ from .session_diagnostics import SessionDiagnostics
 from .recording_timeline import capture_paper, paper_metadata, terminal_snapshot, compact_event
 from .render_workers import CAMERAS, STATE_NAMES, ACTION_NAMES, recording_worker, preview_worker, sync_operator_view
 from .training_camera import recording_camera_names, training_camera_metadata
+from tasks.data_schema import schema_for, SINGLE
+from tasks.runtime import create_controller
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -39,6 +41,11 @@ ROOT = Path(__file__).resolve().parents[3]
 def validate_recording_initial_state(status, paper_recording):
     """Recording is independent of current hand visibility, not grasp history."""
     contact = status.get('physical_contact') or {}
+    if contact.get('gripper_trigger_policy') == 'push_locked_v1':
+        if (status.get('task_state') != 'PREGRASP' or
+                any(status.get('contacts', {}).get('left_fingers', [True, True]))):
+            raise ValueError('Reset before recording; begin before touching the Push-T object')
+        return
     level = paper_recording and contact.get('gripper_trigger_policy') == 'palm_fist_level_v2'
     if level:
         empty = (contact.get('state') == 'FREE' and contact.get('ever_dual') is False
@@ -115,13 +122,13 @@ class DualArmRecorder:
         self.service_identity = backend_identity(self.config,
             input_kind=getattr(args, "input_kind", "unspecified"), seed=args.seed,
             headless=getattr(args, "headless", False), previews=not args.no_previews)
-        self.controller = DualArmTaskController(config=self.config)
+        self.controller = create_controller(self.config)
         self.controller.reset(seed=args.seed)
         self.scene_index = 0
         if self.controller.contact_control and self.controller.contact_control.rate_control:
             self.controller.contact_control.set_input_clock(time.monotonic, "server_monotonic")
         self.controller.set_episode_timeout_enabled(False)
-        self.paper_recording = bool(self.controller.continuous_task and self.config['recording'].get('schema_version') == 'task3-papera-v2')
+        self.paper_recording = bool(self.controller.continuous_task and self.config['recording'].get('schema_version') in ('task3-papera-v2', SINGLE.version))
         self.config_hash = hashlib.sha256(json.dumps(self.config, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         self.session = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         base = Path(args.dataset_root).resolve() if args.dataset_root else ROOT / "datasets" / self.task.id / self.session
@@ -161,7 +168,7 @@ class DualArmRecorder:
         self.control_epoch = 0
         self.control_epoch_started_ms = time.time() * 1000
         self.command_gate = CommandGate(self.config["control"])
-        self.hand_input_guard = HandInputGuard()
+        self.hand_input_guard = HandInputGuard(arm_order=schema_for(self.config).arm_order)
         self.frames = self.saved_success = self.saved_failure = self.attempt = 0
         self.recording = self.saving = self.stop_requested = False
         self.force_frame = False
@@ -266,7 +273,7 @@ class DualArmRecorder:
 
     def update_status(self):
         self.status = jsonable({
-            "ok": True, "service": "mujoco-task3-recorder", "task_mode": "dual_arm",
+            "ok": True, "service": "mujoco-task3-recorder", "task_mode": "single_arm" if schema_for(self.config) == SINGLE else "dual_arm",
             **self.controller.get_status(), "recording": self.recording, "saving": self.saving,
             "episode_end": getattr(self, "episode_end", None) if self.recording else None,
             "frames": self.frames, "saved_success": self.saved_success, "saved_failure": self.saved_failure,
@@ -556,7 +563,7 @@ class DualArmRecorder:
             ready = (isinstance(aperture, dict) and
                 (aperture == {'phase':'NOT_REQUIRED', 'reason':'categorical_rate_control'} if rate else aperture.get('phase') == 'READY'))
             if not self.telemetry.get('calibrated') or not ready:
-                raise ValueError('Bind both hands before recording' if rate else
+                    raise ValueError(('Bind the control hand before recording' if schema_for(self.config) == SINGLE else 'Bind both hands before recording') if rate else
                     'Bind both hands and complete aperture calibration before recording')
         self.recording_calibration = copy.deepcopy(self.telemetry.get('aperture_calibration'))
         operator_control = self.telemetry.get("operator_control")
@@ -579,6 +586,9 @@ class DualArmRecorder:
             self.paper_events.get_nowait()
         self.paper_event_dropped = 0
         self.action_measurement_id = self.action_event_id = None
+        begin_recording = getattr(self.controller, 'begin_recording', None)
+        if begin_recording is not None:
+            begin_recording()
         if self.paper_recording and getattr(self.controller.contact_control, 'edge_control', False):
             # Practice inputs are absent from this episode's causal ledger.
             # Preserve the physical pose/width, but revoke the old edge lease
@@ -648,7 +658,7 @@ class DualArmRecorder:
         self.update_status()
         try:
             self.record_commands.put({"type": "save", "outcome": outcome, "root": str(self.roots[outcome]),
-                                      "repo_id": "local/task3_dual_arm" + ("_failures" if outcome == "failure" else ""),
+                                      "repo_id": ("local/papera_push_t" if schema_for(self.config) == SINGLE else "local/task3_dual_arm") + ("_failures" if outcome == "failure" else ""),
                                       "metadata": self.metadata(outcome)})
             result = self.wait_reply("saved")
             self.finish_research_log()
@@ -681,7 +691,7 @@ class DualArmRecorder:
             }
             if self.paper_recording:
                 entry.update(input_kind=getattr(self.args,'input_kind','unspecified'), quality_review='pending',
-                             schema_version='task3-papera-v2', raw_duration_s=float(
+                             schema_version=schema_for(self.config).version, raw_duration_s=float(
                                  (episode_end['simulation_time'] if episode_end else self.controller.data.time)-self.initial_snapshot['time']))
             if outcome == "failure" and not entry["failure_reason"]:
                 entry["failure_reason"] = "operator_abort"
@@ -981,6 +991,8 @@ class DualArmRecorder:
             interruption = getattr(self,'release_input_interruption',None)
             self.release_input_interruption = None
         if interruption and interruption[0] == self.control_epoch:
+            if schema_for(self.config) == SINGLE:
+                self.hand_input_guard.invalidate()
             contact = getattr(self.controller,'contact_control',None)
             if contact:
                 contact.cancel_release(interruption[1])

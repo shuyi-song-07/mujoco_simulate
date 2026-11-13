@@ -101,7 +101,8 @@ def training_camera_metadata(config=None):
         **specification,
         'spec_sha256': hashlib.sha256(payload).hexdigest(),
         'background': {
-            'source': 'simulation/mujoco/assets/dual_arm/dual_arm_scene.xml',
+            'source': (config or {}).get('task_binding', {}).get('model_xml',
+                'simulation/mujoco/assets/dual_arm/dual_arm_scene.xml'),
             'sky': {'builtin': 'gradient', 'rgb1': [0.3, 0.5, 0.7], 'rgb2': [0, 0, 0]},
             'ground': {'builtin': 'checker', 'rgb1': [0.2, 0.3, 0.4], 'rgb2': [0.1, 0.2, 0.3]},
         },

@@ -6,6 +6,7 @@ import time
 import numpy as np
 from .action_contract import V2, ACTION_NAMES_V2
 from .recording_policy import physical_change
+from tasks.data_schema import schema_for, SINGLE
 
 DERIVATION_VERSION = "physical-index-v2"
 CONTROL_INTERFACE_VERSION = "grasp-hold-release-v1"
@@ -81,10 +82,10 @@ def control_label_fields(status, masks, operation, observed_id, sources, action_
         if rate and contact.get('gripper_trigger_policy') in EDGE_POLICY_VERSIONS:
             labels['gripper_trigger_policy'] = contact['gripper_trigger_policy']
             labels['gripper_edge'] = copy.deepcopy(contact.get('gripper_edge'))
-        elif rate and contact.get('gripper_trigger_policy') == LEVEL_TRIGGER_POLICY:
-            labels['gripper_trigger_policy'] = LEVEL_TRIGGER_POLICY
+        elif rate and contact.get('gripper_trigger_policy') in (LEVEL_TRIGGER_POLICY, 'push_locked_v1'):
+            labels['gripper_trigger_policy'] = contact['gripper_trigger_policy']
     direct = {}
-    for index, side in enumerate(SIDES):
+    for index, side in enumerate(status.get('arm_order', SIDES)):
         intent = contact["release_intent"][side]
         held = contact["hold_width_m"][side]
         executed = contact["release_executed"][side]
@@ -101,7 +102,8 @@ def control_label_fields(status, masks, operation, observed_id, sources, action_
         reasons = []
         if status["paused"]: reasons.append("paused_or_interface")
         if held is not None:
-            reasons.append("interrupted_release_hold" if rate and contact.get('rate_interrupted_release_hold', {}).get(side) else "grasp_hold")
+            reasons.append('push_gripper_lock' if contact.get('gripper_trigger_policy') == 'push_locked_v1' else
+                "interrupted_release_hold" if rate and contact.get('rate_interrupted_release_hold', {}).get(side) else "grasp_hold")
         if intent and held is not None: reasons.append("release_confirmation")
         if opening: reasons.append("release_execution")
         if gesture:
@@ -151,13 +153,16 @@ def control_label_fields(status, masks, operation, observed_id, sources, action_
 def persisted_control_source(event):
     """Return a compact source only for accepted, versioned public actions."""
     result = event.get("result") or {}
+    sides = result.get('arm_order', SIDES)
+    if tuple(sides) not in (('left',), SIDES):
+        return None
     request = event.get("request") or {}
     if (event.get("kind") != "request_executed" or not result.get("accepted")
             or result.get("control_protocol") not in SUPPORTED_CONTROL_INTERFACES
             or not request.get("eventId")):
         return None
     intent = result.get("release_intent")
-    if not isinstance(intent, list) or len(intent) != 2 or any(type(v) is not bool for v in intent):
+    if not isinstance(intent, list) or len(intent) != len(sides) or any(type(v) is not bool for v in intent):
         return None
     source = {"event_id": request["eventId"], "measurement_id": request.get("measurement_id"),
             "capture_epoch_ms": request.get("sentAt", event["wall_time_ms"]),
@@ -167,8 +172,8 @@ def persisted_control_source(event):
         rate = result['control_protocol'] == RATE_INTERFACE_VERSION
         modes=result.get("interaction_modes")
         allowed = RATE_INTERACTION_MODES if rate else INTERACTION_MODES
-        if not isinstance(modes,list) or len(modes)!=2 or any(m not in allowed for m in modes):return None
-        if rate and any(intent[i] is not (modes[i] == 'Z_OPEN') for i in range(2)): return None
+        if not isinstance(modes,list) or len(modes)!=len(sides) or any(m not in allowed for m in modes):return None
+        if rate and any(intent[i] is not (modes[i] == 'Z_OPEN') for i in range(len(sides))): return None
         source.update(interaction_modes=modes, physical_contact=result.get('physical_contact'))
         if not rate: source['pinch_mapping'] = copy.deepcopy((request.get('telemetry') or {}).get('pinch_mapping'))
     return source
@@ -315,6 +320,28 @@ def paper_metadata(recorder, metadata):
                     result['release_authorization_semantics'].update(
                         version="edge-palm-confirmed-opening-v2",
                         interruption="trusted HOLD freezes travel and restarts incomplete confirmation; resume matching palm with fresh input; real loss/pause/expired stream cancels intent and baseline")
+    schema = schema_for(c.config)
+    if schema == SINGLE:
+        from tasks.data_schema import descriptor
+        result.update(**descriptor(schema), state_names=schema.state_names, action_names=schema.action_names,
+            action_units=['m', 'm', 'm', 'rad', 'rad', 'rad', 'm'],
+            state_units=['rad']*8+['m'], field_order='left_only',
+            gripper_max_width_m=[float(c.left.max_gripper_width_m)],
+            gripper_trigger_policy='push_locked_v1', policy_contract_version='single-push-rate-v1',
+            confirmation_gate={'categorical_gesture': True, 'continuous_aperture': False, 'release_intent': False},
+            release_intent_contract={'names':['left.release_intent'], 'shape':[1], 'type':'bool',
+                'required_for_policy':False, 'meaning':'v3 palm category flag only; Push-T never authorizes opening'},
+            interaction_mode_contract={'names':['left.interaction_mode'], 'shape':[1], 'type':'string',
+                'allowed':list(RATE_INTERACTION_MODES), 'required_for_policy':False,
+                'meaning':'human control modes are recorded; policy execution accepts A7 with a locked gripper'},
+            gripper_trigger_semantics={'version':'push_locked_v1', 'trigger':'gripper remains closed in every mode',
+                'motion':'ILoveYou XY; Open_Palm/Closed_Fist Z; HOLD stops motion', 'independent_sides':False},
+            release_authorization_semantics={'version':'push-locked-no-release-v1',
+                'raw_intent':'v3 Z_OPEN flag denotes palm input only', 'authorization':'none; gripper locked closed'},
+            policy_compatibility='Single S9/A7 Push-T with locked gripper; cannot load dual-arm checkpoints')
+        result['joint_mapping']['left'].update(
+            additional_joint_names=['left_gripper_yaw_joint'],
+            additional_qpos_indices=[int(c.model.jnt_qposadr[c.model.joint('left_gripper_yaw_joint').id])])
     return result
 
 
@@ -350,7 +377,7 @@ def capture_paper(recorder, sampler, jsonable, *, diagnostics_only=False):
     measurement=observed["measurement"] if observed else None
     age_ms=(wall-measurement["capture_epoch_ms"]) if measurement else None
     fresh=bool(measurement and measurement.get('source_session')==r.session and measurement.get('source_control_epoch')==r.control_epoch and measurement.get("accepted_recognition") is True and age_ms is not None and 0<=age_ms<=150)
-    masks={s: bool(fresh and any(h.get("bound_side")==s and h.get("valid") for h in measurement["hands"])) for s in ("left","right")}
+    masks={s: bool(fresh and any(h.get("bound_side")==s and h.get("valid") for h in measurement["hands"])) for s in schema_for(c.config).arm_order}
     # Interface/calibration poses remain raw observations, not morphology
     # supervision for manipulation. Missing hands are never zero-filled.
     protocol=(status.get('physical_contact') or {}).get('control_protocol')

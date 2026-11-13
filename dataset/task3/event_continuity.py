@@ -6,11 +6,12 @@ Missing evidence is never synthesized from an event name or a rejected flag.
 """
 from __future__ import annotations
 
+from tasks.data_schema import (SIDES, action_dim)
+
 import math
 import numpy as np
 
 POLICY = 'verified_execution_v1'
-SIDES = ('left', 'right')
 TRACKING_PAUSES = frozenset(('hand_lost', 'hand_near_frame_edge', 'tracking_recovery',
     'camera_stalled', 'stale_recognition', 'command_timeout', 'transport_recovery'))
 RECOVERY_REJECTIONS = TRACKING_PAUSES | {'stale_command', 'stale_measurement'}
@@ -49,7 +50,7 @@ def vector(value, shape):
 
 def target_changed(a, b, cfg):
     limits = cfg['sa']['thresholds']
-    for i in (0, 7):
+    for i in range(0, action_dim(), 7):
         d = a[i:i+7] - b[i:i+7]
         if (np.linalg.norm(d[:3]) >= limits['action_position_m']
                 or np.linalg.norm((d[3:6]+np.pi) % (2*np.pi)-np.pi) >= limits['action_rotation_rad']
@@ -145,13 +146,13 @@ def classify_event(event, controls, cfg):
         execution = event.get('execution')
         if execution is not None and not settled_execution({'execution': execution}):
             return reject('accepted_request_pending_execution')
-        observed = vector(event.get('accepted_target'), (14,))
+        observed = vector(event.get('accepted_target'), (action_dim(),))
         if observed is None:
             return reject('event_post_execution_target_missing')
         if any(target_changed(t, observed, cfg) for t in targets):
             return reject('event_post_execution_target_changed', changed=True)
         if event.get('recorded_post_target') is not None:
-            recorded = vector(event['recorded_post_target'], (14,))
+            recorded = vector(event['recorded_post_target'], (action_dim(),))
             if recorded is None or target_changed(observed, recorded, cfg):
                 return reject('event_post_execution_target_mismatch')
         if kind == 'request_accepted' and command == 'continuous_input' and execution is None:
