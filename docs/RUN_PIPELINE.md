@@ -1,5 +1,7 @@
 # 全流程运行与命令表
 
+目录整理后的代码位置见 [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md)。原运行命令仍保留兼容；新增的统一训练入口为 `python -m training --task <任务名> --model act|diffusion ...`，参数继续交给原训练流程。
+
 所有命令在新工程根目录执行。下文 `<...>` 是需要替换的实际路径，不是文件夹字面名称。默认不依赖旧工程，也不自动选择“时间最新”的数据。CURRENT 只做导航，训练启动后冻结实际路径和 SHA。
 
 采集点击“保存成功/保存失败”后，先显示“正在收齐本条人手日志”，随后才提交保存并重置场景。摄像头不用关闭，按钮等待期间不要重复点击；等待保存点击时已采帧的识别和日志写入，然后按固定的本条终点导出；新测量不扩大等待。识别等待上限5秒、日志确认等待上限15秒，失败会提示“本条未提交保存、场景未重置”；恢复连接/文件权限后再次点击保存，复用原边界。持久丢失的记录不能凭重试恢复，不应把该条当作完整的人手监督示范；可明确放弃本轮并保留研究原件。任务首次 DONE 立即保持机械臂位置，按原速度继续已接受的开爪目标，并再记录0.5仿真秒（约15个30 Hz采样间隔）。期间显示“放置成功 · 记录开爪收尾”，保存按钮暂不可用；收尾结束显示“已截止 · 待保存”，保存成功/失败按钮恢复。等待点击期间不再增加本条帧数；摄像头会话日志继续记录，导出只取开始录制至收尾截止的测量。参数位于 `config/recording.json` 的 `post_success_seconds`，改后重启采集服务生效；0表示立即截止。该延时不提高成功开爪门槛，不新增开爪授权，不保证实测完全张开；手动暂停和物理故障仍中止开爪。未录制的练习不能保存，需重置并先点击开始录制。升级后需重启采集服务并 Ctrl+F5 刷新网页。
@@ -19,7 +21,7 @@ $train = $envs.training_python
 $task = 'tray_to_platform'
 ```
 
-`$collect` 是已有 mujoco_repro：Flask、LeRobot、MuJoCo 和采集渲染。`$train` 是已有 paperA_train：PyTorch/CUDA、PyAV、PyArrow、TensorBoard 和训练/推理。不要在基础 Anaconda 环境里运行。Node 也从同一环境 JSON 读取。依赖以`requirements.txt`、`training/papera/requirements-training.txt`及下方DP依赖命令为准；`training/papera/environment.yml`提供Conda训练环境规格，DP依赖另行补装。不需要每次运行都安装。旧本机lock快照已移出当前工程，不能作为新版完整安装清单。
+`$collect` 是已有 mujoco_repro：Flask、LeRobot、MuJoCo 和采集渲染。`$train` 是已有 paperA_train：PyTorch/CUDA、PyAV、PyArrow、TensorBoard 和训练/推理。不要在基础 Anaconda 环境里运行。Node 也从同一环境 JSON 读取。依赖以`requirements.txt`、`training/act/requirements-training.txt`及下方DP依赖命令为准；`training/act/environment.yml`提供Conda训练环境规格，DP依赖另行补装。不需要每次运行都安装。旧本机lock快照已移出当前工程，不能作为新版完整安装清单。
 
 当前 DP 直接使用固定官方组件。首次配置或更新依赖时，在同一 `paperA_train` 中运行一次：
 
@@ -184,7 +186,7 @@ $partialPack = '<该次 training_packs/... 的实际目录>'
 
 本节为当前官方核心版本的使用入口。ACT无需新增Python依赖，复用已有Torch/Torchvision和本地ResNet18权重；不依赖临时复现目录或IPython。旧本地版本权重不加载到新结构。
 
-源码职责与复用边界：`training/papera/official/`是固定上游组件；`act_model.py`负责图像与State/Action维度适配并调用原模型，`engine.py`执行共用的前向、Action L1＋KL、反向和优化更新；`pack_data.py`消费Dataset已认证的虚拟序列，`data.py`负责训练集归一化，`train.py`组织训练、验证、完整保存和恢复。Baseline不使用手势辅助头。不为提高本任务成功率修改官方Transformer、CVAE、Loss或Dataset拼接判定。
+源码职责与复用边界：`training/act/official/`是固定上游组件；`act_model.py`负责图像与State/Action维度适配并调用原模型，`engine.py`执行共用的前向、Action L1＋KL、反向和优化更新；`pack_data.py`消费Dataset已认证的虚拟序列，`data.py`负责训练集归一化，`train.py`组织训练、验证、完整保存和恢复。Baseline不使用手势辅助头。不为提高本任务成功率修改官方Transformer、CVAE、Loss或Dataset拼接判定。
 
 “官方核心一致”不等于原始训练脚本完全相同：原脚本按示范选随机起点，本地按Pack中的合法观察窗口均匀采样；本地归一化仅拟合训练集，正式离线验证用`z=0`，完整保存优化器/采样器/RNG。这些是已存在的数据与运行协议适配，必须随实验披露，不能把本地结果冒称官方原任务复现。`--official-reference`专用入口另行恢复原始采样和后验验证，只有该对照可以直接与其官方脚本实验比较。本轮不添加事件权重、阶段采样或新Loss。
 
@@ -203,7 +205,7 @@ $partialPack = '<该次 training_packs/... 的实际目录>'
 
 默认参数在 `config/training_baseline.json`：单oblique、640×480全画面、S16/A14、K30、batch16、最大60,000次更新、FP32。主干和其余参数均采用AdamW学习率1e-5、weight decay1e-4；`lr_scheduler="constant"`、`warmup_steps=0`，`gradient_clip_norm=null`表示不裁剪，只检查梯度有限。Transformer hidden512、FF3200、encoder4、decoder7、posterior4、heads8、latent32、dropout0.1；KL权重10。ResNet18从已有本地预训练文件加载，不自动下载。图像不裁剪，不改变Pack；模型动作30Hz、控制60Hz、物理500Hz。`--steps`改最大更新预算、`--seed`改种子、`--config`换参数文件；同一算法两组须同步。60k是训练上限，不表示必须部署60k或`best.pt`；保留的中间权重需要在独立闭环验证上选型，再冻结进行新测试。
 
-当前ACT直接复用固定官方提交 `742c753c0d4a5d87076c8f69e5628c79a8cc5488` 的DETRVAE、Post-LN/ReLU Transformer、位置编码和CVAE，来源与两份许可证见 `training/papera/official/SOURCE.json`。只对两处状态输入投影适配S16，Action仍14维，K30与单相机由配置给出；不保留旧自写观察Transformer。该官方版本的DETRVAE取第一个intermediate decoder输出，本工程保留这一行为，没有改成最后层。
+当前ACT直接复用固定官方提交 `742c753c0d4a5d87076c8f69e5628c79a8cc5488` 的DETRVAE、Post-LN/ReLU Transformer、位置编码和CVAE，来源与两份许可证见 `training/act/official/SOURCE.json`。只对两处状态输入投影适配S16，Action仍14维，K30与单相机由配置给出；不保留旧自写观察Transformer。该官方版本的DETRVAE取第一个intermediate decoder输出，本工程保留这一行为，没有改成最后层。
 
 Baseline优化目标为官方Action L1 + 10×KL：无效Action误差置零后，L1按整个B×K×A坐标数取均值。`train/action`是该官方优化项，`train/action_valid_l1`另按有效坐标计。验证固定z=0，`prior_action_l1`与`prior_valid_action_l1`都表示有效坐标L1，作为best指标；`official_action_l1`另报告全分母值。两种分母不能混作同名曲线。`metrics.jsonl`、TensorBoard、best/last和完整恢复状态继续保留；离线Loss不是自主成功率。
 
@@ -804,6 +806,38 @@ Get-Content '<Logs目录>/web.log' -Tail 30
 
 高台任务现在不要求对齐目标朝向：完整落在高台支撑范围内且通过实际松爪、稳定及抓持历史等物理条件即可进入 DONE。部署 Rollout 使用相同规则。朝向差数字仍可供观察，但不再阻止成功；悬空、仍接触夹爪、越出台面或放回原桌面仍不成功。升级后重启采集服务并 Ctrl+F5，已运行进程不会自动加载新规则。
 
+
+## 单臂 Push-T（push_t）
+
+这是独立的新采集任务，不会转换或覆盖之前外部压缩包的数据。场景固定来源于用户指定 GitHub 分支的 `0d504758b89551a07b905e87e3fbbead396551f7` 提交。`tasks/push_t/assets/` 保存两个源XML；`SOURCE.json` 保存出处和哈希；`scene.py` 只按工程接口重命名并添加辅助相机/site，原机器人、桌面、T物体的质量、尺寸、摩擦和传动保留。
+
+```powershell
+Set-Location 'D:\轻量化数据采集\paperA'
+$envs = Get-Content config/environments.json -Raw -Encoding UTF8 | ConvertFrom-Json
+$collect = $envs.collection_python
+$train = $envs.training_python
+& $collect -m collection start --task push_t --operator-id operator01
+```
+
+也可双击 `START-PAPERA.cmd`，选择 `push_t`。默认打开 `http://127.0.0.1:8014/single_arm.html`；端口使用现有配置。若其他采集还开着，先保存/放弃并正常退出，再启动。摄像头画面完整显示、镜像用于操作，内框表示可信范围，不是图像裁剪。
+
+1. 启动摄像头，只将一只控制手完整放入内框，张掌稳定2秒绑定。默认自动选择唯一的手，也可选择MediaPipe左/右手标签。
+2. 点击“开始录制”，确认录制帧数增长后操作。ILoveYou移动XY；张掌或握拳沿Z升降。Push-T始终闭爪，不用抓取/释放手势控制爪宽。
+3. 用真实接触将红色T推到白色目标。覆盖率达到0.90并持续0.5秒才完成；采用上游覆盖率定义，不用托盘“双抓后松爪”的判据。
+4. 暂停/重定位、未知手势、手出框时保持目标；恢复后先重新建立手腕基准，再继续移动，不能把回中位移当作机器人指令。
+5. 完成后手动“保存成功”。失败可保存失败或放弃。完成不会自动保存，练习不生成成功示范。三路操作预览为oblique/top/front，原始视频及模型输入只保存oblique。
+
+正式原件在 `datasets/push_t/`，服务日志在 `logs/push_t/`；工程脚本样本仅在 `.local/checks/single_arm_push_t/`，标记 `scripted_test`，不能用于论文成功率。后续按本文第2～4节使用 `$task='push_t'` 执行原有审计、裁剪、审核、Prepared、Pack和ACT入口。原始手势测量、关键点、实际接受动作、连续控制、物理快照均保留，不能只复制视频来做裁剪。
+
+单臂的S9/A7与单手标签由 `tasks/data_schema.py` 明确声明。沿用原裁剪阈值与Safe Stitch数学，只将读取的臂数、维度和真实Push接触含义适配到新任务；不伪造右臂、右手或开爪事件。ACT支持该契约，官方网络数学未改；双臂Checkpoint不能直接用于单臂。当前DP尚未接入S9/A7，不能认为所有既有模型都已完成单臂训练验证。
+
+调参主要在 `tasks/push_t/scene.json`：`scene.push_t` 控制上游初态范围、覆盖率和持续时间；`training_camera` 是源录制斜视的lookat、distance（米）、azimuth/elevation（度）；`scene.cameras` 是辅助视角。默认斜视距1.0m、水平145°、俯仰−25°、中心[0.48,0,0.48]。桌面顶Z=0.40m，长宽0.80×1.00m；T物体总质量0.10kg。更改物理尺寸还需改资产XML并重新验证，不要只改说明字段。场景/相机修改后会变更来源绑定，应在正式采集前确定，不混用不同版本的数据。
+
+已有工程验证覆盖：源物理参数逐项比较、真实接触+X推动归位、±Y两个方向推动响应、空闲稳定、单手身份/时效/暂停恢复、301帧对应10秒、网页三路预览，以及独立工程数据的处理链。定向脚本验证不等于所有随机初态都能自动完成；IK限速保护也不等于提前保证每个笛卡尔目标可达。最终仍需真人完成一次未录制试推和一次正式录制，检查控制方向、出框恢复、结束按钮与保存内容。
+
+2026-11-13 工程验收：两条脚本记录共602原始帧，原规则裁剪后448帧，视频完整解码、索引、下一控制tick动作及Pack校验通过。ACT Baseline和Gesture各做3步小模型反传、保存再加载，以及2秒无窗口回放；各有60次观察、120个控制步、61帧视频且无基础设施错误。两次均超时、保护干预率100%，只证明接口可运行，不代表学会任务。详见 `.local/checks/single_arm_push_t/latest_data_pipeline.json` 和 `ui_act_rollout_validation.json`。
+
+主要回归667项通过（3项条件跳过），单臂前端10项和JS→Python契约3项通过。采集回归中的两个旧H形双臂用例仍失败，已在本轮修改前源码加原有未提交修改的独立副本中复现相同结果；日志 `baseline_hframe_regressions.log` 保留证据，本轮没有修改该任务的成功标准或你的双臂推移修改。Checkpoint仍严格校验源码指纹；共享入口有变动时，历史双臂权重需要使用对应保存源码，未添加跳过校验的白名单。
 
 ## 采集保存使用独显（2026-11-03）
 

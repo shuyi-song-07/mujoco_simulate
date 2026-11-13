@@ -1,0 +1,211 @@
+{
+  "scene": {
+    "initial_gripper": "closed",
+    "timestep": 0.002,
+    "control_hz": 60,
+    "table_top_z": 0.4,
+    "table_half_size_xy": [
+      0.4,
+      0.5
+    ],
+    "table_position": [
+      0.5,
+      0,
+      0.2
+    ],
+    "task_frame_position": [
+      0,
+      0,
+      0
+    ],
+    "task_frame_quaternion_wxyz": [
+      1,
+      0,
+      0,
+      0
+    ],
+    "left_base_position": [
+      0,
+      0,
+      0
+    ],
+    "left_base_quaternion_wxyz": [
+      1,
+      0,
+      0,
+      0
+    ],
+    "home_qpos": [
+      0,
+      -0.548481772,
+      0,
+      -2.36977552,
+      0,
+      1.82129375,
+      0.8
+    ],
+    "ee_rotation_matrix": [
+      [
+        1,
+        0,
+        0
+      ],
+      [
+        0,
+        -1,
+        0
+      ],
+      [
+        0,
+        0,
+        -1
+      ]
+    ],
+    "left_home_ee": [
+      0.386104345,
+      0,
+      0.5234
+    ],
+    "left_workspace": [
+      [
+        0.15,
+        0.8
+      ],
+      [
+        -0.5,
+        0.5
+      ],
+      [
+        0.5234,
+        0.8
+      ]
+    ],
+    "workspace_limits_enabled": 1,
+    "object_half_size": [
+      0.15,
+      0.15,
+      0.015
+    ],
+    "object_position": [
+      0.5,
+      0,
+      0.415
+    ],
+    "target_position": [
+      0.6,
+      -0.16,
+      0.401
+    ],
+    "target_yaw_rad": 0,
+    "object_mass_kg": 0.1,
+    "object_friction": [
+      0.45,
+      0.01,
+      0.001
+    ],
+    "randomization": {
+      "object_xy_range_m": [
+        0.04,
+        0.26
+      ],
+      "target_xy_range_m": [
+        0.045,
+        0.26
+      ],
+      "object_yaw_range_rad": 0.5235987755982988
+    },
+    "push_t": {
+      "object_x_range": [
+        0.46,
+        0.54
+      ],
+      "object_y_range": [
+        -0.26,
+        0.26
+      ],
+      "target_x_range": [
+        0.57,
+        0.66
+      ],
+      "target_y_range": [
+        -0.26,
+        0.26
+      ],
+      "yaw_degrees": [
+        -30,
+        30
+      ],
+      "object_min_separation_m": 0.14,
+      "safe_reach_radius_m": 0.72,
+      "success_coverage": 0.9,
+      "exit_coverage": 0.85,
+      "dwell_seconds": 0.5,
+      "coverage_resolution": 81,
+      "initial_object_clearance_m": 0.002
+    },
+    "cameras": {
+      "top": {
+        "projection": "perspective",
+        "lookat": [
+          0.5,
+          0,
+          0.4
+        ],
+        "distance": 0.95,
+        "azimuth": 0,
+        "elevation": -90
+      },
+      "front": {
+        "projection": "perspective",
+        "lookat": [
+          0.5,
+          0,
+          0.48
+        ],
+        "distance": 0.65,
+        "azimuth": 180,
+        "elevation": -20
+      },
+      "side": {
+        "projection": "perspective",
+        "lookat": [
+          0.5,
+          0,
+          0.5
+        ],
+        "distance": 0.65,
+        "azimuth": 90,
+        "elevation": -20
+      }
+    }
+  },
+  "training_camera": {
+    "version": "papera-oblique-config-v1",
+    "name": "oblique",
+    "projection": "free_perspective",
+    "distance": 1.0,
+    "azimuth": 145.0,
+    "elevation": -25.0,
+    "lookat": [
+      0.48,
+      0,
+      0.48
+    ],
+    "width": 640,
+    "height": 480,
+    "fps": 30
+  },
+  "recording": {
+    "schema_version": "single-panda-push-v1"
+  },
+  "gesture_control": {
+    "gripper_trigger_policy": "push_locked_v1"
+  },
+  "operator_view": {
+    "top_robot_alpha": 0.3
+  },
+  "control": {
+    "max_joint_step_rad": 0.08,
+    "max_joint_target_lead_rad": 0.12
+  }
+}

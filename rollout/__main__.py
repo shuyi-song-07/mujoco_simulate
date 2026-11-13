@@ -1,3 +1,3 @@
-from .rollout import cli
+from .common.rollout import cli
 if __name__=='__main__':
     raise SystemExit(cli())

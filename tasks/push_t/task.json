@@ -1,0 +1,42 @@
+{
+  "task_id": "push_t",
+  "display_name": "单臂 Push-T 推动归位",
+  "status": "ready",
+  "version": "1.0.0",
+  "scene_id": "PUSH_T",
+  "scene_config": "tasks/push_t/scene.json",
+  "model_xml": "tasks/push_t/assets/push_t_scene.xml",
+  "mesh_directory": "simulation/mujoco/assets/franka_emika_panda/assets",
+  "controller": "single_panda_push_v1",
+  "schema": {
+    "state": "single_panda_q7_yaw_width_m_s9",
+    "action": "single_xyz_rpy_width_m_a7",
+    "observation": "oblique_rgb",
+    "state_dim": 9,
+    "action_dim": 7
+  },
+  "arm_order": [
+    "left"
+  ],
+  "hooks": {
+    "initial_state": "tasks.push_t.scene:initial_state",
+    "configure_xml": "tasks.push_t.scene:configure_xml",
+    "reset": "tasks.push_t.scene:reset",
+    "collection_success": "tasks.push_t.success:collection_success",
+    "rollout_monitor": "tasks.push_t.success:rollout_monitor",
+    "preflight": "tasks.push_t.scene:preflight",
+    "dataset_adapter": "tasks.push_t.evidence:dataset_adapter"
+  },
+  "source_files": [
+    "tasks/push_t/assets/panda.xml",
+    "tasks/push_t/scene.py",
+    "tasks/push_t/success.py",
+    "tasks/push_t/evidence.py",
+    "tasks/push_t/evaluation.json",
+    "tasks/push_t/SOURCE.json",
+    "simulation/mujoco/single_arm/task_controller.py"
+  ],
+  "evaluation_config": "tasks/push_t/evaluation.json",
+  "cameras": "Original 145-degree overview recorded as oblique; original top/front auxiliary views.",
+  "initialization": "Upstream bounded seeded Push-T separation and +/-30 degree initial object yaw."
+}

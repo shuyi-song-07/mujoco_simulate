@@ -8,7 +8,7 @@
 
 固定 Pack 为 `outputs/dataset/tray_to_platform/training_packs/auto_20261103_213247_870817`，64条、49 train / 15 val，按会话隔离。训练和验证都只消费官方 Pack Reader 已有的 `category_id/category_mask`，不从机器人动作、未来阶段或手骨架反推标签。
 
-类别顺序固定为 `ILoveYou / Open_Palm / Closed_Fist`。这些字段来自**当前观察锚点关联的人手测量记录中的识别类别**，不是100 ms确认后控制器已接受的模式。具体证据为 `collection/teleoperation/mediapipe/hand-measurement.js` 记录 `gesture.categoryName`，`dataset/task3/frame_evidence.py::_auxiliary` 使用 `recorded_category_no_score_v1`，`prepare_paper_dataset.py` 原样映射类别。该冻结策略不再额外施加分类分数门槛；它保留原有时间因果性、测量年龄和日志先后检查。`accepted_intent` 是另一条控制事件来源链，不能把两者混称。`raw_label` 指手的原始左右身份标签，也不是三分类控制手势。
+类别顺序固定为 `ILoveYou / Open_Palm / Closed_Fist`。这些字段来自**当前观察锚点关联的人手测量记录中的识别类别**，不是100 ms确认后控制器已接受的模式。具体证据为 `collection/teleoperation/mediapipe/hand-measurement.js` 记录 `gesture.categoryName`，`dataset/common/frame_evidence.py::_auxiliary` 使用 `recorded_category_no_score_v1`，`prepare_paper_dataset.py` 原样映射类别。该冻结策略不再额外施加分类分数门槛；它保留原有时间因果性、测量年龄和日志先后检查。`accepted_intent` 是另一条控制事件来源链，不能把两者混称。`raw_label` 指手的原始左右身份标签，也不是三分类控制手势。
 
 分类与动作不会完全一一对应：手势还需确认、命令接受、状态累积与控制器保护；一类手势可以出现在多个位置和阶段，也可以对应保持、移动或开合中的不同连续目标。`ILoveYou` 对应 XY 控制意图且保持爪宽，张掌与握拳分别对应 Z 控制并开爪/闭爪，但绝对 A14 目标还取决于历史状态、手的连续移动与实际执行。分类在过渡、低置信度或模式切换期间可能与已接受控制模式不同。
 

@@ -17,11 +17,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from dataset.task3 import prepare_paper_dataset as pipeline
-from dataset.task3.curation_io import clear_input_caches, discover_episodes
-from dataset.task3.review_server import serve_review
-from dataset.task3.curation_rules import load_config, validate_config
-from dataset.task3.rebuild_curation import build, sha, validate_source
+from dataset.common import prepare_paper_dataset as pipeline
+from dataset.common.curation_io import clear_input_caches, discover_episodes
+from dataset.common.review_server import serve_review
+from dataset.common.curation_rules import load_config, validate_config
+from dataset.common.rebuild_curation import build, sha, validate_source
 
 POLICY = "papera-intent-aware"
 
@@ -61,6 +61,11 @@ class DatasetWorkflow:
         self.base = self.root / ('.local/checks/pipeline' if engineering else '.')
         self.source = self.base / 'datasets' / task_id
         self.output = self.base / 'outputs/dataset' / task_id
+
+    @property
+    def processing(self):
+        from tasks.stages import stage_adapter
+        return stage_adapter(self.task.id, 'dataset')
 
     def list_runs(self, kind="curation", *, history=False):
         if kind not in ("audits", "curation"):
@@ -126,7 +131,7 @@ class DatasetWorkflow:
     def reclip(self, audit_run, config=None, *, candidate=False):
         cfg = load_config(config) if not isinstance(config, dict) else validate_config(config)
         name = f"curation_{'candidate_' if candidate else ''}{stamp()}"
-        output, _ = build(audit_run, self.output / "curation" / name, cfg)
+        output, _ = self.processing.reclip(audit_run, self.output / "curation" / name, cfg)
         if not candidate:
             self._remember([output])
         return [output]
@@ -162,7 +167,7 @@ class DatasetWorkflow:
             print(f"原件指纹未变，复用完整性与视频检查：{original}", flush=True)
         else:
             original = self.output / "audits" / f"evidence_{stamp()}"
-            manifest = pipeline.audit(source, original, config=cfg, workers=workers, engineering=self.engineering)
+            manifest = self.processing.audit(source, original, config=cfg, workers=workers, engineering=self.engineering)
             if not all(e["structural_pass"] and e["video_verified"] for e in manifest["episodes"]):
                 raise ValueError(f"检查未全部通过，未生成裁剪结果。查看：{original / 'summary.csv'}")
         return self.reclip(original, cfg, candidate=candidate)
@@ -231,7 +236,7 @@ class DatasetWorkflow:
     def prepare(self, run, review_mode='reviewed', output=None, *, candidate=False):
         run, _ = self._version(run)
         target = Path(output).resolve() if output is not None else self.output / "prepared" / f"prepared_{'candidate_' if candidate else ''}{stamp()}"
-        pipeline.prepare(run, target, review_mode=review_mode)
+        self.processing.prepare(run, target, review_mode=review_mode)
         if not candidate:
             write_navigation(self.output / 'PREPARED_CURRENT.json', {
                 'path': target.as_posix(), 'curation': run.as_posix(), 'review_mode': review_mode,
@@ -241,7 +246,6 @@ class DatasetWorkflow:
 
     def pack(self, prepared, output=None, *, split_file=None, width=640, height=480,
              resume=False, continue_on_error=False, candidate=False):
-        from dataset.task3.training_pack import build as build_pack
         from tasks.artifacts import check_artifact
         check_artifact(prepared, self.task.id, self.engineering)
         if output is None:
@@ -254,12 +258,12 @@ class DatasetWorkflow:
             target = Path(output).resolve()
         if resume and split_file is None and (target/'build.json').is_file():
             split_file = Path(json.loads((target/'build.json').read_text(encoding='utf-8'))['binding']['split_source'])
-        report = build_pack(prepared, target, split_file=split_file or self.create_split(prepared),
+        report = self.processing.pack(prepared, target, split_file=split_file or self.create_split(prepared),
             width=width, height=height, resume=resume, continue_on_error=continue_on_error)
         if report.get('complete') and not candidate:
             write_navigation(self.output / 'TRAINING_PACK_CURRENT.json', {
                 'path': target.as_posix(), 'prepared': Path(prepared).resolve().as_posix(),
-                'reader': 'dataset.task3.training_pack.read_episode', 'training_started': False})
+                'reader': 'dataset.common.training_pack.read_episode', 'training_started': False})
         return report
 
 
@@ -378,8 +382,7 @@ def main(argv=None):
         print(json.dumps({'complete':m['complete'],'episodes':m['episode_count'],'frames':m['frame_count']},ensure_ascii=False))
     elif args.command=='verify-pack':
         from tasks.artifacts import check_artifact
-        from dataset.task3.training_pack import verify
-        check_artifact(args.pack,args.task,args.engineering);m=verify(args.pack)['manifest']
+        check_artifact(args.pack,args.task,args.engineering);m=w.processing.verify_pack(args.pack)['manifest']
         print(json.dumps({'verified':True,'task_id':m['task_id'],'episodes':m['episode_count'],'frames':m['frame_count'],'engineering_only':m['engineering_only']},ensure_ascii=False))
     return 0
 

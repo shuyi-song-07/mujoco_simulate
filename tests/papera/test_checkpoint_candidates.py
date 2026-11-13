@@ -127,7 +127,7 @@ class TrainingSourceCompatibilityTests(unittest.TestCase):
         files = {"model_source_sha256": "act_model.py", "reader_source_sha256": "pack_data.py",
                  "normalizer_source_sha256": "data.py", "trainer_source_sha256": "train.py",
                  "engine_source_sha256": "engine.py"}
-        return {key: hashlib.sha256((ROOT / "training/papera" / file).read_bytes()).hexdigest()
+        return {key: hashlib.sha256((ROOT / "training/act" / file).read_bytes()).hexdigest()
                 for key, file in files.items()}
 
     def test_exact_sources_and_only_reviewed_trainer_pair(self):

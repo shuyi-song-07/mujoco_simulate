@@ -26,7 +26,7 @@ import torch
 from torch.utils.data import DataLoader
 from diffusers.optimization import get_cosine_schedule_with_warmup
 
-from training.papera.train import (StatefulBatchSampler, atomic_checkpoint,
+from training.act.train import (StatefulBatchSampler, atomic_checkpoint,
     move_batch, precision_context, rng_state, restore_rng, reconcile_resume_logs)
 from training.diffusion.model import DiffusionConfig, DiffusionPolicy, IMPLEMENTATION
 from training.diffusion.data import DiffusionDataset, prepare_data, restore_data
@@ -497,6 +497,8 @@ def main(argv=None):
     parser.add_argument('--check-only', action='store_true', help='Check data tensors and sequence interfaces; no training')
     parser.add_argument('--stop-after', type=int, help='Stop after N additional updates and save; budget unchanged')
     args = parser.parse_args(argv)
+    from tasks.stages import stage_adapter
+    stage_adapter(args.task, 'training').validate_model('diffusion')
     if args.resume:
         if args.output or args.steps is not None or args.config:
             parser.error('--resume reads its frozen config; do not combine with --output/--steps/--config')

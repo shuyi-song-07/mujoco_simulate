@@ -77,11 +77,31 @@ class RigidControl:
         return None
 
     def feasible(self, arm, position, rotation):
+        allow_push_retreat = (bool(self.c.config["scene"].get("push_alignment"))
+                              and self.c.contact_control.reference is None)
         task = arm.world_to_task(position)
         if np.any(task < arm.workspace[:, 0]-1e-9) or np.any(task > arm.workspace[:, 1]+1e-9):
             return "workspace_limit"
-        if np.linalg.norm(position-arm.get_actual_pose()[0]) > self.c.config["control"]["max_cartesian_target_lead_m"]:
-            return "tracking_lead_limit"
+        actual = arm.get_actual_pose()[0]
+        lead = np.linalg.norm(position-actual)
+        previous_lead = np.linalg.norm(arm.command_position-actual)
+        same_rotation = rotation_angle(rotation, arm.command_rotation) < 1e-7
+        holding = np.linalg.norm(position-arm.command_position) < 1e-10
+        if allow_push_retreat and holding and same_rotation:
+            # A held push arm keeps its existing servo target. It must not
+            # demand a fresh IK solution (possibly near a limit) merely to
+            # allow its partner to back away. Collision checking still uses
+            # this arm's servo target and the partner's candidate together.
+            arm._copy_commanded_configuration()
+            return None
+        if lead > self.c.config["control"]["max_cartesian_target_lead_m"]:
+            # Contact can deflect an arm beyond the lead bound after a target
+            # was accepted. Requiring the next 4 mm step to immediately remove
+            # a 70 mm error also rejects retreat; halving it cannot fix that.
+            # Only uncoupled push may unwind the existing error. New pressure
+            # and orientation changes outside the bound remain forbidden.
+            if not allow_push_retreat or not same_rotation or lead >= previous_lead-1e-9:
+                return "tracking_lead_limit"
         arm._copy_commanded_configuration()
         for _ in range(35):
             arm._ik_iteration(position, rotation, .04)
@@ -92,8 +112,20 @@ class RigidControl:
             return "ik_unreachable"
         q = arm.ik_data.qpos[arm.qpos_indices]
         limits = arm.model.jnt_range[arm.joint_ids]
-        if np.any(q < limits[:, 0]+.005) or np.any(q > limits[:, 1]-.005):
-            return "joint_limit"
+        margin = np.minimum(q-limits[:, 0], limits[:, 1]-q)
+        near = (q < limits[:, 0]+.005) | (q > limits[:, 1]-.005)
+        if np.any(near):
+            previous = arm.data.ctrl[arm.actuator_ids]
+            previous_margin = np.minimum(previous-limits[:, 0], limits[:, 1]-previous)
+            # The servo's physical joint clamp is 1 mrad, while this IK
+            # precheck reserves 5 mrad. If contact has already driven a push
+            # servo into that buffer, permit only progress OUT of the buffer;
+            # otherwise every small retreat is rejected at this second gate.
+            retreating = (allow_push_retreat and np.all(margin >= .001-1e-9)
+                          and np.all(previous_margin[near] < .005)
+                          and np.all(margin[near] > previous_margin[near]+1e-9))
+            if not retreating:
+                return "joint_limit"
         return None
 
     def move(self, action, *, hold_targets=False):
@@ -129,6 +161,7 @@ class RigidControl:
         deltas = [p-a.command_position for a, p in zip(c.arms, requested_p)]
         ref = c.contact_control.reference
         coupled = ref is not None
+        allow_push_retreat = bool(c.config["scene"].get("push_alignment")) and not coupled
         if coupled and ref is not self.reference_id:
             self.reference_id = ref
             self.object_position = c.data.xpos[c.object_id].copy()
@@ -201,6 +234,9 @@ class RigidControl:
                 failure = self.collision_reason()
             if failure:
                 reason = failure; scale *= .5; continue
+            recovery = [a.side for a in c.arms if allow_push_retreat and
+                        np.linalg.norm(a.command_position-a.get_actual_pose()[0]) >
+                        c.config["control"]["max_cartesian_target_lead_m"]]
             # Both arms have passed before any real controller target changes.
             for arm, p, r in zip(c.arms, positions, rotations):
                 arm.command_position, arm.command_rotation = p.copy(), r.copy()
@@ -209,6 +245,8 @@ class RigidControl:
             if object_target is not None:
                 self.object_position, self.object_rotation, self.handoff_progress = object_target
             self.last.update(scale=scale, reason=reason, accepted_positions=[p.tolist() for p in positions], accepted_rotations=[r.tolist() for r in rotations])
+            if recovery:
+                self.last["tracking_recovery_sides"] = recovery
             self.last.update(grasp_handoff_active=bool(coupled and self.handoff_progress < 1.),
                              grasp_handoff_progress=self.handoff_progress,
                              grasp_handoff_remaining_m=self.handoff_gap*(1-self.handoff_progress))

@@ -6,17 +6,21 @@ import importlib
 import json
 from pathlib import Path
 import re
+from common.layout import source_path, equivalent_binding
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = {"state": "dual_panda_q7_width_m_s16", "action": "dual_xyz_rpy_width_m_a14",
           "observation": "oblique_rgb", "state_dim": 16, "action_dim": 14}
+SINGLE_SCHEMA = {"state": "single_panda_q7_yaw_width_m_s9", "action": "single_xyz_rpy_width_m_a7",
+                 "observation": "oblique_rgb", "state_dim": 9, "action_dim": 7}
+CONTROLLER_SCHEMAS = {"dual_panda_v1": SCHEMA, "single_panda_push_v1": SINGLE_SCHEMA}
 HOOKS = ("initial_state", "configure_xml", "reset", "collection_success", "rollout_monitor", "preflight", "dataset_adapter")
 
 def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 def local(path):
-    p = (ROOT / path).resolve()
+    p = source_path(ROOT / path).resolve()
     if not p.is_relative_to(ROOT) or not p.is_file():
         raise ValueError(f"Missing or external project resource: {path}")
     return p
@@ -44,9 +48,11 @@ class Task:
         if self.path.parent.name != m["task_id"] or m["status"] not in ("ready", "development"):
             raise ValueError(f"Task directory/status mismatch: {self.path}")
         self.id = m["task_id"]
-        if m["schema"] != SCHEMA:
+        from tasks.stages import stage_adapter
+        adapter = stage_adapter(m, 'collection')
+        if m["schema"] != adapter.schema:
             raise ValueError(f"{self.id}: unsupported schema; implement and register an explicit adapter first")
-        if m["controller"] != "dual_panda_v1":
+        if m["controller"] != adapter.controller_id:
             raise ValueError(f"{self.id}: unsupported controller")
         if m["status"] == "ready":
             if not m.get('evaluation_config'):
@@ -72,6 +78,14 @@ class Task:
         m = self.manifest
         files = {self.path.relative_to(ROOT).as_posix(), m["scene_config"], m["model_xml"],
                  "config/collection.json", "config/simulation_base.json", *m["source_files"]}
+        # Freeze the new routing dependencies too: changing an adapter must not
+        # silently reinterpret already-recorded physics or task evidence.
+        from tasks.stages import STAGES
+        files.update(('tasks/registry.py', 'tasks/stages.py', 'tasks/runtime.py', 'common/layout.py'))
+        for stage in STAGES:
+            files.update(p.relative_to(ROOT).as_posix() for p in (ROOT/stage/self.id).rglob('*.py'))
+            shared = ROOT/stage/'common/adapters'/f"{m['controller']}.py"
+            if shared.is_file(): files.add(shared.relative_to(ROOT).as_posix())
         files.update(p.relative_to(ROOT).as_posix() for p in (ROOT/m["mesh_directory"]).iterdir() if p.is_file())
         return {"version": "papera-task-binding-v1", "task_id": self.id, "task_version": m["version"],
                 "scene_id": m["scene_id"], "manifest_sha256": sha(self.path), "schema": copy.deepcopy(m["schema"]),
@@ -83,6 +97,10 @@ class Task:
         config = load_config(ROOT/"config/collection.json")
         patch = json.loads(local(self.manifest["scene_config"]).read_text(encoding="utf-8"))
         config["scene"].update(patch["scene"])
+        from tasks.stages import stage_adapter
+        if stage_adapter(self, 'collection').config_patch_scope == 'all':
+            from simulation.mujoco.dual_arm.config import _merge
+            _merge(config, {key: value for key, value in patch.items() if key != 'scene'})
         config["scene"]["scenario"] = self.manifest["scene_id"]
         config["task_binding"] = self.binding()
         return config
@@ -109,7 +127,7 @@ def validate_binding(binding, task_id=None):
         raise ValueError(f"Cross-task input rejected: {binding['task_id']} != {task_id}")
     task = get(binding["task_id"])
     current_binding = task.binding()
-    if binding != current_binding:
+    if not equivalent_binding(binding, current_binding):
         from tasks.recorded_collection import accepts_recorded_collection
         if not accepts_recorded_collection(binding, current_binding):
             raise ValueError(f"Frozen task/assets differ from current task {task.id}; restore exact task sources or register a new version")
@@ -119,4 +137,11 @@ def hook(config, name):
     binding = config.get("task_binding")
     if not binding:
         raise ValueError("Registered task_binding required")
+    if name == 'dataset_adapter':
+        from tasks.stages import stage_adapter
+        adapter = stage_adapter(config, 'dataset')
+        # Explicit stage folders take precedence. Legacy tasks with only a
+        # manifest hook retain that hook until they add their own stage folder.
+        if adapter.__name__ == f"dataset.{binding['task_id']}.adapter":
+            return adapter.adapter_factory
     return entrypoint(binding["hooks"][name])
