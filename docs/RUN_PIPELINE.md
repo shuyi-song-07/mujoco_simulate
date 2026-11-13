@@ -1,5 +1,7 @@
 # 全流程运行与命令表
 
+目录整理后的代码位置见 [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md)。原运行命令仍保留兼容；新增的统一训练入口为 `python -m training --task <任务名> --model act|diffusion ...`，参数继续交给原训练流程。
+
 所有命令在新工程根目录执行。下文 `<...>` 是需要替换的实际路径，不是文件夹字面名称。默认不依赖旧工程，也不自动选择“时间最新”的数据。CURRENT 只做导航，训练启动后冻结实际路径和 SHA。
 
 采集点击“保存成功/保存失败”后，先显示“正在收齐本条人手日志”，随后才提交保存并重置场景。摄像头不用关闭，按钮等待期间不要重复点击；等待保存点击时已采帧的识别和日志写入，然后按固定的本条终点导出；新测量不扩大等待。识别等待上限5秒、日志确认等待上限15秒，失败会提示“本条未提交保存、场景未重置”；恢复连接/文件权限后再次点击保存，复用原边界。持久丢失的记录不能凭重试恢复，不应把该条当作完整的人手监督示范；可明确放弃本轮并保留研究原件。任务首次 DONE 立即保持机械臂位置，按原速度继续已接受的开爪目标，并再记录0.5仿真秒（约15个30 Hz采样间隔）。期间显示“放置成功 · 记录开爪收尾”，保存按钮暂不可用；收尾结束显示“已截止 · 待保存”，保存成功/失败按钮恢复。等待点击期间不再增加本条帧数；摄像头会话日志继续记录，导出只取开始录制至收尾截止的测量。参数位于 `config/recording.json` 的 `post_success_seconds`，改后重启采集服务生效；0表示立即截止。该延时不提高成功开爪门槛，不新增开爪授权，不保证实测完全张开；手动暂停和物理故障仍中止开爪。未录制的练习不能保存，需重置并先点击开始录制。升级后需重启采集服务并 Ctrl+F5 刷新网页。
@@ -19,7 +21,7 @@ $train = $envs.training_python
 $task = 'tray_to_platform'
 ```
 
-`$collect` 是已有 mujoco_repro：Flask、LeRobot、MuJoCo 和采集渲染。`$train` 是已有 paperA_train：PyTorch/CUDA、PyAV、PyArrow、TensorBoard 和训练/推理。不要在基础 Anaconda 环境里运行。Node 也从同一环境 JSON 读取。依赖以`requirements.txt`、`training/papera/requirements-training.txt`及下方DP依赖命令为准；`training/papera/environment.yml`提供Conda训练环境规格，DP依赖另行补装。不需要每次运行都安装。旧本机lock快照已移出当前工程，不能作为新版完整安装清单。
+`$collect` 是已有 mujoco_repro：Flask、LeRobot、MuJoCo 和采集渲染。`$train` 是已有 paperA_train：PyTorch/CUDA、PyAV、PyArrow、TensorBoard 和训练/推理。不要在基础 Anaconda 环境里运行。Node 也从同一环境 JSON 读取。依赖以`requirements.txt`、`training/act/requirements-training.txt`及下方DP依赖命令为准；`training/act/environment.yml`提供Conda训练环境规格，DP依赖另行补装。不需要每次运行都安装。旧本机lock快照已移出当前工程，不能作为新版完整安装清单。
 
 当前 DP 直接使用固定官方组件。首次配置或更新依赖时，在同一 `paperA_train` 中运行一次：
 
@@ -184,7 +186,7 @@ $partialPack = '<该次 training_packs/... 的实际目录>'
 
 本节为当前官方核心版本的使用入口。ACT无需新增Python依赖，复用已有Torch/Torchvision和本地ResNet18权重；不依赖临时复现目录或IPython。旧本地版本权重不加载到新结构。
 
-源码职责与复用边界：`training/papera/official/`是固定上游组件；`act_model.py`负责图像与State/Action维度适配并调用原模型，`engine.py`执行共用的前向、Action L1＋KL、反向和优化更新；`pack_data.py`消费Dataset已认证的虚拟序列，`data.py`负责训练集归一化，`train.py`组织训练、验证、完整保存和恢复。Baseline不使用手势辅助头。不为提高本任务成功率修改官方Transformer、CVAE、Loss或Dataset拼接判定。
+源码职责与复用边界：`training/act/official/`是固定上游组件；`act_model.py`负责图像与State/Action维度适配并调用原模型，`engine.py`执行共用的前向、Action L1＋KL、反向和优化更新；`pack_data.py`消费Dataset已认证的虚拟序列，`data.py`负责训练集归一化，`train.py`组织训练、验证、完整保存和恢复。Baseline不使用手势辅助头。不为提高本任务成功率修改官方Transformer、CVAE、Loss或Dataset拼接判定。
 
 “官方核心一致”不等于原始训练脚本完全相同：原脚本按示范选随机起点，本地按Pack中的合法观察窗口均匀采样；本地归一化仅拟合训练集，正式离线验证用`z=0`，完整保存优化器/采样器/RNG。这些是已存在的数据与运行协议适配，必须随实验披露，不能把本地结果冒称官方原任务复现。`--official-reference`专用入口另行恢复原始采样和后验验证，只有该对照可以直接与其官方脚本实验比较。本轮不添加事件权重、阶段采样或新Loss。
 
@@ -203,7 +205,7 @@ $partialPack = '<该次 training_packs/... 的实际目录>'
 
 默认参数在 `config/training_baseline.json`：单oblique、640×480全画面、S16/A14、K30、batch16、最大60,000次更新、FP32。主干和其余参数均采用AdamW学习率1e-5、weight decay1e-4；`lr_scheduler="constant"`、`warmup_steps=0`，`gradient_clip_norm=null`表示不裁剪，只检查梯度有限。Transformer hidden512、FF3200、encoder4、decoder7、posterior4、heads8、latent32、dropout0.1；KL权重10。ResNet18从已有本地预训练文件加载，不自动下载。图像不裁剪，不改变Pack；模型动作30Hz、控制60Hz、物理500Hz。`--steps`改最大更新预算、`--seed`改种子、`--config`换参数文件；同一算法两组须同步。60k是训练上限，不表示必须部署60k或`best.pt`；保留的中间权重需要在独立闭环验证上选型，再冻结进行新测试。
 
-当前ACT直接复用固定官方提交 `742c753c0d4a5d87076c8f69e5628c79a8cc5488` 的DETRVAE、Post-LN/ReLU Transformer、位置编码和CVAE，来源与两份许可证见 `training/papera/official/SOURCE.json`。只对两处状态输入投影适配S16，Action仍14维，K30与单相机由配置给出；不保留旧自写观察Transformer。该官方版本的DETRVAE取第一个intermediate decoder输出，本工程保留这一行为，没有改成最后层。
+当前ACT直接复用固定官方提交 `742c753c0d4a5d87076c8f69e5628c79a8cc5488` 的DETRVAE、Post-LN/ReLU Transformer、位置编码和CVAE，来源与两份许可证见 `training/act/official/SOURCE.json`。只对两处状态输入投影适配S16，Action仍14维，K30与单相机由配置给出；不保留旧自写观察Transformer。该官方版本的DETRVAE取第一个intermediate decoder输出，本工程保留这一行为，没有改成最后层。
 
 Baseline优化目标为官方Action L1 + 10×KL：无效Action误差置零后，L1按整个B×K×A坐标数取均值。`train/action`是该官方优化项，`train/action_valid_l1`另按有效坐标计。验证固定z=0，`prior_action_l1`与`prior_valid_action_l1`都表示有效坐标L1，作为best指标；`official_action_l1`另报告全分母值。两种分母不能混作同名曲线。`metrics.jsonl`、TensorBoard、best/last和完整恢复状态继续保留；离线Loss不是自主成功率。
 

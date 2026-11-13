@@ -9,6 +9,8 @@ import unittest
 ROOT=Path(__file__).resolve().parents[1]
 for path in (ROOT,ROOT/'tests/task3',ROOT/'tests/papera'):sys.path.insert(0,str(path))
 MODULES=[
+    'tests.test_project_layout',
+    'tests.test_dataset_layout',
     'tests.test_task_registry',
     'tests.test_dataset_navigation',
     'tests.test_recorded_collection',
@@ -30,7 +32,7 @@ MODULES=[
         'test_rollout_collection_sources','test_rollout_checkpoint_selection','test_rollout_lock',
         'test_rollout_candidates','test_gesture_auxiliary','test_gesture_continuation',
         'test_loss_reporting','test_training_plots','test_policy_comparison','test_smoke_continuation_guard','test_rollout_reporting',
-        'test_single_arm_act','test_single_push_executor')]
+        'test_single_arm_act','test_single_push_executor','test_learning_layout')]
 ]
 if __name__=='__main__':
     import json

@@ -21,7 +21,7 @@ Task(task_id + task_version + task_binding)
 
 Task Binding 含 task_id、task_version、scene_id、Manifest SHA、Schema、七个任务 hook、XML/mesh 路径和 source_files 哈希。共享采集/仿真配置也参与绑定。Source files 必须覆盖自定义任务代码的依赖；新增文件后要更新清单。正式来源审计在 Task 配置或资源变化时拒绝旧绑定，不自动取当前参数解释历史数据。DP 默认训练检查 Pack 内冻结身份，完整文件和当前源码审计由显式 `--full-verify` 启用，见下文。
 
-同任务的多来源联合使用明确的采集参数等价契约，不能直接重写旧绑定。`dataset/task3/merge_prepared.py` 先核各原Prepared与实际episode_metadata，只允许 `tasks.recorded_collection.ALLOWED_CONFIG_PATHS` 中已支持的采集门槛不同，场景、模型相机、资产、Schema和其余配置必须一致。联合Prepared/Pack的全局 `task_binding` 表示当前规范学习任务（learning domain）；`source_task_bindings`、`source_prepared_manifests` 和 `dataset_collection_compatibility` 完整冻结原采集版本与差异，每条episode保存 `source_task_binding`、`source_prepared`、`source_prepared_manifest_sha256`。原Raw和源Prepared绑定不变。
+同任务的多来源联合使用明确的采集参数等价契约，不能直接重写旧绑定。`dataset/common/merge_prepared.py` 先核各原Prepared与实际episode_metadata，只允许 `tasks.recorded_collection.ALLOWED_CONFIG_PATHS` 中已支持的采集门槛不同，场景、模型相机、资产、Schema和其余配置必须一致。联合Prepared/Pack的全局 `task_binding` 表示当前规范学习任务（learning domain）；`source_task_bindings`、`source_prepared_manifests` 和 `dataset_collection_compatibility` 完整冻结原采集版本与差异，每条episode保存 `source_task_binding`、`source_prepared`、`source_prepared_manifest_sha256`。原Raw和源Prepared绑定不变。
 
 构建时实际读取原metadata，核对其冻结记录，不能仅靠手写proof取得资格；联合输入还需逐条经过原NPZ/index/sequence因果与拼接检查。Pack随后内嵌这些已核来源，小元数据及每条来源关系在轻量读取时仍验证，但不要求原电脑、原Prepared目录或Raw在线。排除名单取来源并集，重复episode、来源错配、不同相机/场景及split交叉均拒绝。提供的master split冻结到联合Prepared，Pack不得静默改用另一份划分。
 
@@ -106,7 +106,7 @@ sequence = episode["diagnostics"]["virtual_sequence"]
 
 单源和联合来源都使用上面的同一 `verify/read_episode` 接口。联合Prepared只链接/复制既有NPZ、索引和sequence，不解码RGB、不改变删留和动作；只有随后正式Pack阶段生成一次模型RGB缓存。小型来源账本不取代数据格式、Action Mask和Safe Stitch检查。
 
-Training 的 `training/papera/pack_data.py::SafeStitchDataset` 只负责训练集归一化、合法未来窗口和张量。训练/验证按会话固定划分；归一化只拟合训练部分，验证使用同一统计。输出 action `[B,30,14]`、is_pad `[B,30]`；Padding 不参加 Action Loss 或 CVAE 有效动作编码。Gesture 是观察锚点的左右分类监督，未知/缺失由 Mask 表达，不伪造标签。
+Training 的 `training/act/pack_data.py::SafeStitchDataset` 只负责训练集归一化、合法未来窗口和张量。训练/验证按会话固定划分；归一化只拟合训练部分，验证使用同一统计。输出 action `[B,30,14]`、is_pad `[B,30]`；Padding 不参加 Action Loss 或 CVAE 有效动作编码。Gesture 是观察锚点的左右分类监督，未知/缺失由 Mask 表达，不伪造标签。
 
 DP 的 `training/diffusion/data.py::prepare_data` 默认用 `verify(..., check_hashes=False)` 检查 Pack 文件存在与尺寸、Pack/内嵌Prepared冻结的 task/schema/工程身份、会话 split、逐帧证据、S16/A14有限值、next-control因果关系及 Safe Stitch 证明。不访问外部 Raw/Prepared，不重算大文件哈希或当前任务源码哈希；`--full-verify` 才启用原完整校验。默认检查只能确认格式与接口，不能替代文件内容审计。入口只接受正式 Pack，不能把缺少原始控制/来源日志的 HF merged 数据直接视为 Pack 或在训练时修复。
 
@@ -116,7 +116,7 @@ DP 的 `training/diffusion/data.py::prepare_data` 默认用 `verify(..., check_h
 
 正式入口 `python -m training.papera --task ... --variant baseline|gesture --pack ...`。训练冻结 task_binding、Pack绝对路径/manifest SHA、split、来源指纹、模型配置、相机规格、归一化、variant、seed和源码/Git信息。
 
-ACT直接复用固定官方组件：DETRVAE、Post-LN/ReLU Transformer、原位置编码与CVAE；`training/papera/official/SOURCE.json`记录提交742c753及原源码和许可证。任务适配只改变两处S16状态输入投影、配置单oblique/K30与必要Padding消毒，A14不变。输入RGB仍为640×480、ImageNet归一化，State/Action仍按训练split拟合z-score和RPY周期。正式参数hidden512/FF3200、encoder4/decoder7/posterior4、latent32，FP32、batch16、40k；AdamW两组LR1e-5、WD1e-4、常量LR、无warmup/无梯度裁剪。固定上游DETRVAE使用第一个intermediate decoder输出的行为保持不变。
+ACT直接复用固定官方组件：DETRVAE、Post-LN/ReLU Transformer、原位置编码与CVAE；`training/act/official/SOURCE.json`记录提交742c753及原源码和许可证。任务适配只改变两处S16状态输入投影、配置单oblique/K30与必要Padding消毒，A14不变。输入RGB仍为640×480、ImageNet归一化，State/Action仍按训练split拟合z-score和RPY周期。正式参数hidden512/FF3200、encoder4/decoder7/posterior4、latent32，FP32、batch16、40k；AdamW两组LR1e-5、WD1e-4、常量LR、无warmup/无梯度裁剪。固定上游DETRVAE使用第一个intermediate decoder输出的行为保持不变。
 
 ACT优化的Action L1保持官方分母：先屏蔽无效误差，再对B×K×A全部位置取均值，KL按潜变量维求和后按有效样本均值，权重10。训练另记有效坐标L1供诊断。验证z=0，best仍按`prior_action_l1`（等同`prior_valid_action_l1`）的有效坐标误差选择，另报告`official_action_l1`，不按测试成功率挑best。当前checkpoint契约为`papera-act-official-checkpoint-v2`，保存model/optimizer/scheduler/sampler/RNG、归一化、来源及源码快照；包含全部官方小型源码与许可证。旧`papera-act-offline-checkpoint-v1`不可resume/continue或加载，历史权重原样保留。
 

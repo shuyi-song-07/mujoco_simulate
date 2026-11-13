@@ -1,0 +1,11 @@
+"""Model support and new-run defaults for h_frame_push_align; shared model math is untouched."""
+from training.common import task_adapter
+SUPPORTED_MODELS = ('act', 'diffusion')
+
+
+def validate_model(algorithm):
+    return task_adapter.validate_model(algorithm, SUPPORTED_MODELS)
+
+
+def configure_defaults(config, task, algorithm='act'):
+    return task_adapter.configure_defaults(config, task, algorithm, SUPPORTED_MODELS)

@@ -15,6 +15,7 @@ import json
 import math
 from pathlib import Path
 import re
+from common.layout import equivalent_binding
 
 SOURCE = "config/collection.json"
 PROOF_FIELD = "recorded_collection_compatibility"
@@ -118,7 +119,7 @@ def _collection_only(binding, current):
         return False
     normalized = copy.deepcopy(binding)
     normalized["sources"][SOURCE] = current["sources"][SOURCE]
-    return normalized == current
+    return equivalent_binding(normalized, current)
 
 
 def _proof(provenance, binding, current, task=None):
@@ -184,7 +185,7 @@ def recorded_collection_scope(binding, provenance):
         raise ValueError("Recorded collection scope requires a complete task binding")
     task = get(binding["task_id"])
     current = task.binding()
-    if binding == current:
+    if equivalent_binding(binding, current):
         yield None
         return
     if not _collection_only(binding, current):

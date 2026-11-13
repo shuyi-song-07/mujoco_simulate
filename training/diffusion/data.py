@@ -10,11 +10,11 @@ from pathlib import Path
 
 import numpy as np
 
-from dataset.task3 import training_pack
-from dataset.task3.prepare_paper_dataset import digest
-from dataset.task3.sequence_stitching import VERSION as SEQUENCE_VERSION
-from training.papera.data import ANGLE_COLUMNS, wrap_actions
-from training.papera.pack_data import (
+from dataset.common import training_pack
+from dataset.common.prepare_paper_dataset import digest
+from dataset.common.sequence_stitching import VERSION as SEQUENCE_VERSION
+from training.act.data import ANGLE_COLUMNS, wrap_actions
+from training.act.pack_data import (
     PreparedPack, SafeStitchDataset, _close_episode, _metadata, resize_rgb,
 )
 

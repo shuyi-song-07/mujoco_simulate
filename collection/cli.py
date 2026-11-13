@@ -48,6 +48,8 @@ def stop_idle_backend(port):
 def start(args):
     task=get(args.task)
     config=recording_config(task)  # Resolve all resources before creating any subprocess.
+    from tasks.stages import stage_adapter
+    adapter=stage_adapter(task, "collection")
     env=environment()
     python=Path(env['collection_python'])
     if not python.is_file(): raise FileNotFoundError(python)
@@ -61,9 +63,9 @@ def start(args):
     child_env=os.environ.copy()
     prefix=str(python.parent)
     child_env['PATH']=os.pathsep.join([prefix,str(python.parent/'Library/bin'),str(python.parent/'Scripts'),child_env.get('PATH','')])
-    child_env.update(PYTHONUTF8='1',PYTHONNOUSERSITE='1',PORT=str(args.web_port),DUAL_BACKEND_PORT=str(args.backend_port))
+    child_env.update(PYTHONUTF8='1',PYTHONNOUSERSITE='1',PORT=str(args.web_port),DUAL_BACKEND_PORT=str(args.backend_port),PAPERA_COLLECTION_TASK=task.id)
     child_env.pop('PYTHONPATH',None)
-    command=[str(python),'-m','simulation.mujoco.dual_arm.teleop_service','--task',task.id,
+    command=[str(python),'-m',adapter.backend_module,'--task',task.id,
              '--port',str(args.backend_port),'--seed',str(args.seed),'--operator-id',args.operator_id,
              '--diagnostics-root',str(logs/'diagnostics')]
     if args.headless:command+=['--headless']
@@ -73,7 +75,7 @@ def start(args):
             handle=(logs/f'{name}.log').open('w',encoding='utf-8');handles.append(handle)
             processes.append(subprocess.Popen(cmd,cwd=ROOT,env=child_env,stdout=handle,stderr=subprocess.STDOUT,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0))
-        page = 'single_arm.html' if task.manifest['controller'] == 'single_panda_push_v1' else 'dual_arm.html'
+        page = adapter.page
         url=f'http://127.0.0.1:{args.web_port}/{page}'
         deadline=time.monotonic()+120
         while time.monotonic()<deadline:

@@ -1,7 +1,7 @@
 # Paper A：机械臂任务的采集、数据与学习工程
 
 
-本工程将同一套 Panda 双臂控制器、数据处理和策略训练接入任务注册表。研究对照为 **ACT Baseline / ACT + Gesture** 和 **Diffusion Policy（DP）Baseline / DP + Gesture**。四组部署时都只输入单 oblique RGB 和机器人状态；手势类别仅在辅助模型训练时使用，不作为推理输入。设计、标签含义和公平对照约束见 [Gesture 辅助监督](docs/GESTURE_AUXILIARY_EXPERIMENT.md)。
+本工程将单臂与双臂 Panda 任务接入统一采集、数据处理、训练和回放流程。研究对照为 **ACT Baseline / ACT + Gesture** 和 **Diffusion Policy（DP）Baseline / DP + Gesture**。四组部署时都只输入单 oblique RGB 和机器人状态；手势类别仅在辅助模型训练时使用，不作为推理输入。设计、标签含义和公平对照约束见 [Gesture 辅助监督](docs/GESTURE_AUXILIARY_EXPERIMENT.md)。
 
 ```mermaid
 flowchart LR
@@ -34,6 +34,8 @@ ready 表示现有实现可加载，不表示新任务的真人采集质量或�
 
 场景来自指定分支 `codex/mujoco_pickandplace_variation` 的提交 `0d504758b89551a07b905e87e3fbbead396551f7`；参数与出处见 `tasks/push_t/scene.json`、`assets/` 和 `SOURCE.json`。单臂保存真实9维状态（7关节+额外夹爪Yaw+实测爪宽）、7维米制动作与一只控制手的日志；不补造第二臂。沿用裁剪和Safe Stitch判据，只按真实臂数读取证据。ACT已接入该Schema；DP仍只支持原双臂，不能直接用现有DP命令训练单臂Pack。操作及验证范围见 [单臂Push-T](docs/RUN_PIPELINE.md#单臂-push-tpush_t)。
 
+各环节按任务分目录，共用实现放在各自的 `common/`；完整结构与新增任务步骤见 [工程目录说明](docs/PROJECT_STRUCTURE.md)。
+
 ## 目录职责
 
 | 目录 | 职责 |
@@ -42,7 +44,7 @@ ready 表示现有实现可加载，不表示新任务的真人采集质量或�
 | `tasks/` | 动态注册、场景参数、任务钩子与来源绑定 |
 | `simulation/mujoco/` | 共享 IK、双臂控制、接触保护、Recorder、XML/mesh |
 | `dataset/` | 唯一数据管理入口；既有裁剪、Safe Stitch、审核、Prepared、Pack |
-| `training/papera/` | 固定官方 ACT、正式单相机读取、训练/恢复与分析 |
+| `training/act/` | 固定官方 ACT、正式单相机读取、训练/恢复与分析 |
 | `training/diffusion/` | 单相机 Diffusion Policy、合法历史/未来窗口、训练与恢复 |
 | `rollout/` | 唯一模型检查、预览、固定初态批量评估入口 |
 | `config/` | 环境、采集基础、裁剪、训练和评估配置 |
@@ -80,7 +82,7 @@ $train = $envs.training_python
 
 ACT与DP Baseline使用单 oblique RGB 640×480、30Hz模型动作、K30动作块、batch16和最大60,000次更新；当前DP已完成从头60k训练及独立闭环选型。ACT观察当前1帧，DP观察过去至当前2帧；相同更新次数不代表计算量或输入信息完全相同。物理仿真500Hz、控制器60Hz，每个模型动作目标执行2个控制tick。ACT Gesture配置为60k，DP Gesture仍保留历史40k，本轮未改未训；未来同模型Baseline/Gesture对照必须先同步数据、split、历史、主干、预算和选型协议。
 
-ACT当前直接复用固定官方 DETRVAE、Post-LN/ReLU Transformer、位置编码、CVAE和Backbone，来源见 [ACT SOURCE.json](training/papera/official/SOURCE.json)。S16仅适配两个输入投影，输出A14和K30不移动标签。配置为hidden512、FF3200、encoder4/decoder7/posterior4、latent32，FP32、AdamW固定学习率1e-5。优化使用原版masked后按完整B×K×A均值的L1＋KL10，验证best仍依据独立的z=0有效动作L1；两种Loss数值不可混用。新ACT checkpoint为 `papera-act-official-checkpoint-v2`，旧本地模型权重不能加载或续训到新结构。使用说明见[ACT训练](docs/RUN_PIPELINE.md#4-act-公平训练两组)。
+ACT当前直接复用固定官方 DETRVAE、Post-LN/ReLU Transformer、位置编码、CVAE和Backbone，来源见 [ACT SOURCE.json](training/act/official/SOURCE.json)。S16仅适配两个输入投影，输出A14和K30不移动标签。配置为hidden512、FF3200、encoder4/decoder7/posterior4、latent32，FP32、AdamW固定学习率1e-5。优化使用原版masked后按完整B×K×A均值的L1＋KL10，验证best仍依据独立的z=0有效动作L1；两种Loss数值不可混用。新ACT checkpoint为 `papera-act-official-checkpoint-v2`，旧本地模型权重不能加载或续训到新结构。使用说明见[ACT训练](docs/RUN_PIPELINE.md#4-act-公平训练两组)。
 
 DP当前直接复用固定官方 U-Net、robomimic VisualCore/GN、DDPMScheduler和EMA，撤掉旧本地网络重写，来源见 [SOURCE.json](training/diffusion/official/SOURCE.json)。正式配置为 feature64、通道512/1024/2048、kernel5、FP32、DDPM100；RGB输入仍640×480，内部训练随机裁剪/评估中心裁剪472×632（高、宽）。保留S16/A14、train-only统计、Safe Stitch硬边界Mask，以及观察后下一合法tick为动作第0项。K30只在网络内部补到32再截回30。Baseline为fresh60k官方cosine训练，每5k保留完整EMA/优化器状态候选；不能将已到零学习率的40k last直接当作续训起点。配置与安装命令见[DP使用说明](docs/RUN_PIPELINE.md#41-diffusion-policy-baseline--gesture)。
 

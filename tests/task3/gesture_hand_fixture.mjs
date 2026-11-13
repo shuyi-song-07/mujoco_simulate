@@ -1,5 +1,5 @@
 // New anatomically shaped fixtures. The historical hand_fixture.mjs is frozen.
-import {handMeasurement} from "../../collection/teleoperation/mediapipe/hand-measurement.js";
+import {handMeasurement} from "../../collection/common/web/hand-measurement.js";
 export function gestureResult(shapes=["PALM","PALM"],{ratios=[1.2,1.2],roll=0,dx=0,dy=0,gestures=null,scores=[.95,.95]}={}) {
   const landmarks=shapes.map((shape,i)=>{
     const cx=(i?.72:.28)+(Array.isArray(dx)?dx[i]:dx),cy=.6+(Array.isArray(dy)?dy[i]:dy);

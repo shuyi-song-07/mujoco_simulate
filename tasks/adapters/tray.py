@@ -21,17 +21,8 @@ def preflight(config, seeds, demonstration_seeds=(), engineering_seeds=()):
     from rollout.protocol import preflight_cases
     return preflight_cases(config, seeds, demonstration_seeds, engineering_seeds)
 
-class TrayEvidenceAdapter:
-    version = 'papera-tray-evidence-v1'
-    def validate(self, metadata):
-        if metadata.get('schema_version') != 'task3-papera-v2':
-            raise ValueError('Tray evidence adapter requires task3-papera-v2')
-    def build_evidence(self, episode, curation_config):
-        from dataset.task3.frame_evidence import build_frame_evidence
-        return build_frame_evidence(episode, curation_config)
-
-def dataset_adapter():
-    return TrayEvidenceAdapter()
+# Legacy task hook; canonical dataset behavior lives with this task.
+from dataset.tray_to_platform.evidence import TrayEvidenceAdapter, dataset_adapter
 
 
 def collection_success(self, c, now, object_pos, object_rot, any_contact):

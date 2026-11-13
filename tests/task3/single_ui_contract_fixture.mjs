@@ -1,8 +1,8 @@
 // Synthetic camera input through the actual browser protocol/journal helpers.
 // No webcam is accessed and these records never claim to be human data.
-import {handMeasurement} from '../../collection/teleoperation/mediapipe/hand-measurement.js';
+import {handMeasurement} from '../../collection/common/web/hand-measurement.js';
 import {SingleInteractionState,continuousPacket,singleTelemetry,createSingleJournal,logSingleControlResult}
-  from '../../collection/teleoperation/mediapipe/single-interaction-state.js';
+  from '../../collection/push_t/web/single-interaction-state.js';
 import {gestureResult} from './gesture_hand_fixture.mjs';
 
 const engine=new SingleInteractionState(),batches=[],packets=[],measurements=[],clientId='single-ui-contract';

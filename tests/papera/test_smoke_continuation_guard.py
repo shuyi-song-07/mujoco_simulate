@@ -36,7 +36,7 @@ class SmokeContinuationGuardTests(unittest.TestCase):
                   'engine_source_sha256': 'engine.py'}
         provenance = {'config': config, 'variant': 'gesture', 'pack_binding': binding,
                       'engineering_overfit': False, 'validation_scope': 'heldout_sessions',
-                      **{key: hashlib.sha256((ROOT/'training/papera'/name).read_bytes()).hexdigest()
+            **{key: hashlib.sha256((ROOT/'training/act'/name).read_bytes()).hexdigest()
                          for key, name in fields.items()}}
         signature = canonical_hash(provenance)
         runtime = {'engineering_smoke': marked in ('all', 'runtime')}

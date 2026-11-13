@@ -1,4 +1,4 @@
-import {handMeasurement} from "../../collection/teleoperation/mediapipe/hand-measurement.js";
+import {handMeasurement} from "../../collection/common/web/hand-measurement.js";
 export function resultPair(ratios=[1.2, 1.3], {roll=0, dx=0, dy=0}={}) {
   const landmarkSets = ratios.map((ratio, i) => {
     const cx = (i ? .72 : .28)+dx, cy=.55+dy;

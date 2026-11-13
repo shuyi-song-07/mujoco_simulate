@@ -1,10 +1,10 @@
 // Scripted landmarks through the real frontend engine + HTTP recorder. No camera claim.
 import {writeFileSync} from 'node:fs';
 import {setTimeout as sleep} from 'node:timers/promises';
-import {ContinuousInteractionState} from '../collection/teleoperation/mediapipe/continuous-interaction-state.js';
-import {detectionsFromMediaPipe} from '../collection/teleoperation/mediapipe/dual-interaction-state.js';
-import {handMeasurement} from '../collection/teleoperation/mediapipe/hand-measurement.js';
-import {MeasurementJournal,controlObservation} from '../collection/teleoperation/mediapipe/measurement-journal.js';
+import {ContinuousInteractionState} from '../collection/common/web/continuous-interaction-state.js';
+import {detectionsFromMediaPipe} from '../collection/common/web/dual-interaction-state.js';
+import {handMeasurement} from '../collection/common/web/hand-measurement.js';
+import {MeasurementJournal,controlObservation} from '../collection/common/web/measurement-journal.js';
 import {gestureResult} from './task3/gesture_hand_fixture.mjs';
 const [url,reportPath]=process.argv.slice(2);
 const health=async()=>{const r=await fetch(url+'/health');return r.json();};

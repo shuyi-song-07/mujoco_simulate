@@ -1,5 +1,7 @@
 # 接入一个新任务
 
+先阅读 [工程目录与任务扩展](PROJECT_STRUCTURE.md)。场景定义放在 `tasks/<task_id>`，各环节差异分别放到 `collection/dataset/training/rollout/<task_id>/adapter.py`；共享算法放在各自 `common/`。下面的旧 manifest hook 保留兼容，已有专属 dataset 目录时，其 `adapter_factory` 是实际证据入口。
+
 当前注册两种执行器：Panda双臂 `dual_panda_v1`（S16/A14），以及单臂Push-T `single_panda_push_v1`（S9/A7）。模型图像均为单 oblique。新物体/任务可以复用匹配的执行器；不同机器人自由度、Action Schema 或传感器不能静默套用接口。
 
 ## 1. 建立目录并注册
@@ -54,7 +56,7 @@ Registry 实现是 `tasks/registry.py`，扫描 `tasks/*/task.json`。不会根�
 | `configure_xml(root, config)` | 设置任务几何、目标区域和相机等；保留共享执行器需要的命名契约 |
 | `reset(controller, object_position, yaw)` | 设置任务附加障碍等；基础物体和目标初始化已由共享控制器处理 |
 | `collection_success(contact_control, controller, now, object_pos, object_rot, any_contact)` | 任务终态检查，更新 DONE/完成计时；共享碰撞、失抓等物理失败保护仍有效 |
-| `rollout_monitor(config, initial_state, **options)` | 返回评估 monitor；需提供既有 `SuccessMonitor` 的 `update(controller)` 返回终态与物理证据字典的契约，具体调用见 `rollout/rollout.py` |
+| `rollout_monitor(config, initial_state, **options)` | 返回评估 monitor；需提供既有 `SuccessMonitor` 的 `update(controller)` 返回终态与物理证据字典的契约，具体调用见 `rollout/common/rollout.py` |
 | `preflight(config, seeds, demonstration_seeds=(), engineering_seeds=())` | 任务专属初态、可达性与相机检查，返回 cases/summary；保留全部种子及异常标记 |
 | `dataset_adapter()` | 返回含 `validate(metadata)` 与 `build_evidence(episode, curation_config)` 的对象；把任务事件转换成统一事实证据，交给未改动的裁剪和 Safe Stitch 核心 |
 
