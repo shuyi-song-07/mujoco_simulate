@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from dataset.task3 import prepare_paper_dataset as prepared
 from dataset.task3 import training_pack
@@ -118,6 +119,52 @@ class RolloutCollectionSourceTests(unittest.TestCase):
 
     def test_camera_change_cannot_hide_behind_audited_source_compatibility(self):
         episode, metadata = self.audited_camera_source()
+        metadata['render_identity']['actual_fovy_degrees'] += 1
+        self.update_identity_digest(metadata['render_identity'])
+        with self.assertRaisesRegex(ValueError, 'camera/physics/assets'):
+            verify_oblique_camera(episode, metadata,
+                collection_union=self.manifest['dataset_collection_compatibility'])
+
+    def audited_tray_controller_source(self):
+        episode, metadata = self.audited_camera_source()
+        metadata['render_identity']['source_files_sha256'][
+            'simulation/mujoco/dual_arm/task_controller.py'] = (
+            '23bad8440fc843f110619e50b1737fd1bc4c370a5500f85b7fdb996e3de2bd91')
+        self.update_identity_digest(metadata['render_identity'])
+        return episode, metadata
+
+    def test_recorded_open_tray_controller_has_audited_render_proof(self):
+        episode, metadata = self.audited_tray_controller_source()
+        proof = verify_oblique_camera(episode, metadata,
+            collection_union=self.manifest['dataset_collection_compatibility'])
+        rules = proof['compatibility']['source_compatibility']
+        self.assertTrue(any(r['rule'] == 'tray-open-reset-and-push-capability-metadata-only' for r in rules))
+        self.assertEqual(proof['render_identity'], metadata['render_identity'])
+
+    def test_controller_compatibility_rejects_closed_initial_gripper(self):
+        episode, metadata = self.audited_tray_controller_source()
+        metadata['config']['scene']['initial_gripper'] = 'closed'
+        identity = render_identity(metadata['config'])
+        identity['source_files_sha256']['config/collection.json'] = metadata['task_binding']['sources']['config/collection.json']
+        identity['source_files_sha256']['simulation/mujoco/dual_arm/task_controller.py'] = (
+            '23bad8440fc843f110619e50b1737fd1bc4c370a5500f85b7fdb996e3de2bd91')
+        self.update_identity_digest(identity)
+        metadata['render_identity'] = identity
+        with self.assertRaisesRegex(ValueError, 'Unreviewed rendering controller'):
+            verify_oblique_camera(episode, metadata,
+                collection_union=self.manifest['dataset_collection_compatibility'])
+
+    def test_controller_compatibility_rejects_unknown_current_source(self):
+        episode, metadata = self.audited_tray_controller_source()
+        current = render_identity(metadata['config'])
+        current['source_files_sha256']['simulation/mujoco/dual_arm/task_controller.py'] = 'f'*64
+        with patch('simulation.mujoco.dual_arm.render_identity.render_identity', return_value=current):
+            with self.assertRaises(ValueError):
+                verify_oblique_camera(episode, metadata,
+                    collection_union=self.manifest['dataset_collection_compatibility'])
+
+    def test_controller_compatibility_does_not_hide_camera_change(self):
+        episode, metadata = self.audited_tray_controller_source()
         metadata['render_identity']['actual_fovy_degrees'] += 1
         self.update_identity_digest(metadata['render_identity'])
         with self.assertRaisesRegex(ValueError, 'camera/physics/assets'):

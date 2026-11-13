@@ -27,7 +27,7 @@ MODULES=[
         'test_policy_executor','test_training_loop','test_training_engine','test_act_reference',
         'test_reference_compatibility','test_checkpoint_candidates','test_check_training_pack','test_diffusion_model',
         'test_diffusion_data','test_diffusion_training','test_diffusion_rollout','test_diffusion_official',
-        'test_rollout_collection_sources','test_rollout_checkpoint_selection',
+        'test_rollout_collection_sources','test_rollout_checkpoint_selection','test_rollout_lock',
         'test_rollout_candidates','test_gesture_auxiliary','test_gesture_continuation',
         'test_loss_reporting','test_training_plots','test_policy_comparison','test_smoke_continuation_guard','test_rollout_reporting')]
 ]

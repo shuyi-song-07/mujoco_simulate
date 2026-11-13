@@ -908,15 +908,24 @@ checkpoint：{html.escape(metadata['checkpoint'])} · 30 Hz观察，60 Hz执行�
 
 @contextmanager
 def evaluation_lock():
-    import msvcrt
+    windows = os.name == 'nt'
+    if windows:
+        import msvcrt
+    else:
+        import fcntl
     lock_path=ROOT/'.local/locks/rollout.lock';lock_path.parent.mkdir(parents=True,exist_ok=True)
     with lock_path.open('a+b') as stream:
         if stream.tell()==0:stream.write(b'0');stream.flush()
         stream.seek(0)
-        try:msvcrt.locking(stream.fileno(),msvcrt.LK_NBLCK,1)
+        try:
+            if windows:msvcrt.locking(stream.fileno(),msvcrt.LK_NBLCK,1)
+            else:fcntl.flock(stream.fileno(),fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as error:raise RuntimeError('Another evaluation is running; do not start duplicate GPU jobs') from error
         try:yield
-        finally:stream.seek(0);msvcrt.locking(stream.fileno(),msvcrt.LK_UNLCK,1)
+        finally:
+            stream.seek(0)
+            if windows:msvcrt.locking(stream.fileno(),msvcrt.LK_UNLCK,1)
+            else:fcntl.flock(stream.fileno(),fcntl.LOCK_UN)
 
 
 def verify_saved_case(directory, seed):

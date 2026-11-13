@@ -29,6 +29,18 @@ CONFIG_VALIDATION_RENDER_COMPATIBILITY = {
     'current_sha256': 'a3a5fbc62a871b3402b2d7758a00d7ddcf4b262bce2c030d5cce396d4d646dca',
     'audited_commits': ['139e5a5', '22510a7'],
 }
+# Audited 22510a7 -> fb12975 controller diff: optional initial gripper state
+# plus a push-only capability label. Default-open tray reset and physics are
+# unchanged; closed/push configurations and every other byte version fail.
+TRAY_OPEN_CONTROLLER_RENDER_COMPATIBILITY = {
+    'rule': 'tray-open-reset-and-push-capability-metadata-only',
+    'path': 'simulation/mujoco/dual_arm/task_controller.py',
+    'recorded_sha256': '23bad8440fc843f110619e50b1737fd1bc4c370a5500f85b7fdb996e3de2bd91',
+    'current_sha256': '68f7dee06378cea9d6cf6f0f19357066c52457aa123d758f592788c0483655d8',
+    'audited_commits': ['22510a7', 'fb12975'],
+    'task_id': 'tray_to_platform',
+    'initial_gripper': 'open',
+}
 
 
 def _read(path):
@@ -94,6 +106,16 @@ def verify_oblique_camera(episode, metadata, *, collection_union=None):
                 if (recorded_sources.get(rule['path']) != rule['recorded_sha256']
                         or expected['source_files_sha256'].get(rule['path']) != rule['current_sha256']):
                     raise ValueError('Unreviewed rendering configuration source change')
+                compatibility.append(copy.deepcopy(rule))
+                expected['source_files_sha256'][rule['path']] = rule['recorded_sha256']
+            rule = TRAY_OPEN_CONTROLLER_RENDER_COMPATIBILITY
+            if recorded_sources.get(rule['path']) != expected['source_files_sha256'].get(rule['path']):
+                if (config['task_binding'].get('task_id') != rule['task_id']
+                        or config['scene'].get('initial_gripper', 'open') != rule['initial_gripper']
+                        or config['scene'].get('push_alignment')
+                        or recorded_sources.get(rule['path']) != rule['recorded_sha256']
+                        or expected['source_files_sha256'].get(rule['path']) != rule['current_sha256']):
+                    raise ValueError('Unreviewed rendering controller source change')
                 compatibility.append(copy.deepcopy(rule))
                 expected['source_files_sha256'][rule['path']] = rule['recorded_sha256']
             payload = {key: value for key, value in expected.items() if key != 'identity_sha256'}
