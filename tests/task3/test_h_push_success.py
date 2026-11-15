@@ -93,11 +93,12 @@ class HFrameSuccessTests(unittest.TestCase):
         self.assertFalse(result["final_conditions"]["position_xy"])
 
     def test_wrapped_yaw_matches_across_pi_boundary(self):
-        self.c.target_yaw = math.pi - math.radians(2)
-        self.pose_fixture(yaw=-math.pi + math.radians(2))
+        angle = self.c.config['scene']['push_alignment']['yaw_tolerance_rad'] / 4
+        self.c.target_yaw = math.pi - angle
+        self.pose_fixture(yaw=-math.pi + angle)
         result = self.ticks(40)
         self.assertTrue(result["task_success"])
-        self.assertAlmostEqual(result["target_error"]["orientation_rad"], math.radians(4), places=4)
+        self.assertAlmostEqual(result["target_error"]["orientation_rad"], 2 * angle, places=4)
 
     def test_alignment_hold_restarts_after_a_bad_pose(self):
         self.pose_fixture()

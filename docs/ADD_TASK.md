@@ -4,6 +4,10 @@
 
 当前注册两种执行器：Panda双臂 `dual_panda_v1`（S16/A14），以及单臂Push-T `single_panda_push_v1`（S9/A7）。模型图像均为单 oblique。新物体/任务可以复用匹配的执行器；不同机器人自由度、Action Schema 或传感器不能静默套用接口。
 
+双臂非抓取推动任务还需在 `collection/<task_id>/adapter.py` 声明 `contact_semantics = 'nonprehensile_push'`，参考 H/R；未声明时保留托盘的 `grasp_transport`。共享 ContactControl 和 PolicyExecutor 都读取该选择：推动接触不锁爪、不建立双抓刚体参考，IK、碰撞、Z 下限和输入超时保护仍共用。不要仅换成功 monitor 就假定整个控制器已经适配 Push。
+
+Dataset 的任务证据适配器需提供 `task_semantics` 和经过实际 monitor 验证的 `task_completion`；H/R 保存位置、角度、支撑、稳定时间及判据版本。共用裁剪消费这些事实，保护实际开合爪直到结束，完成尾段不再要求推移物体后开爪。缺少这些事实的旧 Push 记录继续保守保留，不能只凭 DONE 补造证据。Rollout 的 H/R 适配器使用 `rollout/common/push_task.py`，不沿用托盘的抬升和半开爪选项解释成功。
+
 ## 1. 建立目录并注册
 
 先复制一个已有 **任务定义**，不是整个工程或控制器。例如从桌面托盘任务创建新实验：

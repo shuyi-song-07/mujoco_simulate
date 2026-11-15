@@ -732,6 +732,7 @@ function continuousControlStatus() {
     tracking_recovery:"等待至少 5 个可信新样本并稳定 200 ms。", mode_changed:"移动平面已改变，等待追踪恢复并重建基准。",
     user_pause:"已手动暂停。点击“恢复控制”，再匹配当前夹爪开度。", joint_limit:"接近关节限位，目标已限制。",
     workspace_limit:"接近工作空间边界，整体目标已限制。", ik_unreachable:"当前目标无法到达，保持原目标。",
+    roll_pitch_not_supported:"目标含不支持的俯仰或侧倾，已保持上一目标。当前只支持 XYZ 与有限 Yaw 转向。",
     gesture_mode_confirmation:"先保持爪宽，等待新手形稳定 200 ms；过渡不会继续旧的捏合。",
     gesture_motion_baseline:"新的手腕基准已建立。移动阶段保持爪宽，停手不补发旧位移。",
     pinch_baseline:"开度接管完成，本帧保持。随后拇指与食指的变化才控制对应夹爪。",
@@ -868,7 +869,9 @@ function renderContinuousRobotReadings() {
     const fingers=runtime.contacts?.[`${side}_fingers`],count=Array.isArray(fingers)?fingers.filter(Boolean).length:null;
     const force=runtime.contacts?.finger_normal_force_n?.[side];
     const forceText=Array.isArray(force)&&force.length===2&&force.every(Number.isFinite)?` · 指力 ${force.map(f=>f.toFixed(2)).join(" / ")} N`:"";
-    const contactText=contact.stable_grasps?.[side]===true&&runtime.contacts?.[side]?"真实双指抓稳":count===1?"仅单指接触，未抓稳":runtime.contacts?.[side]?"双指接触，等待抓稳确认":"无双指接触";
+    const contactText=contact.contact_semantics==="nonprehensile_push"?
+      (count>0?`${count} 指推动接触 · 不锁定双抓`:"无指部推动接触"):
+      contact.stable_grasps?.[side]===true&&runtime.contacts?.[side]?"真实双指抓稳":count===1?"仅单指接触，未抓稳":runtime.contacts?.[side]?"双指接触，等待抓稳确认":"无双指接触";
     rows.push(`${name}爪 请求 ${mm(g.requested_width_m)} · 执行 ${mm(g.command_width_m)} · 实测 ${mm(g.actual_width_m)} · ${contactText}${forceText}`);
     const held=Number.isFinite(contact.hold_width_m?.[side]),operationHeld=Number.isFinite(contact.operation_hold_width_m?.[side]);
     let state=contact.control_protocol==="gesture-grasp-release-v2"?(held?"真实抓持保护":operationHeld?`操作锁宽 ${mm(contact.operation_hold_width_m[side])} · 无真实抓持锁`:"未锁定 · 需停稳接管"):(held?"抓持保持，可继续移动":"自由开合");
@@ -901,7 +904,9 @@ function renderContinuousState() {
   $("scenario-name").textContent=`任务 ${runtime.task_id??runtime.config?.task_binding?.task_id??"—"} · 场景 ${runtime.config?.scene?.scenario??"—"}${sceneNumber} · 种子 ${runtime.seed??"—"}`;
   $("scene-reset-help").textContent=connected?`未录制时“重置”切换下一摆放；保存或放弃也会切换。会话种子 ${runtime.session_seed??"—"}；当前摆放种子 ${runtime.seed??"—"}。`:"仿真未连接 · 摆放与种子状态待同步。";
   $("mode").textContent=output.mode;
-  $("task-state").textContent=runtime.task_state==="PARTIAL_CONTACT"?"单侧/部分接触":tasks[runtime.task_state]??runtime.task_state;
+  const pushLabels=runtime.physical_contact?.contact_semantics==="nonprehensile_push"?
+    {PREGRASP:"接近待推",PARTIAL_CONTACT:"推动接触 · 两臂独立"}:{};
+  $("task-state").textContent=pushLabels[runtime.task_state]??(runtime.task_state==="PARTIAL_CONTACT"?"单侧/部分接触":tasks[runtime.task_state]??runtime.task_state);
   $("gripper").textContent=edgeTriggeredGrippers()?"掌↔拳切换开合":rateGestures()?"张掌开 / 握拳闭":"连续开合 / 抓持保持";
   $("mode-label").textContent="当前移动模式";
   $("recording-state").textContent=runtime.saving?"保存中":runtime.recording?`${runtime.episode_end?"已截止 · 待保存":"录制中"} · ${runtime.frames} 帧`:"练习 · 未录制";

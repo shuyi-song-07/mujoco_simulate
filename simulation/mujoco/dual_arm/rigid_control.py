@@ -202,10 +202,14 @@ class RigidControl:
                 rot = rz(yaw*scale) @ self.object_rotation
                 progress = min(1., self.handoff_progress+self.handoff_step*scale)
                 if progress < 1.:
-                    refs = [((1-progress)*start[0]+progress*end[0], blend_rotation(start[1], end[1], progress))
+                    refs = [((1-progress)*start[0]+progress*end[0], start[1])
                             for start, end in zip(self.handoff_start, ref)]
                 else:
-                    refs = ref
+                    refs = [(end[0], start[1]) for start, end in zip(self.handoff_start, ref)]
+                # Keep the accepted orientation reference, transported by the
+                # supported world-Yaw motion. Measured contact deflection stays
+                # in ContactControl.reference for slip checks; importing its
+                # roll/pitch here created targets rejected on the next input.
                 return [pos+rot @ r[0] for r in refs], [rot @ r[1] for r in refs], (pos, rot, progress)
         else:
             self.reference_id = None

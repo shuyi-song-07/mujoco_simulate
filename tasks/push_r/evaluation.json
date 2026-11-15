@@ -1,5 +1,5 @@
 {
-  "version": "papera-single-view-half-open-evaluation-v1",
+  "version": "papera-push-alignment-evaluation-v1",
   "baseline_run": null,
   "pack": null,
   "protocol_path": null,
@@ -86,7 +86,7 @@
   "human_quality_review": "pending",
   "study_scope": "single_checkpoint_exploratory_closed_loop",
   "success_open_fraction": 0.5,
-  "success_criterion": "papera-physical-half-open-v1",
+  "success_criterion": "papera-push-r-align-v1",
   "task_success_criterion": "papera-push-r-align-v1",
   "media_mode": "policy_only",
   "preview_headless": true

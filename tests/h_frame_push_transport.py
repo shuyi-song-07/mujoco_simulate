@@ -131,7 +131,7 @@ def push_demo(c, capture=None):
     waypoints[:, 2] = .367
     move('descend', waypoints, 85)
     assert np.all(peak_force == 0), 'Approach must stop before contact'
-    waypoints[:, 0] += [.172, .138]
+    waypoints[:, 0] += [.175, .141]
     move('dual_push', waypoints, 135)
     assert c.data.xpos[c.object_id, 0] - first[0] > .09
     assert np.all(peak_force > 1), 'Each arm must apply measurable fingertip contact'
@@ -139,12 +139,14 @@ def push_demo(c, capture=None):
     move('retract', waypoints, 65)
     # Move the right arm outside the rear portion of its rail. A -Y push
     # there moves the frame toward the centerline and creates positive yaw.
-    rail = c.data.xpos[c.object_id] + c.data.xmat[c.object_id].reshape(3, 3) @ [-.081, .16, 0]
+    rail = c.data.xpos[c.object_id] + c.data.xmat[c.object_id].reshape(3, 3) @ [-.105, .16, 0]
     waypoints[1, :2] = rail[:2] + [0, .026]
     move('side_approach', waypoints, 90)
     waypoints[1, 2] = .367
     move('side_descend', waypoints, 85)
-    waypoints[1, 1] -= .045
+    # The task now requires ~2 degrees, tighter than the original 5-degree
+    # demo. Finish the correction physically; do not relax the scorer.
+    waypoints[1, 1] -= .047
     result = move('aligned', waypoints, 100)
     assert c.task_state == TaskState.DONE and result['task_success'], result
     assert c.get_status()['object_yaw_rad'] - first_yaw > math.radians(8)

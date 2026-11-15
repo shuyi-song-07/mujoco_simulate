@@ -133,6 +133,7 @@ class PushRetreatTests(unittest.TestCase):
         c.rigid_control.reference_id = c.contact_control.reference
         c.rigid_control.object_position = obj
         c.rigid_control.object_rotation = rot
+        c.rigid_control.handoff_start = c.contact_control.reference
         action = c.action_vector_m()
         action[[0, 7]] -= .004
         self.assertEqual(c.rigid_control.move(action), 'tracking_lead_limit')

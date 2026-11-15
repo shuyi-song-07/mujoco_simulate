@@ -16,6 +16,16 @@ from .task_scenes import target_surface_z, placement_geometry
 class ContactControl(RateGestureControlMixin, GestureControlMixin):
     def __init__(self, controller):
         self.c = controller
+        # Collection and policy rollout share the task's contact interpretation.
+        # Raw finger forces/contacts remain measured even for non-grasp tasks.
+        self.contact_semantics = 'grasp_transport'
+        if controller.config.get('task_binding'):
+            from tasks.stages import stage_adapter
+            adapter = stage_adapter(controller.config, 'collection')
+            self.contact_semantics = getattr(adapter, 'contact_semantics', 'grasp_transport')
+        if self.contact_semantics not in {'grasp_transport', 'nonprehensile_push'}:
+            raise ValueError('unsupported_task_contact_semantics')
+        self.grasp_enabled = self.contact_semantics == 'grasp_transport'
         self.limits = controller.config["contact_control"]
         self.since = {s: None for s in ("left", "right")}
         self.stable = {s: False for s in self.since}
@@ -403,7 +413,7 @@ class ContactControl(RateGestureControlMixin, GestureControlMixin):
             return
         now = float(c.data.time)
         for side in self.since:
-            if not (self.rate_grasp_contact(side) if self.rate_control else c.contacts[side]):
+            if not self.grasp_enabled or not (self.rate_grasp_contact(side) if self.rate_control else c.contacts[side]):
                 self.since[side] = None
             elif self.since[side] is None:
                 self.since[side] = now
@@ -465,7 +475,8 @@ class ContactControl(RateGestureControlMixin, GestureControlMixin):
             collection_success(self, c, now, object_pos, object_rot, any_contact)
 
     def status(self):
-        result = {"state": self.state, "stable_grasps": dict(self.stable), "support_ready": self.support_ready,
+        result = {"state": self.state, "contact_semantics": self.contact_semantics,
+                "stable_grasps": dict(self.stable), "support_ready": self.support_ready,
                 "support_checks": dict(self.support_checks), "support_blockers": list(self.support_blockers),
                 "support_requirements": dict(self.support_requirements), "support_measurements": dict(self.support_measurements),
                 "table_support_force_n": self.support_force_n, "bottom_height_m": self.bottom_height_m,
@@ -498,4 +509,6 @@ class ContactControl(RateGestureControlMixin, GestureControlMixin):
                           gripper_trigger_policy=self.gripper_trigger_policy,
                           gripper_edge={s: dict(v) for s, v in self.gripper_edge.items()},
                           grasp_close_qualified=dict(self.grasp_close_qualified))
+        if hasattr(self, 'task_completion_evidence'):
+            result['task_completion'] = self.task_completion_evidence
         return result

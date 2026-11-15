@@ -3,7 +3,8 @@ from tasks.h_frame_push_align.evidence import PushAlignmentEvidenceAdapter
 
 
 class PushREvidenceAdapter(PushAlignmentEvidenceAdapter):
-    version = 'papera-push-r-alignment-evidence-v1'
+    version = 'papera-push-r-alignment-evidence-v2'
+    criterion = 'papera-push-r-align-v1'
 
     def validate(self, metadata):
         if (metadata.get('task_id') != 'push_r'

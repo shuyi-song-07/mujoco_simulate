@@ -188,6 +188,9 @@
   const waitReasonNames = Object.freeze({
     after_verified_release_tail_budget: '已确认真实释放、物体放稳及任务成功；超出完成后的短上下文，裁剪尾部',
     verified_release_post_context: '已确认真实释放完成，保留配置指定的少量后续原始帧',
+    verified_task_complete: '任务专属物理判据已确认归位完成，夹爪执行也已结束',
+    verified_task_post_context: '保留物理任务完成后的少量原始帧',
+    after_verified_task_tail_budget: '物理任务完成后已超出尾段预算',
     verified_bilateral_release_complete: '双侧真实释放、物体放稳及任务成功已确认，保留完成这一帧',
     missing_actual_release_completion: '仅有任务完成标签，缺少真实释放完成依据，尾部继续保留复查',
     both_actual_ee_below_height_threshold: '左右实际末端世界Z都严格低于高度阈值，整帧保留；低位静止等待也保留',
@@ -268,11 +271,12 @@
     if (!Number.isInteger(row?.terminal_completion_raw_frame) || row.terminal_completion_raw_frame < 0) return null;
     const count = Number.isInteger(row.terminal_post_release_frames) && row.terminal_post_release_frames >= 0
       ? row.terminal_post_release_frames : null;
+    const completion = row.terminal_completion_kind === 'task_completion' ? '推动归位完成' : '真实释放完成';
     const action = row.terminal_tail_excluded === true ? '本帧已超出尾段预算，自动排除。'
-      : row.terminal_tail === true ? '本帧属于完成后的保留上下文。' : '这是释放完成确认帧或其之前的帧。';
+      : row.terminal_tail === true ? '本帧属于完成后的保留上下文。' : `这是${completion}确认帧或其之前的帧。`;
     return {completionRawFrame: row.terminal_completion_raw_frame, postReleaseFrames: count,
       excluded: row.terminal_tail_excluded === true,
-      description: `真实释放完成确认：原始帧 ${row.terminal_completion_raw_frame}。${count === null ? '' : `完成这一帧保留，其后再保留 ${count} 个原始帧（不是毫秒）。`}${action}`};
+      description: `${completion}确认：原始帧 ${row.terminal_completion_raw_frame}。${count === null ? '' : `完成这一帧保留，其后再保留 ${count} 个原始帧（不是毫秒）。`}${action}`};
   }
   function trainingEligibility(episode) {
     const reason = typeof episode?.quality_exclusion_reason === 'string'

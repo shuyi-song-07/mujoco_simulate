@@ -119,6 +119,7 @@ class PushRTests(planar_tests.HFrameSuccessTests):
 
         config = self.c.config
         settings = json.loads((ROOT / get(TASK).manifest["evaluation_config"]).read_text(encoding="utf-8"))
+        settings['task_id'] = TASK  # Same explicit routing supplied by the rollout CLI.
         validate_settings(settings)
         adapter = hook(config, "dataset_adapter")()
         adapter.validate({"task_id": TASK, "schema_version": "task3-papera-v2"})

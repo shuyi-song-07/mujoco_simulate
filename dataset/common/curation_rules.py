@@ -562,7 +562,7 @@ def _protection(rows, cfg):
         intervals.append(record)
         for j in range(cycle['start_index'], end + 1):
             r = rows[j]
-            field = 'grasp_protected' if cycle['phase'] == 'grasp' else 'release_protected'
+            field = 'grasp_protected' if cycle['phase'] in ('grasp', 'close_adjustment') else 'release_protected'
             r[field] = True
             r['protection_by_side'][side].append(cycle['phase'])
             r['protection_start_event'].append(cycle['start_event'])
@@ -596,7 +596,10 @@ def _protection(rows, cfg):
                     finish(side, i, 'aborted_or_reversed_execution', event, uncertain=event['kind'] == 'gripper_aborted')
                 if event['kind'] == 'gripper_aborted':
                     continue
-                phase = ('grasp' if event['kind'] == 'gripper_close_executed' else
+                push = f.get('task_semantics', {}).get('contact') == 'nonprehensile_push'
+                phase = ('close_adjustment' if push and event['kind'] == 'gripper_close_executed' else
+                         'open_adjustment' if push else
+                         'grasp' if event['kind'] == 'gripper_close_executed' else
                          'release' if ever_contact[side] else 'open_adjustment')
                 active[side] = {'phase': phase, 'start_index': i, 'start_raw_frame_index': row['raw_frame_index'],
                                 'start_time_s': row['original_time_s'], 'start_event': copy.deepcopy(event)}
@@ -608,7 +611,14 @@ def _protection(rows, cfg):
                 continue
             stable_width = _stable_width(window, side, cfg['protection']['aperture_stability_m'])
             all_contact = [_facts(r).get('contact', {}).get(side, {}) for r in window]
-            if cycle['phase'] == 'grasp':
+            if cycle['phase'] == 'close_adjustment':
+                closed = all(_number(_facts(r).get('grippers', {}).get(side, {}).get('actual_width_m')) is not None
+                    and abs(_facts(r)['grippers'][side]['actual_width_m']) <= cfg['protection']['aperture_stability_m']
+                    and _facts(r)['grippers'][side].get('goal_width_m') == 0 for r in window)
+                if stable_width and closed:
+                    finish(side, i, 'push_gripper_closed_and_stable',
+                           {'kind': 'physical_close_adjustment_complete', 'control_tick': row.get('source_control_tick')})
+            elif cycle['phase'] == 'grasp':
                 if (stable_width and all(c.get('stable') is True and c.get('double_finger') is True for c in all_contact)
                         and _stable_relative(window, side, cfg['protection'])):
                     finish(side, i, 'actual_grasp_and_relative_pose_stable', {'kind': 'physical_grasp_verified', 'control_tick': row.get('source_control_tick')})
@@ -753,6 +763,8 @@ def _height_regions(rows, cfg, terminal=None):
         row['terminal_tail'] = bool(terminal and i > terminal['completion_index'])
         row['terminal_tail_excluded'] = tail_excluded
         row['terminal_completion_raw_frame'] = terminal['completion_raw_frame'] if terminal else None
+        if terminal and terminal.get('kind') == 'task_completion':
+            row['terminal_completion_kind'] = 'task_completion'
         row['terminal_post_release_frames'] = cfg['waits']['post_release_frames']
         # Retain diagnostic aliases, with actual execution once again the
         # primary retention rule regardless of absolute end-effector height.
@@ -915,7 +927,12 @@ def select_rows(evidence_rows, config=None):
     elif 'minimum_static_frames' in cfg['sa']:
         _confirm_stationary_runs(rows, cfg['sa']['minimum_static_frames'])
     execution_intervals, warnings = _protection(rows, cfg)
-    terminal = _terminal_release(rows, cfg)
+    if any(_facts(r).get('task_semantics', {}).get('completion') == 'task_monitor' for r in rows):
+        from dataset.common.task_completion import terminal_task_completion
+        terminal = terminal_task_completion(rows, cfg, sides=SIDES, window=_window,
+            stable_width=_stable_width, object_settled=_object_settled)
+    else:
+        terminal = _terminal_release(rows, cfg)
     intervals = execution_intervals + _height_regions(rows, cfg, terminal)
     required = [r['frame_role'] in ('INVALID', 'ACTIVE_MOTION') or
                 (bool(r.get('sa_stationarity')) and not r['sa_stationarity']['confirmed']
@@ -940,7 +957,7 @@ def select_rows(evidence_rows, config=None):
     contexts = []
     for cycle in execution_intervals:
         a, b = cycle['start_index'], next(j for j, r in enumerate(rows) if r['raw_frame_index'] == cycle['end_raw_frame_index'])
-        role = 'PRE_GRASP_HOLD' if cycle['phase'] == 'grasp' else 'PRE_RELEASE_HOLD'
+        role = 'PRE_GRASP_HOLD' if cycle['phase'] in ('grasp', 'close_adjustment') else 'PRE_RELEASE_HOLD'
         contexts.extend((j, role, 'physical_event_pre_context') for j in range(max(0, a-cfg['context']['before_frames']), a) if rows[j]['task_segment_id'] == rows[a]['task_segment_id'])
         contexts.extend((j, 'SEMANTIC_PHYSICAL_HOLD', 'physical_event_post_context') for j in range(b+1, min(len(rows), b+cfg['context']['after_frames']+1)) if rows[j]['task_segment_id'] == rows[b]['task_segment_id'])
     for i, r in enumerate(rows):
@@ -1113,6 +1130,7 @@ def select_rows(evidence_rows, config=None):
                     r.update(frame_role='SEMANTIC_PHYSICAL_HOLD',
                              policy_reason=['settling_or_target_change_before_stationary_recenter'])
     if terminal:
+        task_completion = terminal.get('kind') == 'task_completion'
         for i in range(terminal['completion_index'], len(rows)):
             r = rows[i]
             excluded = i > terminal['last_kept_index']
@@ -1126,6 +1144,11 @@ def select_rows(evidence_rows, config=None):
                                else 'verified_release_post_context' if i > terminal['completion_index']
                                else 'verified_bilateral_release_complete'],
                 phase_pause_interpretation=copy.deepcopy(terminal))
+            if task_completion:
+                r['terminal_completion_kind'] = 'task_completion'
+                r['policy_reason'] = ['after_verified_task_tail_budget' if excluded
+                    else 'verified_task_post_context' if i > terminal['completion_index']
+                    else 'verified_task_complete']
     for r in rows:
         r['reason'] = list(r['policy_reason'])
     segments, cuts = resegment_rows(rows)

@@ -78,6 +78,7 @@ class PushAlignmentMonitor:
             "tilt_rad": tilt,
             "alignment_stable_seconds": stable_seconds,
             "final_conditions": conditions,
+            "completion_requirements": dict(self.limits),
         }
 
 
@@ -87,6 +88,7 @@ def collection_success(contact_control, controller, now, object_pos, object_rot,
     if monitor is None:
         monitor = contact_control.push_alignment_monitor = PushAlignmentMonitor(controller.config)
     result = monitor.update(controller)
+    contact_control.task_completion_evidence = result
     controller._success_stable_since = monitor.stable_since
     if result["task_success"]:
         controller.task_state = TaskState.DONE

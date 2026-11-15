@@ -21,6 +21,8 @@ Task(task_id + task_version + task_binding)
 
 Task Binding 含 task_id、task_version、scene_id、Manifest SHA、Schema、七个任务 hook、XML/mesh 路径和 source_files 哈希。共享采集/仿真配置也参与绑定。Source files 必须覆盖自定义任务代码的依赖；新增文件后要更新清单。正式来源审计在 Task 配置或资源变化时拒绝旧绑定，不自动取当前参数解释历史数据。DP 默认训练检查 Pack 内冻结身份，完整文件和当前源码审计由显式 `--full-verify` 启用，见下文。
 
+双臂接触解释由 Collection adapter 的 `contact_semantics` 选择；H/R 为 `nonprehensile_push`，托盘默认 `grasp_transport`。状态中的 `contacts` 始终是真实指部接触，`stable_grasps` 仅表示抓取资格，不能把推动接触自动升级为双抓。H/R 的 `physical_contact.task_completion` 保存任务 monitor 的判据版本、各项条件、阈值和稳定时间；Dataset adapter 验证这些事实后提供 `evidence.task_completion`。裁剪沿用 `terminal_release` 容器保持兼容，`kind=task_completion` 和逐帧 `terminal_completion_kind=task_completion` 表示任务归位完成，不能解释为双爪释放。既有保护字段仍兼容保存，但闭爪调整区间的 `phase=close_adjustment` 不等于抓稳。开合爪尚在执行时不能用 DONE 截断；缺少物理完成证据的旧 Push 记录继续保留复查。
+
 同任务的多来源联合使用明确的采集参数等价契约，不能直接重写旧绑定。`dataset/common/merge_prepared.py` 先核各原Prepared与实际episode_metadata，只允许 `tasks.recorded_collection.ALLOWED_CONFIG_PATHS` 中已支持的采集门槛不同，场景、模型相机、资产、Schema和其余配置必须一致。联合Prepared/Pack的全局 `task_binding` 表示当前规范学习任务（learning domain）；`source_task_bindings`、`source_prepared_manifests` 和 `dataset_collection_compatibility` 完整冻结原采集版本与差异，每条episode保存 `source_task_binding`、`source_prepared`、`source_prepared_manifest_sha256`。原Raw和源Prepared绑定不变。
 
 构建时实际读取原metadata，核对其冻结记录，不能仅靠手写proof取得资格；联合输入还需逐条经过原NPZ/index/sequence因果与拼接检查。Pack随后内嵌这些已核来源，小元数据及每条来源关系在轻量读取时仍验证，但不要求原电脑、原Prepared目录或Raw在线。排除名单取来源并集，重复episode、来源错配、不同相机/场景及split交叉均拒绝。提供的master split冻结到联合Prepared，Pack不得静默改用另一份划分。

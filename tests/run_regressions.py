@@ -18,7 +18,7 @@ MODULES=[
     'tests.test_baseline_campaign',
     *['tests.task3.'+n for n in (
         'test_sequence_stitching','test_event_continuity','test_adjacent_stationarity','test_three_frame_curation','test_wait_compression',
-        'test_height_protection','test_terminal_tail','test_frame_evidence',
+        'test_height_protection','test_terminal_tail','test_push_task_evidence','test_frame_evidence',
         'test_curation_rules','test_curation_io','test_intent_curation','test_curation_safety','test_review_junction_sources',
         'test_merge_prepared','test_training_pack_union',
         'test_single_view_prepared_pack','test_measurement_journal','test_hand_measurement','test_review_server','test_review_preview',
@@ -39,7 +39,7 @@ if __name__=='__main__':
     import subprocess
     collection_only='--collection-only' in sys.argv
     names=['tests.task3.test_action_contract', 'tests.task3.test_level_gripper_control',
-           'tests.task3.test_control_computation','tests.task3.test_push_retreat','tests.task3.test_episode_completion',
+           'tests.task3.test_control_computation','tests.task3.test_push_retreat','tests.task3.test_push_contact_semantics','tests.task3.test_episode_completion',
            'tests.task3.test_preview_cameras', 'tests.task3.test_h_push_success',
            'tests.h_frame_push_transport', 'tests.push_r_transport', 'tests.task3.test_single_push_t',
            'tests.task3.test_single_push_guard', 'tests.task3.test_single_ui_contract'] if collection_only else MODULES

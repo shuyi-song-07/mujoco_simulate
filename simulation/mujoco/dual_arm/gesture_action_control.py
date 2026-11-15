@@ -40,6 +40,8 @@ class RateGestureControlMixin:
         A commanded closure must precede a new rate-protocol grasp. Existing
         verified grasps remain protected across pauses or camera loss.
         """
+        if not self.grasp_enabled:
+            return False
         arm = next(a for a in self.c.arms if a.side == side)
         forces = self.c.contacts.get(f"{side}_grip_forces_n", ())
         opposed = len(forces) == 2 and all(
@@ -54,8 +56,9 @@ class RateGestureControlMixin:
         if self.release_opening[side]:
             arm = next(a for a in self.c.arms if a.side == side)
             arm.hold_gripper()
-            self.hold_width_m[side] = arm.gripper_command_width_m
-            self.rate_interrupted_release_hold[side] = True
+            if self.grasp_enabled:
+                self.hold_width_m[side] = arm.gripper_command_width_m
+                self.rate_interrupted_release_hold[side] = True
             self.release_opening[side] = False
             self._release_started[side] = None
             self.release_progress_s[side] = 0.
@@ -121,7 +124,7 @@ class RateGestureControlMixin:
         for arm in self.c.arms:
             side = arm.side
             active = self.release_opening[side] or self._release_started[side] is not None
-            if self.release_opening[side]:
+            if self.release_opening[side] and self.grasp_enabled:
                 # An interrupted supported release needs fresh confirmation,
                 # including when contact just cleared during the opening.
                 self.hold_width_m[side] = arm.gripper_command_width_m

@@ -5,7 +5,8 @@ from tasks.h_frame_push_align.success import alignment_errors
 
 
 class PushAlignmentEvidenceAdapter:
-    version = 'papera-h-frame-alignment-evidence-v1'
+    version = 'papera-h-frame-alignment-evidence-v2'
+    criterion = 'papera-h-frame-push-align-v1'
 
     def validate(self, metadata):
         if (metadata.get('task_id') != 'h_frame_push_align'
@@ -34,6 +35,31 @@ class PushAlignmentEvidenceAdapter:
                 'available': bool(available),
                 'target_error': alignment_errors(position, rotation, target, yaw) if available else None,
             }
+            evidence['task_semantics'] = {'contact': 'nonprehensile_push', 'completion': 'task_monitor'}
+            physical = status.get('physical_contact') or {}
+            completion = physical.get('task_completion') or {}
+            limits = completion.get('completion_requirements') or {}
+            conditions = completion.get('final_conditions') or {}
+            support = physical.get('support_checks') or {}
+            required = ('position_xy', 'yaw', 'upright', 'inside_table', 'table_support',
+                        'linear_speed', 'angular_speed', 'not_failed')
+            keys = ('position_tolerance_m', 'yaw_tolerance_rad', 'max_tilt_rad', 'stable_seconds')
+            valid_limits = all(type(limits.get(k)) in (int, float) and np.isfinite(limits[k])
+                               and limits[k] > 0 for k in keys)
+            error = evidence['push_alignment']['target_error']
+            verified = bool(available and valid_limits
+                and completion.get('task_success_criterion') == self.criterion
+                and completion.get('task_success') is True
+                and all(conditions.get(k) is True for k in required)
+                and all(support.get(k) is True for k in ('table_load', 'clearance', 'penetration'))
+                and error['xy_m'] <= limits['position_tolerance_m']
+                and error['orientation_rad'] <= limits['yaw_tolerance_rad']
+                and np.arccos(np.clip(rotation[2, 2], -1, 1)) <= limits['max_tilt_rad']
+                and completion.get('alignment_stable_seconds', -1) >= limits['stable_seconds'] - 1e-9)
+            # Historical records lacking monitor evidence stay conservative;
+            # DONE alone must never invent a physical success certificate.
+            evidence['task_completion'] = {'kind': 'push_alignment', 'verified': verified,
+                'criterion': self.criterion, 'monitor': completion}
         return result
 
 

@@ -38,7 +38,7 @@ class LearningLayoutTests(unittest.TestCase):
             settings['task_id'] = task_id
             evaluator.validate_success(settings)
             invalid = copy.deepcopy(settings)
-            invalid['success_open_fraction'] = 0
+            invalid['version'] = 'unregistered-evaluation-rule'
             with self.assertRaises(ValueError):
                 evaluator.validate_success(invalid)
 

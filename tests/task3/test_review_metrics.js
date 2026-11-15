@@ -5,11 +5,18 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const metrics = require('../../dataset/task3/review_metrics.js');
+const metrics = require('../../dataset/common/review_metrics.js');
+
+test('push task completion is not described as gripper release', () => {
+  const summary = metrics.terminalSummary({terminal_completion_raw_frame:16,
+    terminal_completion_kind:'task_completion', terminal_post_release_frames:3});
+  assert.match(summary.description, /推动归位完成/);
+  assert.doesNotMatch(summary.description, /真实释放完成/);
+});
 
 test('actual review playback controls accept single-view and legacy three-view media', () => {
   const fs = require('node:fs'), vm = require('node:vm'), path = require('node:path');
-  const html = fs.readFileSync(path.join(__dirname, '../../dataset/task3/review.html'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '../../dataset/common/review.html'), 'utf8');
   const fn = html.slice(html.indexOf('function playbackControls(){'), html.indexOf('function showOriginal(){'));
   for (const count of [0, 1, 3]) for (const loading of [false, true]) for (const previewing of [false, true]) for(const mode of [{read_only:false},{read_only:true},{read_only:true,frozen_preview:true}]) {
     const nodes = {};
@@ -509,7 +516,7 @@ test('reposition wait has a clear Chinese label and preserves automatic decision
 // Exercise the actual HTML renderer, not a parallel test-only label template.
 function renderPolicyFixture(source) {
   const fs = require('node:fs'), vm = require('node:vm'), path = require('node:path');
-  const html = fs.readFileSync(path.join(__dirname, '../../dataset/task3/review.html'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '../../dataset/common/review.html'), 'utf8');
   const reasons = html.slice(html.indexOf('const reasonNames='), html.indexOf('const pauseNames='));
   const label = html.match(/^const labelReasons=.*$/m)?.[0];
   const begin = html.indexOf('function renderPolicy(row){');
@@ -700,7 +707,7 @@ test('release context and completion evidence missing have separate visible expl
 
 function renderEligibilityFixture(ep) {
   const fs=require('node:fs'),vm=require('node:vm'),path=require('node:path');
-  const html=fs.readFileSync(path.join(__dirname,'../../dataset/task3/review.html'),'utf8');
+  const html=fs.readFileSync(path.join(__dirname,'../../dataset/common/review.html'),'utf8');
   const start=html.indexOf('function renderEligibility(ep){');
   const render=html.slice(start,html.indexOf('\nfunction renderEpisodeSummary()',start));
   assert.ok(start>=0&&html.includes('renderEligibility(ep);'),'The actual page must call eligibility rendering');
