@@ -181,8 +181,8 @@ def _audit_one(ref, config, output, check_videos):
         try:
             # An audit contains all facts. The only keep/remove policy runs in
             # rebuild_curation, after source integrity has passed.
-            from tasks.registry import hook
-            derived = hook(episode['metadata']['config'], 'dataset_adapter')().build_evidence(episode, config)
+            from dataset.common.task_evidence import build_task_evidence
+            derived = build_task_evidence(episode, config)
             write_rows(directory / "frames.jsonl", derived["rows"])
             write_analysis_artifacts(directory, derived)
             entry.update(segments=[], cuts=[], analysis_directory=str(directory.relative_to(output)))

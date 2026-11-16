@@ -1,61 +1,55 @@
-"""Consume task-adapter completion evidence; never infer success from gestures."""
+"""Push-only tail budget on the raw clock. Grasp release rules stay separate."""
 import math
 
 
-def terminal_task_completion(rows, cfg, *, sides, window, stable_width, object_settled):
-    final_segment = rows[-1]['task_segment_id']
-    def servo_complete(facts):
-        for side in sides:
-            g = facts.get('grippers', {}).get(side, {})
-            actual, goal = g.get('actual_width_m'), g.get('goal_width_m')
-            if not (type(actual) in (int, float) and type(goal) in (int, float)
-                    and math.isfinite(actual) and math.isfinite(goal)
-                    and abs(actual-goal) <= cfg['protection']['aperture_stability_m']):
-                return False
-        return True
+def _finite(value):
+    return type(value) in (int, float) and math.isfinite(value)
 
-    last_execution = max((i for i, r in enumerate(rows) if r['task_segment_id'] == final_segment
-        and any(e.get('kind') in ('gripper_open_executed', 'gripper_close_executed')
-                for e in r['evidence'].get('events', []))), default=-1)
-    good_suffix = True
-    suffix_start = len(rows)
-    for i in range(len(rows) - 1, -1, -1):
-        row = rows[i]
-        if row['task_segment_id'] != final_segment:
-            break
-        f = row['evidence']
-        good_suffix &= (row['frame_role'] != 'INVALID'
-            and f.get('source', {}).get('valid') is True
-            and f.get('source', {}).get('available') is True
-            and f.get('task', {}).get('done') is True
-            and f.get('task', {}).get('success') is True
-            and f.get('task_completion', {}).get('verified') is True and servo_complete(f))
-        if not good_suffix:
-            break
-        suffix_start = i
-    first_good = None
-    for i in range(max(suffix_start, last_execution), len(rows)):
-        sample = window(rows, i, cfg['protection']['settle_seconds'])
-        if (not sample or sample[0]['task_segment_id'] != final_segment or i < last_execution
-                or (last_execution >= 0 and sample[0]['raw_frame_index'] < rows[last_execution]['raw_frame_index'])):
-            continue
-        # Completion does not truncate an opening/closing still in progress.
-        settled = all(stable_width(sample, s, cfg['protection']['aperture_stability_m']) for s in sides)
-        for r in sample:
-            facts = r['evidence']
-            settled &= (facts.get('source', {}).get('valid') is True
-                        and facts.get('source', {}).get('available') is True and servo_complete(facts))
-        if settled and object_settled(sample, cfg) and object_settled(rows[i:], cfg):
-            first_good = i
-            break
+
+def terminal_task_completion(rows, cfg, *, sides, window, stable_width, object_settled):
+    if not rows:
+        return None
+    final_segment = rows[-1]['task_segment_id']
+    first_good = next((i for i, row in enumerate(rows)
+        if row['task_segment_id'] == final_segment and row['frame_role'] != 'INVALID'
+        and row['evidence'].get('source', {}).get('valid') is True
+        and row['evidence'].get('source', {}).get('available') is True
+        and row['evidence'].get('task', {}).get('done') is True
+        and row['evidence'].get('task', {}).get('success') is True
+        and row['evidence'].get('task_completion', {}).get('verified') is True
+        and _finite(row.get('original_time_s'))), None)
     if first_good is None:
         return None
     i = first_good
-    last = min(len(rows) - 1, i + cfg['waits']['post_release_frames'])
-    return {'kind': 'task_completion', 'completion_index': i,
-        'completion_raw_frame': rows[i]['raw_frame_index'], 'completion_time_s': rows[i]['original_time_s'],
+    evidence = rows[i]['evidence']['task_completion']
+    observed_time = rows[i]['original_time_s']
+    recorded_time = evidence.get('recorded_success_time_s')
+    # Never reuse a stale success from a previous segment or a future timestamp.
+    previous_time = rows[i-1]['original_time_s'] if i else observed_time
+    exact = (_finite(recorded_time) and _finite(previous_time)
+             and previous_time <= recorded_time <= observed_time)
+    success_time = recorded_time if exact else observed_time
+    seconds = cfg['waits'].get('post_push_success_seconds', .5)
+    cutoff = success_time + seconds
+    last = i
+    for j in range(i, len(rows)):
+        time = rows[j].get('original_time_s')
+        if not _finite(time) or time > cutoff + 1e-9:
+            break
+        last = j
+    # Keep anomaly evidence even when its images are outside the training tail.
+    anomalies = {
+        'monitor_outside_after_success': sum(
+            r['evidence'].get('task_completion', {}).get('verified') is not True for r in rows[i+1:]),
+        'later_failure_frames': sum(r['evidence'].get('task', {}).get('state') == 'FAIL' for r in rows[i+1:]),
+    }
+    return {'kind': 'task_completion', 'policy': 'push_done_plus_seconds_v1',
+        'completion_index': i, 'completion_raw_frame': rows[i]['raw_frame_index'],
+        'completion_time_s': success_time, 'observed_completion_time_s': observed_time,
+        'clock_source': 'recorded_success_time' if exact else 'first_verified_done_sample',
         'task_segment_id': final_segment, 'release_event': None,
-        'post_release_frames': cfg['waits']['post_release_frames'],
+        'post_success_seconds': seconds, 'cutoff_time_s': cutoff,
         'retained_post_frames': last-i, 'last_kept_index': last,
-        'last_kept_raw_frame': rows[last]['raw_frame_index'], 'excluded_frames': len(rows)-last-1,
-        'evidence': rows[i]['evidence']['task_completion']}
+        'last_kept_raw_frame': rows[last]['raw_frame_index'],
+        'excluded_frames': len(rows)-last-1, 'tail_anomalies': anomalies,
+        'evidence': evidence}

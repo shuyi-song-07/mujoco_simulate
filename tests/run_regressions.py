@@ -18,7 +18,7 @@ MODULES=[
     'tests.test_baseline_campaign',
     *['tests.task3.'+n for n in (
         'test_sequence_stitching','test_event_continuity','test_adjacent_stationarity','test_three_frame_curation','test_wait_compression',
-        'test_height_protection','test_terminal_tail','test_push_task_evidence','test_frame_evidence',
+        'test_height_protection','test_terminal_tail','test_push_task_evidence','test_push_completion_cutoff','test_frame_evidence',
         'test_curation_rules','test_curation_io','test_intent_curation','test_curation_safety','test_review_junction_sources',
         'test_merge_prepared','test_training_pack_union',
         'test_single_view_prepared_pack','test_measurement_journal','test_hand_measurement','test_review_server','test_review_preview',

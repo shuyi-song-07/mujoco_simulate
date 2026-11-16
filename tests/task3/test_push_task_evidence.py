@@ -28,12 +28,12 @@ class PushTaskEvidenceTests(unittest.TestCase):
     def test_closed_contact_done_crops_only_verified_tail(self):
         out = select_rows(push_rows())
         self.assertEqual(out['terminal_release']['completion_raw_frame'], 16)
-        self.assertEqual(out['terminal_release']['last_kept_raw_frame'], 19)
-        self.assertFalse(any(r['keep'] for r in out['rows'][20:]))
+        self.assertEqual(out['terminal_release']['last_kept_raw_frame'], 31)
+        self.assertFalse(any(r['keep'] for r in out['rows'][32:]))
         self.assertEqual(out['rows'][16]['policy_reason'], ['verified_task_complete'])
 
     def test_missing_evidence_or_failed_source_never_crops_tail(self):
-        for failure in ('no_evidence', 'not_done', 'not_success', 'source_invalid', 'source_missing', 'moving', 'servo_pending'):
+        for failure in ('no_evidence', 'not_done', 'not_success', 'source_invalid', 'source_missing'):
             rows = push_rows()
             for r in rows:
                 f = r['evidence']
@@ -58,7 +58,7 @@ class PushTaskEvidenceTests(unittest.TestCase):
         self.assertTrue(out['rows'][2]['grasp_protected'])
         self.assertFalse(out['rows'][30]['grasp_protected'])
 
-    def test_later_opening_is_not_cut_by_an_earlier_done(self):
+    def test_push_later_opening_does_not_redefine_task_completion(self):
         rows = push_rows()
         execution(rows, 24, side='both', opening=True)
         for i, r in enumerate(rows[24:], 24):
@@ -66,8 +66,8 @@ class PushTaskEvidenceTests(unittest.TestCase):
                 r['evidence']['grippers'][s].update(goal_width_m=.08,
                     actual_width_m=.04 if i < 28 else .08)
         terminal = select_rows(rows)['terminal_release']
-        self.assertGreaterEqual(terminal['completion_raw_frame'], 28)
-        self.assertLess(terminal['completion_raw_frame'], 40)
+        self.assertEqual(terminal['completion_raw_frame'], 16)
+        self.assertEqual(terminal['last_kept_raw_frame'], 31)
 
     def test_adapter_requires_recorded_physical_monitor_and_current_pose(self):
         for task, cls in (('h_frame_push_align', PushAlignmentEvidenceAdapter), ('push_r', PushREvidenceAdapter)):

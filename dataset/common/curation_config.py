@@ -101,6 +101,8 @@ def validate_config(config):
         schema['sa']['stationarity_method'] = 'current_vs_previous_two'
     if isinstance(value.get('waits'), dict) and 'minimum_transition_s' in value['waits']:
         schema['waits']['minimum_transition_s'] = (float, 0., 600.)
+    if isinstance(value.get('waits'), dict) and 'post_push_success_seconds' in value['waits']:
+        schema['waits']['post_push_success_seconds'] = (float, 0., 10.)
     if 'stitching' in value:
         schema['stitching'] = {'event_policy': 'verified_execution_v1'}
     check(value, schema)

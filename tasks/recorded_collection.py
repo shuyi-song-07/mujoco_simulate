@@ -26,6 +26,7 @@ ALLOWED_CONFIG_PATHS = frozenset({
     "gesture_control.close_score_min",
     "gesture_control.open_score_min",
     "gesture_control.left_close_score_min",
+    "gesture_control.motion_score_min",
 })
 
 

@@ -59,7 +59,9 @@
     "same_intent_frames": 3,
     "changed_intent_frames": 10,
     "post_release_frames": 3,
+    "post_push_success_seconds": 0.5,
     "_help": {
+      "post_push_success_seconds": "仅推动任务：从后端首次可信完成时刻起，按原始仿真时间保留的收尾秒数，默认0.5。后续微小漂移不重置起点。抓取仍按post_release_frames及实际释放保护处理；不足时长不补帧。",
       "minimum_prefix_s": "开头准备等待候选最短仿真时长，秒0–600，默认1；增大保留更多首部。首次机器人活动前用A/S、固定初始位姿累计变化、物理与60Hz实际目标判定，不要求手势稳定；允许准备期丢手/恢复，无接触/抓放且无安全故障才删。活动前保留context.before_frames帧。",
       "minimum_middle_s": "普通同意图静止候选的额外时长门槛，秒0–600；当前0，三帧确认后不再等2秒。",
       "minimum_recenter_s": "同意图回中的额外时长门槛，秒0–600；当前0，三帧确认后不再等0.2秒。",
