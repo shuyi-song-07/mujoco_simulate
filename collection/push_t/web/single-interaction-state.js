@@ -25,6 +25,14 @@ export class SingleInteractionState {
     this.palmBindingGuard=true;this.lastCapture=null;this.lastId=null;this.lastWrist=null;
     this.recoverySince=null;this.recoveryCount=0;this.resetMotion();this.reason='binding_required';
   }
+  resetForScene() {
+    const label=this.boundLabel,guard=this.palmBindingGuard;
+    this.reset();
+    if(label) {
+      this.boundLabel=this.bindingLabel=label;this.bindingProgress=1;
+      this.palmBindingGuard=guard;this.reason='tracking_recovery';
+    }
+  }
   resetMotion() {this.candidate='HOLD';this.candidateSince=null;this.mode='HOLD';this.anchor=null;}
   interrupt(reason) {this.resetMotion();this.recoverySince=null;this.recoveryCount=0;this.lastWrist=null;this.reason=reason;}
   setPaused(value) {this.manualPaused=Boolean(value);this.interrupt(value?'operator_pause':'tracking_recovery');}
@@ -82,9 +90,9 @@ export class SingleInteractionState {
     const du=wrist[0]-this.anchor[0],dv=wrist[1]-this.anchor[1];
     const x=Math.abs(du)>p.wrist_dead_zone?du:0,y=Math.abs(dv)>p.wrist_dead_zone?dv:0;
     const gain=p.motion_gain*Math.max(.1,Math.min(1,Number(speed)||.7));
-    // Same task-axis convention as the dual-arm UI: image up -> -X,
-    // mirrored display right -> +Y; image up -> +Z in height mode.
-    const delta=candidate==='XY_HOLD'?[y*gain,-x*gain,0]:[0,0,-y*gain];
+    // Push-T's top camera has screen up = +X and screen right = -Y.
+    // Raw webcam du is opposite mirrored display motion; image up raises Z.
+    const delta=candidate==='XY_HOLD'?[-y*gain,x*gain,0]:[0,0,-y*gain];
     const scale=Math.min(1,p.max_step_m/Math.max(1e-9,Math.hypot(...delta)));
     if(candidate==='XY_HOLD'&&x)this.anchor[0]=wrist[0];if(y)this.anchor[1]=wrist[1];
     this.reason=candidate==='XY_HOLD'?'xy_motion':'z_motion';

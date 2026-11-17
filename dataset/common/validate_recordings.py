@@ -25,6 +25,16 @@ from simulation.mujoco.dual_arm.hand_measurement import inspect_measurement, ins
 
 
 
+def _request_modes_match(request, result, *, push_locked=False):
+    # Single-arm pause is a safety command, not a hand-motion packet. Its
+    # controller deliberately returns HOLD without a requested mode field.
+    if (push_locked and request.get('command') == 'pause'
+            and request.get('interaction_modes') is None):
+        return (result.get('interaction_modes') == ['HOLD']
+                and result.get('release_intent') == [False])
+    return request.get('interaction_modes') == result.get('interaction_modes')
+
+
 def audit_control_labels(event, frozen, sources, check):
     """Rebuild eligibility from physical status and preceding accepted inputs."""
     contact = event.get('status', {}).get('physical_contact') or {}
@@ -355,7 +365,7 @@ def audit_hand_timeline(research, frozen):
                     check(mode_valid,'accepted interaction modes must be two supported modes')
                     adapter=result.get('interaction_mode_adapter')
                     if adapter is None:
-                        check(mode_valid and request.get('interaction_modes')==modes,
+                        check(mode_valid and _request_modes_match(request, result, push_locked=push_locked),
                               'accepted interaction modes differ from request')
                     else:
                         check(not rate and isinstance(adapter,dict) and adapter.get('name')=='trusted_python_gesture_mode_defaults_v1'

@@ -2,7 +2,7 @@
   "task_id": "push_t",
   "display_name": "单臂 Push-T 推动归位",
   "status": "ready",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "scene_id": "PUSH_T",
   "scene_config": "tasks/push_t/scene.json",
   "model_xml": "tasks/push_t/assets/push_t_scene.xml",
@@ -38,5 +38,5 @@
   ],
   "evaluation_config": "tasks/push_t/evaluation.json",
   "cameras": "Original 145-degree overview recorded as oblique; original top/front auxiliary views.",
-  "initialization": "Upstream bounded seeded Push-T separation and +/-30 degree initial object yaw."
+  "initialization": "Fixed configured target pose; seeded random object starts and +/-30 degree yaw with full-footprint reach, pusher clearance and initial overlap limits."
 }

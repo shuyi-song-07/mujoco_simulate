@@ -12,7 +12,7 @@ let lastDiagnostic=null,lastNext=null,lastResultAt=-Infinity,packetFlight=false,
 let operation=null,lastSaved=null,operationError='',shutdown=false,healthFlight=false,previewFlight=false;
 const eventQueue=[],views=['oblique','top','front'],previews={};
 const labels={oblique:'斜视 · 模型输入 oblique',top:'正上方 · XY 对准',front:'辅助侧视 · 高度'};
-const reasonText={binding_required:'请将唯一一只控制手张掌，完整留在内框内。',binding_in_progress:'保持张掌和手腕稳定，正在绑定。',binding_complete:'已绑定。先换为 I Love You 或握拳，解除绑定保护。',binding_gesture_released:'绑定完成，正在建立控制基准。',operator_pause:'手动暂停。可移动手回中；点击恢复后重新建立基准。',tracking_recovery:'正在确认连续可信的新画面，夹爪与移动目标保持。',gesture_mode_confirmation:'等待当前手势稳定。',gesture_motion_baseline:'已建立手腕基准，继续移动即可。',unknown_gesture:'未分配手势，保持不动；可以将手移回画面中央。',hand_lost:'控制手未可信识别，保持不动；完整入镜后恢复。',stale_recognition:'识别画面过期，保持不动。',out_of_order_measurement:'识别顺序异常，等待新画面。',camera_stalled:'摄像头识别中断，已暂停。',xy_motion:'I Love You：手腕控制 XY，夹爪保持闭合。',z_motion:'手腕上下控制 Z，夹爪保持闭合。',backend_session_changed:'仿真已重连，请重新张掌绑定。',scene_reset:'场景已更新，请重新张掌绑定。'};
+const reasonText={binding_required:'请将唯一一只控制手张掌，完整留在内框内。',binding_in_progress:'保持张掌和手腕稳定，正在绑定。',binding_complete:'已绑定。先换为 I Love You 或握拳，解除绑定保护。',binding_gesture_released:'绑定完成，正在建立控制基准。',operator_pause:'手动暂停。可移动手回中；点击恢复后重新建立基准。',tracking_recovery:'正在确认连续可信的新画面，夹爪与移动目标保持。',gesture_mode_confirmation:'等待当前手势稳定。',gesture_motion_baseline:'已建立手腕基准，继续移动即可。',unknown_gesture:'未分配手势，保持不动；可以将手移回画面中央。',hand_lost:'控制手未可信识别，保持不动；完整入镜后恢复。',stale_recognition:'识别画面过期，保持不动。',out_of_order_measurement:'识别顺序异常，等待新画面。',camera_stalled:'摄像头识别中断，保持不动；画面恢复后自动建立新基准。',xy_motion:'I Love You：手腕控制 XY，夹爪保持闭合。',z_motion:'手腕上下控制 Z，夹爪保持闭合。',backend_session_changed:'仿真已重连，请重新张掌绑定。',scene_reset:'场景已更新，控制手恢复识别后自动建立新基准。'};
 const gestureText={ILoveYou:'I Love You',Open_Palm:'张掌',Closed_Fist:'握拳',None:'未知手势'};
 
 function context() {return {camera:cameraSettings,display_mirrored:true,inference_mirrored:false,frame_crop:'none_in_application',
@@ -36,6 +36,10 @@ function telemetry(diagnostic=lastDiagnostic) {
 }
 function stamped(packet) {return {...packet,protocol:'task3-command-v2',client_id:clientId,sequence:++sequence,eventId:packet.eventId??crypto.randomUUID(),session:runtime.session,control_epoch:runtime.control_epoch};}
 function queueEvent(packet) {if(!connected)return;latestInput=null;eventQueue.push(packet);void pump();}
+function finishOperation(message=operationError) {
+  operationError=message;operation=null;latestInput=null;lastNext=null;
+  engine.interrupt('tracking_recovery');lastResultAt=performance.now();
+}
 async function pump() {
   if(packetFlight||!connected||shutdown)return;
   packetFlight=true;
@@ -46,7 +50,7 @@ async function pump() {
       if(input.command==='continuous_input'&&Date.now()-input.sentAt>engine.parameters.maximum_age_ms)continue;
       // Manual operations are created now; their separately frozen journal
       // boundary is unchanged. Camera actions retain the original capture time.
-      const manual=input.command==='pause'||operation?.eventId===input.eventId;
+      const manual=input.command==='pause'||Boolean(operation?.eventId&&operation.eventId===input.eventId);
       const packet=stamped(manual?{...input,sentAt:Date.now()}:input);
       journal.add('dispatch',{event_id:packet.eventId,measurement_id:packet.measurement_id??null,command:packet.command,packet},context());
       let response;
@@ -55,7 +59,7 @@ async function pump() {
         logSingleControlResult(journal,{event_id:packet.eventId,error:String(error)},context());
         if(operation?.eventId===packet.eventId) {
           if(operationExplicitlyRejected(error)) {
-            operationError=`操作未受理：${error.response?.reason??error.message}。核对状态后可重试。`;operation=null;
+            finishOperation(`操作未受理：${error.response?.reason??error.message}。核对状态后可重试。`);
           } else {operation.uncertain=true;operationError='请求结果暂不确定，正在核对后端。请勿重复保存。';}
         }
         else {engine.interrupt('tracking_recovery');latestInput=null;}
@@ -65,17 +69,19 @@ async function pump() {
       if(operation?.eventId===packet.eventId)operation.queued=true;
       if(response.ok===false||response.accepted===false) {
         operationError=response.reason??response.error??'请求未接受';
-        if(operation?.eventId===packet.eventId)operation=null;
+        if(operation?.eventId===packet.eventId)finishOperation();
       }
     }
   } finally {packetFlight=false;render();}
 }
 function pause(reason='operator_pause') {
-  engine.setPaused(true);engine.reason=reason;latestInput=null;
+  if(reason==='operator_pause')engine.setPaused(true);else engine.interrupt(reason);
+  engine.reason=reason;latestInput=null;
   queueEvent({command:'pause',reason,sentAt:Date.now(),telemetry:telemetry()});render();
 }
 function clearContext(reason) {
-  engine.reset();engine.manualPaused=true;engine.reason=reason;lastDiagnostic=null;lastNext=null;
+  if(reason==='scene_reset')engine.resetForScene();else engine.reset();
+  engine.reason=reason;lastDiagnostic=null;lastNext=null;
   latestInput=null;eventQueue.length=0;lastSaved=null;
   for(const view of views) {if(previews[view])URL.revokeObjectURL(previews[view].url);delete previews[view];}
 }
@@ -89,13 +95,13 @@ function resolveOperation() {
       if(['record_save','record_failure'].includes(name))lastSaved={kind:name==='record_save'?'成功':'失败',at:Date.now()};
       operationError=name==='record_start'?'已确认开始录制。':name==='record_discard'?'本轮已放弃。':name==='reset'?'场景已重置。':lastSaved?`已保存${lastSaved.kind}示范。重置场景后可开始下一轮。`:'操作已完成。';
     } else operationError=`操作未执行：${result.reason??result.error??'后端拒绝'}`;
-    operation=null;return;
+    finishOperation();return;
   }
   // Confirm state changes independently if the result history has rotated.
-  if(operation.command==='record_start'&&runtime.recording) {operation=null;operationError='已确认开始录制。';return;}
-  if(operation.command==='reset'&&runtime.control_epoch!==operation.epoch) {operation=null;operationError='场景已重置。';return;}
-  if(operation.command==='record_save'&&runtime.saved_success>operation.successBefore) {lastSaved={kind:'成功'};operation=null;operationError='已确认保存成功。重置场景后开始下一轮。';return;}
-  if(operation.command==='record_failure'&&runtime.saved_failure>operation.failureBefore) {lastSaved={kind:'失败'};operation=null;operationError='已确认保存失败示范。';}
+  if(operation.command==='record_start'&&runtime.recording) {finishOperation('已确认开始录制。');return;}
+  if(operation.command==='reset'&&runtime.control_epoch!==operation.epoch) {finishOperation('场景已重置。');return;}
+  if(operation.command==='record_save'&&runtime.saved_success>operation.successBefore) {lastSaved={kind:'成功'};finishOperation('已确认保存成功。重置场景后开始下一轮。');return;}
+  if(operation.command==='record_failure'&&runtime.saved_failure>operation.failureBefore) {lastSaved={kind:'失败'};finishOperation('已确认保存失败示范。');}
 }
 async function pollHealth() {
   if(healthFlight||shutdown)return;healthFlight=true;
@@ -198,7 +204,7 @@ function recognition(data) {
 }
 async function cameraFrame() {
   if(shutdown)return;
-  if(stream&&workerReady&&!workerBusy&&video.readyState>=2&&video.currentTime!==lastVideoTime&&connected&&!operation) {
+  if(stream&&workerReady&&!workerBusy&&video.readyState>=2&&video.currentTime!==lastVideoTime&&connected&&!operation&&!runtime.saving) {
     const generation=cameraGeneration;lastVideoTime=video.currentTime;workerBusy=true;
     const capture={type:'frame',frameId:++frameId,capturedAt:performance.now(),capturedEpochMs:Date.now(),session:runtime.session,control_epoch:runtime.control_epoch};
     inFlightId=capture.frameId;workerSentAt=performance.now();
@@ -208,7 +214,7 @@ async function cameraFrame() {
       worker.postMessage({...capture,bitmap},[bitmap]);
     } catch(error) {workerBusy=false;pause('camera_stalled');$('camera-state').textContent=String(error);}
   }
-  if(stream&&workerReady&&(workerBusy&&performance.now()-workerSentAt>1000||performance.now()-lastResultAt>1000)&&!engine.manualPaused)pause('camera_stalled');
+  if(stream&&workerReady&&!operation&&!runtime.saving&&(workerBusy&&performance.now()-workerSentAt>1000||performance.now()-lastResultAt>1000)&&!engine.manualPaused&&engine.reason!=='camera_stalled')pause('camera_stalled');
   requestAnimationFrame(cameraFrame);
 }
 async function startCamera() {
@@ -243,19 +249,18 @@ function stopCamera() {
 async function operate(command) {
   if(!recordingButtons(runtime,connected,Boolean(operation))[command])return;
   const pending={command,eventId:crypto.randomUUID(),epoch:runtime.control_epoch,session:runtime.session,successBefore:runtime.saved_success??0,failureBefore:runtime.saved_failure??0};
-  operation=pending;operationError='';latestInput=null;eventQueue.length=0;engine.resetMotion();render();
+  operation=pending;operationError='';latestInput=null;eventQueue.length=0;engine.interrupt('tracking_recovery');render();
   try {
     // Freeze capture before flushing, so continuous webcam input cannot extend
     // the save boundary forever. Already dispatched worker work must finish.
     if(command!=='record_start') {
-      engine.manualPaused=true;
       if(workerBusy) {const deadline=performance.now()+2000;while(workerBusy&&performance.now()<deadline)await new Promise(r=>setTimeout(r,20));if(workerBusy)throw Error('识别未结束，请停止摄像头后重试保存。');}
     }
     const boundary=journal.freeze(Date.now());
     const barrier=await journal.flushBoundary(boundary);
     if(runtime.session!==pending.session||runtime.control_epoch!==pending.epoch)throw Error('场景已改变，请确认当前状态后再操作。');
     queueEvent({command,eventId:pending.eventId,hand_journal_barrier:barrier,sentAt:Date.now(),telemetry:telemetry(),source:'single_arm_button',session:pending.session,control_epoch:pending.epoch});
-  } catch(error) {operationError=String(error.message);operation=null;render();}
+  } catch(error) {finishOperation(String(error.message));render();}
 }
 document.querySelectorAll('[data-command]').forEach(button=>button.addEventListener('click',()=>void operate(button.dataset.command)));
 $('camera-button').addEventListener('click',()=>stream?stopCamera():void startCamera());

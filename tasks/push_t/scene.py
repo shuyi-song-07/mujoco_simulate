@@ -5,30 +5,75 @@ import math
 import xml.etree.ElementTree as ET
 import numpy as np
 import mujoco
+from tasks.push_t.success import make_push_t_sample_points, push_t_coverage
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def footprint_xy(position, yaw=0., *, target=False):
+    """Outline of the frozen source T boxes, including the enlarged goal."""
+    outer, stem, join = (.155, .050, .055) if target else (.150, .045, .060)
+    outline = np.array([[-outer, -stem], [join, -stem], [join, -outer],
+                        [outer, -outer], [outer, outer], [join, outer],
+                        [join, stem], [-outer, stem]])
+    c, s = math.cos(yaw), math.sin(yaw)
+    return outline @ np.array([[c, s], [-s, c]]) + np.asarray(position)[:2]
 
 
 def initial_state(config, seed):
     if type(seed) is not int or seed < 0:
         raise ValueError('seed must be a nonnegative integer')
     p = config['scene']['push_t']; rng = np.random.default_rng(seed)
-    radius = np.hypot(.15, .15); goal_radius = np.hypot(.155, .155)
-    separation = max(p['object_min_separation_m'], radius + goal_radius + .005)
-    def safe(xy, half):
-        return (.34 <= np.linalg.norm(xy) <= p['safe_reach_radius_m']
-                and .1 + half <= xy[0] <= .9 - half and abs(xy[1]) <= .5 - half)
-    for _ in range(1000):
+    margin = p['push_clearance_m']
+    scene = config['scene']
+    workspace = np.asarray(scene['left_workspace'])[:2]
+    table = np.asarray(scene['table_position'])[:2]
+    half = np.asarray(scene['table_half_size_xy'])
+    lower = np.maximum(workspace[:, 0], table-half)
+    upper = np.minimum(workspace[:, 1], table+half)
+    def safe(outline):
+        # A centre inside a radius is insufficient for this 300 mm T. Keep
+        # every edge and an extra pusher approach margin inside the safe disk
+        # and the configured workspace/table. Convex bounds cover the edges.
+        return (np.all(np.linalg.norm(outline, axis=1)+margin <= p['safe_reach_radius_m'])
+                and np.all(outline.min(axis=0)-margin >= lower)
+                and np.all(outline.max(axis=0)+margin <= upper))
+    def clears_home(obj, yaw):
+        # Distance from the parked pusher to each of the two source boxes.
+        # Using their union avoids rejecting empty space beside the T stem.
+        c, s = math.cos(yaw), math.sin(yaw)
+        local = (np.asarray(scene['left_home_ee'])[:2]-obj) @ np.array([[c, -s], [s, c]])
+        lower = np.array([[.060, -.150], [-.150, -.045]])
+        upper = np.array([[.150, .150], [.060, .045]])
+        distance = np.linalg.norm(np.maximum(np.maximum(lower-local, local-upper), 0.), axis=1)
+        return np.min(distance) >= p['home_pusher_clearance_m']
+    target_position = np.asarray(scene['target_position'], dtype=float)
+    target_yaw = float(scene['target_yaw_rad'])
+    if target_position.shape != (3,) or not np.isfinite(target_position).all() or not math.isfinite(target_yaw):
+        raise ValueError('Invalid fixed Push-T target pose')
+    target = target_position[:2]
+    if not safe(footprint_xy(target, target_yaw, target=True)):
+        raise ValueError('Fixed Push-T target footprint and push clearance exceed reachable workspace')
+    c, s = math.cos(target_yaw), math.sin(target_yaw)
+    target_rotation = np.array([[c, -s], [s, c]])
+    samples = make_push_t_sample_points(p['coverage_resolution'])
+    for _ in range(10000):
         obj = rng.uniform([p['object_x_range'][0], p['object_y_range'][0]], [p['object_x_range'][1], p['object_y_range'][1]])
-        target = rng.uniform([p['target_x_range'][0], p['target_y_range'][0]], [p['target_x_range'][1], p['target_y_range'][1]])
-        if safe(obj, radius) and safe(target, goal_radius) and np.linalg.norm(obj-target) >= separation:
-            break
+        yaw = float(np.deg2rad(rng.uniform(*p['yaw_degrees'])))
+        object_outline = footprint_xy(obj, yaw)
+        if (safe(object_outline) and np.linalg.norm(obj-target) >= p['object_min_separation_m']
+                and clears_home(obj, yaw)):
+            c, s = math.cos(yaw), math.sin(yaw)
+            coverage = push_t_coverage(obj, np.array([[c, -s], [s, c]]), target, target_rotation, samples)
+            # The visual goal may overlap the start, as in standard Push-T.
+            # Reject starts close to completion without forcing a fixed side.
+            if coverage <= p['initial_max_coverage']:
+                break
     else:
-        raise ValueError('Push-T randomization cannot satisfy source separation/reach constraints')
-    yaw = float(np.deg2rad(rng.uniform(*p['yaw_degrees'])))
+        raise ValueError('Push-T randomization cannot satisfy footprint, push-clearance and reach constraints')
     return {'seed': seed, 'object_position': [*obj, .415 + p['initial_object_clearance_m']],
             'object_yaw_rad': yaw, 'object_quaternion_wxyz': [math.cos(yaw/2), 0, 0, math.sin(yaw/2)],
-            'target_position': [*target, .401], 'target_yaw_rad': 0.}
+            'target_position': target_position.tolist(), 'target_yaw_rad': target_yaw}
 
 
 def configure_xml(root, config):

@@ -5,9 +5,10 @@ from pathlib import Path
 import numpy as np
 import mujoco
 from tasks.registry import get
-from tasks.push_t.scene import create_model, initial_state
+from tasks.push_t.scene import create_model, initial_state, footprint_xy
 from tasks.push_t.success import PushTSuccess
 from simulation.mujoco.single_arm.task_controller import SingleArmTaskController, SCHEMA
+from simulation.mujoco.dual_arm.panda_arm_controller import rotation_angle
 
 ROOT=Path(__file__).resolve().parents[2]
 
@@ -42,13 +43,107 @@ class SinglePushTTests(unittest.TestCase):
         self.assertAlmostEqual(width,.1,places=8)
 
     def test_reproducible_bounded_initial_state(self):
+        p=self.config['scene']['push_t']
         for seed in (0,1,2,910001):
             a=initial_state(self.config,seed);b=initial_state(self.config,seed)
             self.assertEqual(a,b)
             x,y,z=a['object_position'];tx,ty,tz=a['target_position']
-            self.assertTrue(.46<=x<=.54 and -.26<=y<=.26)
-            self.assertTrue(.57<=tx<=.66 and -.26<=ty<=.26)
-            self.assertGreaterEqual(np.linalg.norm(np.array([x,y])-np.array([tx,ty])),np.hypot(.15,.15)+np.hypot(.155,.155)+.005)
+            self.assertTrue(p['object_x_range'][0]<=x<=p['object_x_range'][1] and p['object_y_range'][0]<=y<=p['object_y_range'][1])
+            self.assertEqual(a['target_position'],self.config['scene']['target_position'])
+            self.assertEqual(a['target_yaw_rad'],self.config['scene']['target_yaw_rad'])
+            self.assertGreaterEqual(np.linalg.norm(np.array([x,y])-np.array([tx,ty])),p['object_min_separation_m'])
+
+    def test_target_pose_is_fixed_while_object_starts_vary_on_both_sides(self):
+        c=SingleArmTaskController(self.config);starts=[]
+        for seed in range(64):
+            c.reset(seed);state=c.initial_state
+            self.assertEqual(state['target_position'],self.config['scene']['target_position'])
+            self.assertEqual(state['target_yaw_rad'],self.config['scene']['target_yaw_rad'])
+            np.testing.assert_allclose(c.data.xpos[c.target_id],self.config['scene']['target_position'],atol=1e-10)
+            yaw=np.arctan2(c.data.xmat[c.target_id].reshape(3,3)[1,0],c.data.xmat[c.target_id].reshape(3,3)[0,0])
+            self.assertAlmostEqual(yaw,self.config['scene']['target_yaw_rad'])
+            starts.append(state['object_position'][:2])
+        self.assertEqual(len({tuple(xy) for xy in starts}),64)
+        starts=np.array(starts)
+        self.assertLess(starts[:,1].min(),0);self.assertGreater(starts[:,1].max(),0)
+        self.assertGreater(np.ptp(starts[:,0]),.03)
+
+    def test_configured_fixed_target_orientation_reaches_the_model(self):
+        import copy
+        config=copy.deepcopy(self.config);config['scene']['target_position']=[.4,0.,.401]
+        config['scene']['target_yaw_rad']=np.pi/4
+        c=SingleArmTaskController(config)
+        for seed in (0,1,21):
+            c.reset(seed)
+            rotation=c.data.xmat[c.target_id].reshape(3,3)
+            self.assertAlmostEqual(np.arctan2(rotation[1,0],rotation[0,0]),np.pi/4)
+            self.assertEqual(c.initial_state['target_yaw_rad'],np.pi/4)
+
+    def test_actual_geometry_and_pusher_margin_fit_for_randomized_placements(self):
+        c=SingleArmTaskController(self.config);p=self.config['scene']['push_t'];margin=p['push_clearance_m']
+        workspace=c.left.workspace[:2]
+        for seed in range(128):
+            c.reset(seed)
+            outlines=[]
+            for body in (c.object_id,c.target_id):
+                points=[]
+                for gid in np.flatnonzero(c.model.geom_bodyid==body):
+                    half=c.model.geom_size[gid,:2]
+                    corners=np.array([[x,y,0.] for x in (-half[0],half[0]) for y in (-half[1],half[1])])
+                    points.extend((corners@c.data.geom_xmat[gid].reshape(3,3).T+c.data.geom_xpos[gid])[:,:2])
+                points=np.array(points);outlines.append(points)
+                self.assertLessEqual(np.linalg.norm(points,axis=1).max()+margin,p['safe_reach_radius_m']+1e-9)
+                self.assertTrue(np.all(points.min(axis=0)-margin>=workspace[:,0]))
+                self.assertTrue(np.all(points.max(axis=0)+margin<=workspace[:,1]))
+                table=np.array(self.config['scene']['table_position'][:2]);half=np.array(self.config['scene']['table_half_size_xy'])
+                self.assertTrue(np.all(points.min(axis=0)-margin>=table-half))
+                self.assertTrue(np.all(points.max(axis=0)+margin<=table+half))
+            self.assertLessEqual(c.get_status()['push_t_coverage'],p['initial_max_coverage'])
+            for contact in c.data.contact:
+                geoms={contact.geom1,contact.geom2}
+                if geoms&c.object_geoms and geoms&c.robot_geoms['left']:
+                    self.assertGreaterEqual(contact.dist,0.,f'initial robot penetration at seed {seed}')
+
+    def test_close_placements_settle_without_home_pusher_collisions(self):
+        c=SingleArmTaskController(self.config)
+        for seed in (0,1,2,21,63):
+            with self.subTest(seed=seed):
+                c.reset(seed);before=c.data.xpos[c.object_id,:2].copy();c.step(.4)
+                self.assertFalse(c.contacts['robot_object'])
+                self.assertLess(np.linalg.norm(c.data.xpos[c.object_id,:2]-before),.001)
+
+    def test_unreachable_footprints_are_rejected_even_when_centres_fit(self):
+        import copy
+        config=copy.deepcopy(self.config)
+        config['scene']['push_t'].update(object_x_range=[.63,.64])
+        with self.assertRaisesRegex(ValueError,'footprint'):
+            initial_state(config,0)
+
+    def test_unreachable_fixed_target_is_rejected(self):
+        import copy
+        config=copy.deepcopy(self.config);config['scene']['target_position']=[.64,0.,.401]
+        with self.assertRaisesRegex(ValueError,'target footprint'):
+            initial_state(config,0)
+
+    def test_extreme_approach_points_have_fixed_orientation_ik_solutions(self):
+        c=SingleArmTaskController(self.config);a=c.left;p=self.config['scene']['push_t']
+        offsets=p['push_clearance_m']*np.array([[1,0],[-1,0],[0,1],[0,-1]])
+        points=[]
+        for seed in range(128):
+            state=initial_state(self.config,seed)
+            for outline in (footprint_xy(state['object_position'],state['object_yaw_rad']),
+                            footprint_xy(state['target_position'],state['target_yaw_rad'],target=True)):
+                points.extend((outline[:,None,:]+offsets).reshape(-1,2))
+        points=np.array(points)
+        indices=set(np.argsort(np.linalg.norm(points,axis=1))[-8:])
+        for axis in (0,1):indices.update((np.argmin(points[:,axis]),np.argmax(points[:,axis])))
+        for index in indices:
+            for z in (a.workspace[2,0],.60):
+                with self.subTest(xy=points[index],z=z):
+                    target=np.r_[points[index],z];a._copy_commanded_configuration()
+                    for _ in range(180):a._ik_iteration(target,a.fixed_rotation,.1)
+                    self.assertLess(np.linalg.norm(a.ik_data.site_xpos[a.site_id]-target),.001)
+                    self.assertLess(rotation_angle(a.ik_data.site_xmat[a.site_id].reshape(3,3),a.fixed_rotation),.01)
 
     def test_idle_and_snapshot_replay(self):
         c=SingleArmTaskController(self.config)

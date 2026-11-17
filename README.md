@@ -30,9 +30,9 @@ flowchart LR
 
 ready 表示现有实现可加载，不表示新任务的真人采集质量或模型成功率已经验证。新增任务自动发现，不需要修改固定任务枚举。
 
-单臂 Push-T：在采集菜单输入 `push_t`，或运行 `& $collect -m collection start --task push_t`。它打开 `single_arm.html`：一只手张掌稳定2秒绑定，ILoveYou控制XY，张掌/握拳控制Z，夹爪始终闭合用于推动。丢手、未知手势或暂停后保持目标，恢复时重新建立手腕基准。只有点击开始录制后才保存示范，任务完成后仍须手动保存。
+单臂 Push-T：在采集菜单输入 `push_t`，或运行 `& $collect -m collection start --task push_t`。它打开 `single_arm.html`：一只手张掌稳定2秒绑定，ILoveYou控制XY，张掌/握拳控制Z，夹爪始终闭合用于推动。丢手、未知手势或暂停后保持目标，恢复时重新建立手腕基准。同一会话换场景保留控制手绑定，保存/重置和临时识别中断后自动恢复等待新手势；只有主动手动暂停才需点击恢复。只有点击开始录制后才保存示范，任务完成后仍须手动保存。
 
-场景来自指定分支 `codex/mujoco_pickandplace_variation` 的提交 `0d504758b89551a07b905e87e3fbbead396551f7`；参数与出处见 `tasks/push_t/scene.json`、`assets/` 和 `SOURCE.json`。单臂保存真实9维状态（7关节+额外夹爪Yaw+实测爪宽）、7维米制动作与一只控制手的日志；不补造第二臂。沿用裁剪和Safe Stitch判据，只按真实臂数读取证据。ACT已接入该Schema；DP仍只支持原双臂，不能直接用现有DP命令训练单臂Pack。操作及验证范围见 [单臂Push-T](docs/RUN_PIPELINE.md#单臂-push-tpush_t)。
+场景来自指定分支 `codex/mujoco_pickandplace_variation` 的提交 `0d504758b89551a07b905e87e3fbbead396551f7`；参数与出处见 `tasks/push_t/scene.json`、`assets/` 和 `SOURCE.json`。目标固定在[0.40,0,0.401]m、朝向0°，T物体初始位置与±30°转角随机；按单臂可达范围筛选，完整T轮廓外保留3cm推动余量。单臂保存真实9维状态（7关节+额外夹爪Yaw+实测爪宽）、7维米制动作与一只控制手的日志；不补造第二臂。沿用裁剪和Safe Stitch判据，只按真实臂数读取证据。ACT已接入该Schema；DP仍只支持原双臂，不能直接用现有DP命令训练单臂Pack。操作及验证范围见 [单臂Push-T](docs/RUN_PIPELINE.md#单臂-push-tpush_t)。
 
 各环节按任务分目录，共用实现放在各自的 `common/`；完整结构与新增任务步骤见 [工程目录说明](docs/PROJECT_STRUCTURE.md)。
 

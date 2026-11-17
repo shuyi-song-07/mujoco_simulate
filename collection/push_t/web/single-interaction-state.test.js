@@ -16,6 +16,13 @@ test('two palms are ambiguous and do not silently choose a hand',()=>{
   const e=new SingleInteractionState();for(let t=1000;t<=4000;t+=50)e.update(measurement(t,[hand('Open_Palm','left'),hand()]),t+10);
   assert.equal(e.boundLabel,null);
 });
+test('scene change preserves an unfinished binding guard and resets motion history',()=>{
+  const e=new SingleInteractionState();bind(e);e.resetForScene();
+  assert.equal(e.boundLabel,'right');assert.equal(e.palmBindingGuard,true);
+  assert.equal(e.lastCapture,null);assert.equal(e.anchor,null);assert.equal(e.manualPaused,false);
+  const held=tick(e,4000,'Open_Palm');
+  assert.equal(held.canSendControl,false);assert.deepEqual(held.delta,[0,0,0]);
+});
 test('other hand cannot take over after binding; raw invalid evidence survives',()=>{
   const e=new SingleInteractionState();bind(e);activate(e);
   const wrong=tick(e,3700,'ILoveYou','left');assert.equal(wrong.canSendControl,false);assert.equal(e.boundLabel,'right');
@@ -26,6 +33,23 @@ test('binding palm cannot move; mode confirmation establishes a zero-displacemen
   const e=new SingleInteractionState();bind(e);assert.equal(tick(e,3050).canSendControl,false);
   const n=activate(e);assert.equal(n.mode,'XY_HOLD');assert.deepEqual(n.delta,[0,0,0]);
   const moved=tick(e,3700,'ILoveYou','right',.52,.52);assert.ok(Math.hypot(...moved.delta)>0);assert.ok(Math.hypot(...moved.delta)<=.004+1e-12);assert.equal(moved.delta[2],0);
+});
+test('mirrored wrist movement follows the single-arm top view in all four directions',()=>{
+  const directions=[
+    ['right',.48,.5,1,-1],['left',.52,.5,1,1],
+    ['up',.5,.48,0,1],['down',.5,.52,0,-1],
+  ];
+  for(const label of ['left','right'])for(const [direction,u,v,axis,sign] of directions) {
+    const e=new SingleInteractionState();
+    for(let t=1000;t<=3000;t+=50)tick(e,t,'Open_Palm',label);
+    for(let t=3050;t<=3650;t+=50)tick(e,t,'ILoveYou',label);
+    const moved=tick(e,3700,'ILoveYou',label,u,v);
+    assert.ok(moved.delta[axis]*sign>0,`${label} hand moving ${direction}`);
+    assert.equal(moved.delta[1-axis],0);assert.equal(moved.delta[2],0);
+    assert.ok(Math.hypot(...moved.delta)<=.004+1e-12);
+    assert.deepEqual(continuousPacket(moved,{}).delta_task_m.left,moved.delta);
+    assert.deepEqual(tick(e,3750,'ILoveYou',label,u,v).delta,[0,0,0]);
+  }
 });
 test('unknown gesture allows recenter without a jump; missing hand keeps identity',()=>{
   const e=new SingleInteractionState();bind(e);activate(e);tick(e,3700,'ILoveYou','right',.52,.52);

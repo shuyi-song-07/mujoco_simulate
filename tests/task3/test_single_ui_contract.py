@@ -28,6 +28,20 @@ class SingleUIContractTests(unittest.TestCase):
             cwd=ROOT,capture_output=True,text=True,encoding='utf-8',check=True)
         cls.fixture=json.loads(process.stdout);cls.config=get('push_t').config()
 
+    def test_browser_operation_and_automatic_recovery_lifecycle(self):
+        result=subprocess.run([shutil.which('node'),'--test',str(ROOT/'collection/push_t/web/single-arm-app.test.js')],
+            cwd=ROOT,capture_output=True,text=True,encoding='utf-8')
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+
+    def test_dispatch_keeps_capture_time_and_refreshes_only_manual_operations(self):
+        self.assertTrue(self.fixture['packets'])
+        for row in self.fixture['packets']:
+            packet=row['packet']
+            self.assertEqual(packet['sentAt'],packet['telemetry']['recognition_result']['measurement']['capture_epoch_ms'])
+        self.assertEqual([p['command'] for p in self.fixture['manualPackets']],['pause','record_start'])
+        for packet in self.fixture['manualPackets']:
+            self.assertEqual(packet['sentAt'],self.fixture['dispatchEpochMs'])
+
     def test_actual_journal_batches_ack_and_seal_recording_interval(self):
         fixture=self.fixture;checkroot=ROOT/'.local/checks/single_arm_push_t';checkroot.mkdir(parents=True,exist_ok=True)
         with tempfile.TemporaryDirectory(prefix='ui-contract-',dir=checkroot) as temporary:
@@ -51,6 +65,22 @@ class SingleUIContractTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,'incomplete'):
                     journal.validate_boundary({**end,'pending':1})
             finally:journal.close()
+
+    def test_wrist_directions_match_actual_single_arm_top_camera(self):
+        for row in self.fixture['directionPackets']:
+            with self.subTest(direction=row['direction']):
+                controller=SingleArmTaskController(self.config)
+                camera=controller.model.camera('top').id
+                rotation=controller.data.cam_xmat[camera].reshape(3,3)
+                before=controller.left.command_position.copy()
+                packet=row['packet']
+                answer=controller.apply_command(packet,now_ms=packet['sentAt']+10)
+                self.assertTrue(answer['accepted'],answer)
+                world_delta=controller.left.command_position-before
+                # Camera columns are screen right, screen up and backward.
+                projected=rotation[:,:2].T@world_delta
+                self.assertGreater(np.linalg.norm(projected),0)
+                np.testing.assert_allclose(projected/np.linalg.norm(projected),row['displayDelta'],atol=1e-6)
 
     def test_actual_ui_fields_pass_python_admission_guard_and_controller(self):
         controller=SingleArmTaskController(self.config);guard=HandInputGuard(('left',));gate=CommandGate(self.config['control'])

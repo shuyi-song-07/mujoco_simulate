@@ -9,6 +9,8 @@
   "adaptations": [
     "Runtime namespaced single Panda left_*; cube->cooperative_object; target_plate->target; add hand-origin end-effector site.",
     "Original mesh, physical parameters, extra gripper yaw, and coverage definition retained.",
-    "Metric A7 action contract and existing shared recording/log pipeline."
+    "Metric A7 action contract and existing shared recording/log pipeline.",
+    "2026-11-16: Runtime initial placements use full T footprints and 30 mm push clearance inside a validated 0.66 m Panda reach disk; source assets and dynamics retained.",
+    "2026-11-16: Fixed target position/yaw from scene config; only T object initial position/yaw randomized, with reach/home-clearance and initial coverage limits."
   ]
 }

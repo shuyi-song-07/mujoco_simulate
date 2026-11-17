@@ -622,6 +622,14 @@ class DualArmRecorder:
     def save_recording(self, outcome, hand_barrier=None):
         if not self.recording or not self.frames:
             raise ValueError("Start recording before saving an episode")
+        saved_count = self.saved_success if outcome == 'success' else self.saved_failure
+        local_info = self.roots[outcome] / 'meta/info.json'
+        if saved_count and not local_info.is_file():
+            # Do not let LeRobot resume fall back to a nonexistent Hub repo.
+            # The worker and current raw capture remain available for recovery.
+            self.diagnostic('save_local_metadata_missing', outcome=outcome, path=str(local_info))
+            raise ValueError(f'本地已保存的数据目录缺失：{local_info}。当前录制保留；'
+                             '请恢复原目录后重试，采集期间不要删除或移动数据集。')
         status = self.controller.get_status()
         tail = status.get('success_tail')
         if tail and status.get('simulation_time', 0.) < tail['end_time'] - 1e-9:

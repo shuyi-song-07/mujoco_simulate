@@ -119,7 +119,8 @@ class SingleArmTaskController:
         sampled=initial_state(self.config,self.seed)
         self.data.qpos[self.object_qpos_adr:self.object_qpos_adr+7]=np.r_[sampled['object_position'],sampled['object_quaternion_wxyz']]
         self.model.body_pos[self.target_id]=sampled['target_position']
-        self.model.body_quat[self.target_id]=[1,0,0,0]
+        target_yaw=sampled['target_yaw_rad']
+        self.model.body_quat[self.target_id]=[math.cos(target_yaw/2),0,0,math.sin(target_yaw/2)]
         self.target_position=np.asarray(sampled['target_position']);self.target_yaw=sampled['target_yaw_rad']
         self.left.reset();self.data.qvel[:]=0.;mujoco.mj_forward(self.model,self.data)
         self.task_state=TaskState.PREGRASP;self.control_mode=ControlMode.IDLE
