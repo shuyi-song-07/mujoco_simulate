@@ -20,8 +20,13 @@ from training.papera.pack_data import (
 )
 
 
-def make_pack(root):
+def make_pack(root, task_id='tray_to_platform'):
     run, manifest, split = fixture(root)
+    if task_id != 'tray_to_platform':
+        from tasks.registry import get
+        from tasks.data_schema import descriptor, schema_for
+        manifest.update(task_id=task_id, task_binding=get(task_id).binding())
+        manifest['data_schema'] = descriptor(schema_for(manifest))
     for number, entry in enumerate(manifest["episodes"]):
         source = entry["video_sources"][0]
         count = 80
@@ -67,6 +72,9 @@ def make_pack(root):
             row["next_control_target"]["action"][0] += .0001
             row["evidence"]["next_control"]["features"]["left.target_position"][1][0] += .0001
         path = run/entry["index_path"]
+        if task_id == 'push_t':
+            from tests.task3.test_single_arm_data_schema import single
+            rows = single(rows)
         prepared.write_rows(path, rows)
         entry["index_sha256"] = training_pack.sha256(path)
         entry["metrics"]["raw_frames"] = count

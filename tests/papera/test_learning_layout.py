@@ -42,9 +42,14 @@ class LearningLayoutTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 evaluator.validate_success(invalid)
 
-    def test_single_arm_diffusion_stays_unsupported(self):
-        with self.assertRaises(ValueError):
-            stage_adapter('push_t', 'training').validate_model('diffusion')
+    def test_single_arm_diffusion_uses_shared_core_and_task_dimensions(self):
+        task = get('push_t')
+        adapter = stage_adapter(task, 'training')
+        adapter.validate_model('diffusion')
+        config = {'model': {'feature_dim': 64, 'prediction_horizon': 30}}
+        adapter.configure_defaults(config, task, 'diffusion')
+        self.assertEqual(config['model'], dict(feature_dim=64, prediction_horizon=30,
+                                              state_dim=9, action_dim=7))
 
     def test_new_task_can_inherit_controller_without_common_task_id_edit(self):
         config = {'task_id': 'future_task', 'controller': 'dual_panda_v1'}

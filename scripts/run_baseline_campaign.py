@@ -1,4 +1,4 @@
-"""Run ACT/DP baselines, then evaluate their validation-best models on 50 cases.
+"""Run ACT/DP baselines, then evaluate their completed Last models on 50 cases.
 
 Uses the existing training and rollout CLIs, never substitutes a model, Pack,
 or task criterion. An already running ACT may be attached by its verified PID.
@@ -44,14 +44,31 @@ def require(condition, message):
 
 def validate_evaluations(act, dp):
     """Execution differs by algorithm; physical task and all 50 draws do not."""
-    allowed = {'execution', 'n_action_steps', 'checkpoint_selection', 'policy_algorithm', '_help'}
+    allowed = {'execution', 'n_action_steps', 'checkpoint_selection', 'policy_algorithm', '_help', 'expected_checkpoint_step'}
     require({k: v for k, v in act.items() if k not in allowed} ==
             {k: v for k, v in dp.items() if k not in allowed}, 'ACT/DP physical evaluation settings differ')
     require(len(act['test_seeds']) == len(set(act['test_seeds'])) == 50, 'Exactly 50 unique seeds are required')
-    require(act['max_seconds'] == dp['max_seconds'] == 60, 'This campaign requires a 60-second simulation deadline')
+    require(act['max_seconds'] == dp['max_seconds'] and act['max_seconds'] > 0,
+            'Both algorithms require the same positive task-specific simulation deadline')
     require(act['observation_hz'] == 30 and act['control_hz'] == 60, 'Expected 30 Hz model / 60 Hz controller')
+    require(all(c.get('checkpoint_selection') == 'fixed_last_training_step'
+                and c.get('realtime') is False for c in (act, dp)),
+            'Formal campaign requires completed Last and no realtime for both algorithms')
+    require(act.get('execution') == 'temporal_ensemble' and act.get('n_action_steps') == 1
+            and act.get('temporal_ensemble_coeff') == .01,
+            'ACT requires K30 temporal ensembling, one query per observation and coefficient 0.01')
     require(dp.get('policy_algorithm') == 'diffusion_policy' and dp['execution'] == 'chunked'
             and dp['n_action_steps'] == 8, 'DP requires its explicit H2 / action-horizon-8 execution config')
+
+
+def validate_training_configs(configs, evaluations):
+    from training.protocol import VERSION
+    for field in ('seed', 'batch_size', 'image_size'):
+        require(configs['act'][field] == configs['dp'][field], f'Baseline common setting differs: {field}')
+    for name in ('act', 'dp'):
+        require(configs[name].get('experiment_protocol') == VERSION, 'Campaign requires all-train fixed Last')
+        require(configs[name]['steps'] == evaluations[name]['expected_checkpoint_step'],
+                f'{name} evaluation step differs from its training budget')
 
 
 def validate_run(run, algorithm, plan):
@@ -95,7 +112,7 @@ def training_complete(run, algorithm, plan):
         ok = value.get('status') == 'complete' and value['step'] == value['budget_steps'] == plan['training_configs']['dp']['steps']
         ok &= value.get('engineering') is False
     require(ok, f'{algorithm} training stopped without completing its frozen budget: {path}')
-    require((Path(run) / 'checkpoints/best.pt').is_file(), f'{algorithm} best checkpoint is missing')
+    require((Path(run) / 'checkpoints/last.pt').is_file(), f'{algorithm} completed Last checkpoint is missing')
     return True
 
 
@@ -301,7 +318,7 @@ class Campaign:
             for algorithm in ('act', 'dp'):
                 common = ['-m', 'rollout', '--task', p['task_id'], '--config',
                           self.directory / f'configs/evaluation_{algorithm}.json', '--run', outputs[f'{algorithm}_run'],
-                          '--checkpoint', 'best', '--device', 'cuda', '--workers', '1']
+                          '--checkpoint', 'last', '--device', 'cuda', '--workers', '1']
                 self.command(f'check_{algorithm}', [*common, '--mode', 'check'])
                 preview = self.directory / 'gpu_previews' / algorithm
                 self.command(f'gpu_preview_{algorithm}', [*common, '--mode', 'preview', '--headless', '--seed', '910001',
@@ -331,7 +348,8 @@ def main(argv=None):
     parser.add_argument('--act-pid', type=int, help='Actual running ACT trainer PID; required when attached ACT is incomplete')
     parser.add_argument('--act-log', type=Path, help='Existing attached ACT stdout log for navigation')
     parser.add_argument('--poll-seconds', type=float, default=15)
-    parser.add_argument('--dp-evaluation-config', type=Path, default=ROOT / 'config/evaluation_diffusion.json')
+    parser.add_argument('--dp-evaluation-config', type=Path,
+                        help='Optional explicit DP config; default uses this task criterion and the shared DP execution profile')
     args = parser.parse_args(argv)
     require(1 <= args.poll_seconds <= 60, 'poll-seconds must be between 1 and 60')
     require(args.act_pid is None or args.act_run is not None, '--act-pid requires --act-run')
@@ -341,13 +359,24 @@ def main(argv=None):
     task, pack = get(args.task), resolve(args.pack)
     manifest = check_artifact(pack, args.task, engineering=False)
     require(manifest.get('complete') is True and manifest.get('data_ready') is True, 'Pack is not complete')
-    require(manifest.get('cameras') == ['oblique'] and manifest.get('state_dim') == 16 and manifest.get('action_dim') == 14,
-            'Expected single oblique / S16 / A14 Pack')
+    from tasks.data_schema import schema_for
+    layout = schema_for(task.manifest)
+    require(manifest.get('cameras') == ['oblique'] and schema_for(manifest) == layout,
+            'Expected single oblique and the registered robot schema')
     configs = {'act': read(ROOT / 'config/training_baseline.json'), 'dp': read(ROOT / 'config/training_diffusion.json')}
-    for field in ('seed', 'steps', 'batch_size', 'image_size'):
-        require(configs['act'][field] == configs['dp'][field], f'Baseline training budgets differ: {field}')
-    evaluations = {'act': read(resolve(task.manifest['evaluation_config'])), 'dp': read(resolve(args.dp_evaluation_config))}
+    from tasks.stages import stage_adapter
+    from rollout.common.evaluation_settings import task_evaluation
+    adapter = stage_adapter(task, 'training')
+    for name, algorithm in (('act', 'act'), ('dp', 'diffusion')):
+        configs[name] = adapter.configure_defaults(configs[name], task, algorithm)
+    evaluations = {'act': task_evaluation(task, 'act'),
+                   'dp': read(resolve(args.dp_evaluation_config)) if args.dp_evaluation_config
+                         else task_evaluation(task, 'diffusion')}
     validate_evaluations(evaluations['act'], evaluations['dp'])
+    validate_training_configs(configs, evaluations)
+    from dataset.splits import VERSION as SPLIT_VERSION, validate_all_train
+    require(manifest['split'].get('version') == SPLIT_VERSION, 'Convert the old Pack with all-train before starting a campaign')
+    validate_all_train(manifest['split'], manifest['episodes'])
     identifier = datetime.now().strftime('baselines_%Y%m%d_%H%M%S_%f')
     output = resolve(args.output or ROOT / 'outputs/campaigns' / task.id / identifier)
     runs = {'act_run': str(resolve(args.act_run)) if args.act_run else str(ROOT / 'outputs/training' / task.id / 'baseline' / identifier),
@@ -358,7 +387,7 @@ def main(argv=None):
             'pack_manifest': manifest, 'training_configs': configs, 'evaluation_configs': evaluations,
             'python': read(ROOT / 'config/environments.json')['training_python'], 'outputs': runs,
             'attached_act_log': str(resolve(args.act_log)) if args.act_log else None,
-            'checkpoint': 'best', 'episodes_per_model': 50, 'max_seconds': 60, 'device': 'cuda'}
+            'checkpoint': 'last', 'episodes_per_model': 50, 'max_seconds': 60, 'device': 'cuda'}
     campaign = Campaign(output, plan)
     print(f'Campaign: {output}', flush=True)
     campaign.execute(resolve(args.act_run) if args.act_run else None, args.act_pid, args.poll_seconds)

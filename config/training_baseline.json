@@ -43,5 +43,6 @@
     "action": 1.0,
     "kl": 10.0
   },
-  "lr_scheduler": "constant"
+  "lr_scheduler": "constant",
+  "experiment_protocol": "all_train_fixed_last_v1"
 }

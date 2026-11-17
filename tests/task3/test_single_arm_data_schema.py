@@ -28,7 +28,7 @@ def single(value):
             continue
         if key in ('state_recorded', 'state') and isinstance(item, list) and len(item) == 16:
             result[key] = item[:7] + [0.] + item[7:8]
-        elif key in ('action_recorded', 'action') and isinstance(item, list) and len(item) == 14:
+        elif key in ('action_recorded', 'action', 'accepted_target') and isinstance(item, list) and len(item) == 14:
             result[key] = item[:7]
         elif key == 'left.joints':
             result[key] = [item[0], item[1] + [0.]]

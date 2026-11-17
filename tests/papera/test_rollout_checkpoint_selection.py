@@ -14,17 +14,29 @@ ROOT = Path(__file__).resolve().parents[2]
 class CheckpointSelectionTests(unittest.TestCase):
     def setUp(self):
         self.best = json.loads((ROOT / 'config/evaluation_baseline.json').read_text(encoding='utf-8'))
+        self.best.update(checkpoint_selection='best_validation_prior_action_l1')
+        self.best.pop('expected_checkpoint_step', None)
+        self.best.pop('checkpoint_selection_reason', None)
         self.last = dict(self.best, checkpoint_selection='fixed_last_training_step',
                          checkpoint_selection_reason='Chosen on independent validation seeds, before the fixed test set.',
                          expected_checkpoint_step=40000)
 
-    def test_default_best_rule_and_file_are_preserved(self):
+    def test_explicit_historical_best_rule_is_preserved(self):
         record = validate_batch_checkpoint_selection(self.best, 'best',
             {'checkpoint': 'run/checkpoints/best.pt', 'checkpoint_step': 11000})
         self.assertEqual(record['rule'], 'best_validation_prior_action_l1')
         self.assertEqual(record['actual_step'], 11000)
         with self.assertRaisesRegex(ValueError, '--checkpoint best'):
             validate_batch_checkpoint_selection(self.best, 'last')
+
+    def test_formal_defaults_keep_last_with_algorithm_specific_execution(self):
+        for file, steps, execution, actions in [
+                ('evaluation_baseline.json',60000,'temporal_ensemble',1),
+                ('evaluation_diffusion.json',100000,'chunked',8)]:
+            cfg=json.loads((ROOT/'config'/file).read_text(encoding='utf-8'))
+            self.assertEqual(validate_batch_checkpoint_selection(cfg,'last')['expected_step'],steps)
+            self.assertEqual((cfg['execution'],cfg['n_action_steps'],cfg['realtime']),(execution,actions,False))
+            with self.assertRaises(ValueError):validate_batch_checkpoint_selection(cfg,'best')
 
     def test_last_config_freezes_step_reason_and_actual_file(self):
         frozen = validate_batch_checkpoint_selection(self.last)
@@ -54,8 +66,10 @@ class CheckpointSelectionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'only valid'):
             validate_batch_checkpoint_selection(dict(self.best, expected_checkpoint_step=40000))
 
-    def test_dp_default_is_unchanged_and_last_is_not_implicitly_enabled(self):
+    def test_explicit_historical_dp_best_remains_readable(self):
         dp = json.loads((ROOT / 'config/evaluation_diffusion.json').read_text(encoding='utf-8'))
+        dp.update(checkpoint_selection='best_validation_ema_noise_mse')
+        dp.pop('expected_checkpoint_step', None); dp.pop('checkpoint_selection_reason', None)
         self.assertEqual(validate_batch_checkpoint_selection(dp, 'best')['rule'], 'best_validation_ema_noise_mse')
         with self.assertRaisesRegex(ValueError, 'checkpoint_selection_reason'):
             validate_batch_checkpoint_selection(dict(dp, checkpoint_selection='fixed_last_training_step'))

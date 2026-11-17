@@ -72,8 +72,8 @@ Registry 实现是 `tasks/registry.py`，扫描 `tasks/*/task.json`。不会根�
 
 - 复用：网页双手识别、100 ms 掌拳/ILY 控制、身份绑定、动作协议、Panda IK/限速、Recorder、快照、相机、S16/A14。
 - 任务负责：物体/障碍/目标几何、随机初态、附加 reset、成功/任务终止、离线事件含义。
-- ACT 主体不变：只要仍为单 RGB、S16、A14 和相同单位。Task Pack 必须有完整辅助标签和 Mask 才可做 Gesture 对照；缺标签不能伪造。
-- 不同 Schema：Registry 当前会拒绝。需新增具名 Schema 与 Raw/Pack/训练/执行适配并测试，而不是修改 manifest 字符串绕过检查。
+- ACT/DP 主体不变：已支持单oblique、双臂S16/A14或单臂Push-T S9/A7（米制爪宽）。两者共用网络与训练循环，任务适配器只配置维度。Task Pack的辅助标签必须有真实Mask；缺标签不能伪造。
+- 其他Schema：需新增具名Schema与Raw/Pack/训练/执行适配并测试，不仅修改manifest字符串。已有S9/A7不等于所有单臂数据同义，例如0～255夹爪命令不能冒充米制开度。
 - 当前 Dataset 适配点在事实证据层；自动裁剪、合法缺口和硬边界仍由同一核心计算。改变任务成功语义时必须检查事件保护输出，不能声称所有任务无需验证即可复用。
 
 ## 5. 最小验收顺序

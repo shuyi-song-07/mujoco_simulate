@@ -140,7 +140,8 @@ def _verify_single_pack(run_dir, provenance, verify_cache):
     if verify_cache:
         checked = training_pack.verify(pack, check_hashes=False)
         rebuilt = pack_data.prepare_pack(pack, selected_train_keys=binding["train_keys"],
-            chunk_size=30, checked=checked, image_size=binding["image_size"])
+            chunk_size=30, checked=checked, image_size=binding["image_size"],
+            check_hashes=binding.get('check_hashes', True))
         if dict(rebuilt) != binding:
             raise ValueError("Frozen ACT binding differs from the independently verified Pack")
     from rollout.common.protocol import load_scene_provenance
@@ -298,18 +299,23 @@ def _verify(run_dir, checkpoint, verify_cache, allow_overfit=False):
     validations = [row for row in (json.loads(line) for line in
                    (run_dir / "metrics.jsonl").read_text(encoding="utf-8").splitlines() if line.strip())
                    if row.get("event") == "validation"]
-    if not validations or any(not np.isfinite(row["prior_action_l1"]) for row in validations):
-        raise ValueError("Missing/nonfinite validation selection evidence")
-    best = min(validations, key=lambda row: row["prior_action_l1"])
-    expected_step = (candidate["saved_step"] if candidate is not None else
-                     best["step"] if checkpoint == "best" else completion["step"])
-    if (candidate is not None and candidate.get("validation") is not None
-            and candidate["validation"] not in validations):
-        raise ValueError("Candidate validation differs from the frozen metric history")
-    if ckpt["step"] != expected_step:
-        raise ValueError("Selected checkpoint step does not match the frozen selection rule")
-    if not np.isclose(completion["best_prior_action_l1"], best["prior_action_l1"], rtol=0, atol=1e-12):
-        raise ValueError("Completion best metric differs from validation history")
+    from training.protocol import fixed_last, validate_last, validate_training_data
+    if fixed_last(config):
+        validate_training_data(config, provenance['pack_binding'], engineering=allow_overfit)
+        validate_last(config, completion, ckpt['step'], checkpoint)
+    else:
+        if not validations or any(not np.isfinite(row["prior_action_l1"]) for row in validations):
+            raise ValueError("Missing/nonfinite validation selection evidence")
+        best = min(validations, key=lambda row: row["prior_action_l1"])
+        expected_step = (candidate["saved_step"] if candidate is not None else
+                         best["step"] if checkpoint == "best" else completion["step"])
+        if (candidate is not None and candidate.get("validation") is not None
+                and candidate["validation"] not in validations):
+            raise ValueError("Candidate validation differs from the frozen metric history")
+        if ckpt["step"] != expected_step:
+            raise ValueError("Selected checkpoint step does not match the frozen selection rule")
+        if not np.isclose(completion["best_prior_action_l1"], best["prior_action_l1"], rtol=0, atol=1e-12):
+            raise ValueError("Completion best metric differs from validation history")
     if not ckpt.get("model") or any(not torch.isfinite(v).all().item()
             for v in ckpt["model"].values() if torch.is_tensor(v) and (v.is_floating_point() or v.is_complex())):
         raise ValueError("Checkpoint has missing or nonfinite model weights")
@@ -352,7 +358,7 @@ def _verify(run_dir, checkpoint, verify_cache, allow_overfit=False):
     return metadata, ckpt, stats
 
 
-def verify_run_provenance(run_dir, checkpoint="best", *, verify_cache=True, allow_overfit=False):
+def verify_run_provenance(run_dir, checkpoint="last", *, verify_cache=True, allow_overfit=False):
     """Parent performs full cache verification once; worker loaders can omit it."""
     if _read(Path(run_dir) / 'run.json').get('algorithm') == 'diffusion_policy':
         from rollout.common.diffusion_policy import verify_run
@@ -377,7 +383,7 @@ def read_run_identity(run_dir):
     return run['provenance']
 
 
-def load_policy(run_dir, checkpoint='best', device='cuda', *, verify_cache=False, allow_overfit=False):
+def load_policy(run_dir, checkpoint='last', device='cuda', *, verify_cache=False, allow_overfit=False):
     if read_run_identity(run_dir).get('algorithm') == 'diffusion_policy':
         from rollout.common.diffusion_policy import DiffusionRolloutPolicy
         return DiffusionRolloutPolicy(run_dir, checkpoint, device,
@@ -418,7 +424,7 @@ def prepare_observation(images, state, normalizer, *, cameras=CAMERAS, image_siz
 
 class Policy:
     """Frozen eval-mode ACT; predicts the verified task's target chunk."""
-    def __init__(self, run_dir, checkpoint="best", device="cuda", *, verify_cache=False, allow_overfit=False):
+    def __init__(self, run_dir, checkpoint="last", device="cuda", *, verify_cache=False, allow_overfit=False):
         self.metadata, ckpt, stats = _verify(run_dir, checkpoint, verify_cache, allow_overfit)
         self.device = torch.device(device)
         if self.device.type not in ("cuda", "cpu"):

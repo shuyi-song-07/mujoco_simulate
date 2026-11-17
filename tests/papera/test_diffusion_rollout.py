@@ -25,6 +25,7 @@ class DiffusionRolloutTests(unittest.TestCase):
         cls.root = Path(cls.temp.name)
         cls.pack = make_pack(cls.root)
         cls.config = json.loads((ROOT/'config/training_diffusion.json').read_text())
+        cls.config.pop('experiment_protocol', None)  # Historical Best compatibility fixture.
         cls.config.update(device='cpu', precision='fp32', steps=2, batch_size=2,
             num_workers=0, cpu_threads=2, warmup_steps=0, validation_every=1,
             validation_batches=1, validation_sample_batches=0, save_every=1,
@@ -41,7 +42,7 @@ class DiffusionRolloutTests(unittest.TestCase):
 
     def policy(self):
         with patch('rollout.protocol.load_scene_provenance', return_value=self.scene):
-            return load_policy(self.run_dir, device='cpu', allow_overfit=True)
+            return load_policy(self.run_dir, checkpoint='best', device='cpu', allow_overfit=True)
 
     def test_ema_best_dispatch_and_scope(self):
         identity = read_run_identity(self.run_dir)
@@ -50,7 +51,7 @@ class DiffusionRolloutTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Engineering'):
             verify_run(self.run_dir)
         with patch('rollout.protocol.load_scene_provenance', return_value=self.scene):
-            metadata = verify_run_provenance(self.run_dir, verify_cache=False, allow_overfit=True)
+            metadata = verify_run_provenance(self.run_dir, checkpoint='best', verify_cache=False, allow_overfit=True)
         self.assertEqual(metadata['weights'], 'ema')
         self.assertEqual(metadata['action_horizon'], 8)
         saved = torch.load(self.run_dir/'checkpoints/best.pt', map_location='cpu', weights_only=False)
@@ -80,7 +81,7 @@ class DiffusionRolloutTests(unittest.TestCase):
         try:
             torch.save(bad, path)
             with self.assertRaisesRegex(ValueError, 'selection'):
-                verify_run(self.run_dir, allow_engineering=True)
+                verify_run(self.run_dir, 'best', allow_engineering=True)
         finally:
             torch.save(saved, path)
 
@@ -250,7 +251,7 @@ class DiffusionRolloutTests(unittest.TestCase):
     def test_dp_settings_require_frozen_horizon_and_physics_matches_act(self):
         settings=json.loads((ROOT/'config/evaluation_diffusion.json').read_text())
         original=json.loads((ROOT/'tasks/tray_to_platform/evaluation.json').read_text())
-        allowed={'policy_algorithm','execution','n_action_steps','checkpoint_selection'}
+        allowed={'policy_algorithm','execution','n_action_steps','checkpoint_selection','expected_checkpoint_step'}
         self.assertEqual({k:v for k,v in settings.items() if k not in allowed},
                          {k:v for k,v in original.items() if k not in allowed})
         validate_settings(settings)
@@ -275,7 +276,7 @@ class DiffusionRolloutTests(unittest.TestCase):
             completion['status']='interrupted'
             path.write_text(json.dumps(completion))
             with self.assertRaisesRegex(ValueError,'completed'):
-                verify_run(self.run_dir,allow_engineering=True)
+                verify_run(self.run_dir,'best',allow_engineering=True)
         finally:
             path.write_text(original)
 

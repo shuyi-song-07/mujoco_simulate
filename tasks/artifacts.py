@@ -53,3 +53,29 @@ def check_artifact(path,task_id,engineering=False):
         raise ValueError('Engineering and human datasets cannot be mixed; select the explicit engineering scope')
     _validate_prepared_sources(m)
     return m
+
+
+def check_training_pack(path, task_id, engineering=False):
+    """Check frozen offline identity; current source bytes are not training data.
+
+    This header gate does not replace training_pack.verify: callers must still
+    verify the frozen Prepared, arrays, causal targets and sequence certificates.
+    Scene loading and raw-data processing retain check_artifact's strict gate.
+    """
+    from tasks.registry import get
+    from tasks.data_schema import schema_for
+    m = json.loads((Path(path).resolve()/'manifest.json').read_text(encoding='utf-8'))
+    binding = m.get('task_binding')
+    if (m.get('task_id') != task_id or not isinstance(binding, dict)
+            or binding.get('task_id') != task_id or not m.get('complete')
+            or m.get('pipeline_stage') != 'training_pack'
+            or type(m.get('engineering_only')) is not bool
+            or m['engineering_only'] != bool(engineering)):
+        raise ValueError('Cross-task, incomplete or wrong-scope Training Pack')
+    current = get(task_id).binding()
+    frozen_identity = {k:v for k,v in binding.items() if k != 'sources'}
+    current_identity = {k:v for k,v in current.items() if k != 'sources'}
+    if (frozen_identity != current_identity or not binding.get('sources')
+            or schema_for(m) != schema_for(current)):
+        raise ValueError('Frozen Training Pack task version, scene or robot schema differs')
+    return m

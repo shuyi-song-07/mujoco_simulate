@@ -28,6 +28,7 @@ class DiffusionTrainingTests(unittest.TestCase):
         cls.root = Path(cls.temp.name)
         cls.pack = make_pack(cls.root)
         cls.config = json.loads((ROOT / 'config/training_diffusion.json').read_text(encoding='utf-8'))
+        cls.config.pop('experiment_protocol', None)  # Frozen historical validation-path regression.
         cls.config.update(device='cpu', precision='fp32', steps=4, batch_size=2,
             num_workers=0, cpu_threads=2, warmup_steps=1, validation_every=2,
             validation_batches=1, validation_sample_batches=1, save_every=2,

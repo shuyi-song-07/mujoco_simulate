@@ -47,7 +47,7 @@ Task Binding 含 task_id、task_version、scene_id、Manifest SHA、Schema、七
 
 单臂沿用30Hz原始图像、60Hz连续控制、物理快照及测量/执行事件，裁剪阈值、三帧判断、Safe Stitch规则和下一控制tick动作对齐不变。数据层按冻结Schema读取维度；额外Yaw也计入运动判断。固定爪不虚构抓稳/放爪事件：实际接触与物体速度仍保护运动；不能套用托盘释放收尾清理来删除Push-T帧。历史外部单臂zip不因这个新入口自动变为合格原件。
 
-单臂相机参数来自 `tasks/push_t/scene.json`，覆盖共享视角默认值；oblique命名复用项目约定，但位置使用上游实际录制的145°自由相机，不能与双臂同名视角混淆。ACT按来源Schema创建S9/A7输入输出投影及一手辅助头，拒绝双臂checkpoint；当前DP仍为S16/A14。
+单臂相机参数来自 `tasks/push_t/scene.json`，覆盖共享视角默认值；oblique命名复用项目约定，但位置使用上游实际录制的145°自由相机，不能与双臂同名视角混淆。ACT与DP按来源Schema创建S9/A7或S16/A14输入输出投影和对应数量的辅助头，跨Schema权重拒绝混用。两者分别共用同一网络、Loss与训练循环；DP归一化与部署形状也读取冻结Schema。历史无Schema描述的DP归一化仅兼容原S16/A14，不根据数组长度猜任务。
 
 `config/collection.json.training_camera` 的 `papera-oblique-config-v1` 允许调整 distance、azimuth、elevation、lookat；名称 oblique、透视投影、640×480 和 30 fps 保持当前契约。每次采集冻结完整相机参数和 spec_sha256，改变任一视角参数会改变指纹；回放使用来源配置，不套用当前视角。历史 `task3-oblique-v1` 仍严格核对原固定参数，不能修改旧记录以冒充新视角。Task Binding 和 Pack/Rollout 的相机来源一致性检查继续生效。
 
@@ -87,6 +87,12 @@ Task Binding 含 task_id、task_version、scene_id、Manifest SHA、Schema、七
 
 推动任务通过冻结的 `action_contract.capabilities.independent_xy_hold=true` 声明单侧 XY 控制能力，由任务 `scene.push_alignment` 语义启用。双手身份、时效和关键点仍须有效：一侧 Unknown 时该侧发送 HOLD/零位移并保持爪宽，另一侧可发送 XY_HOLD；双方实际操作平面 XY/Z 冲突仍双侧保持。Unknown 侧恢复手势时按原100 ms确认并重建自己的手腕基准，不回放回中位移。真正丢手、无效追踪和手动暂停仍停止双臂。托盘任务及没有此能力声明的旧服务保留双手同时 XY 的前端规则。原有 S16/A14、控制频率、手势标签、物理保护和 Safe Stitch 未改变；单侧 Unknown 不意味着整帧无动作。
 
+## 全量训练与固定终点契约
+
+`experiment_protocol=all_train_fixed_last_v1`要求Pack的`split.version=papera-all-train-v1`：train包含所有合格Episode，val与val_sessions为空；来源会话和Episode身份保留。归一化只读该训练成员集合。新建Pack默认此划分；`all-train --pack <old> --output <new>`复制元信息、硬链接只读数组，保留`split_origin`，不修改原Pack/原件或重新裁剪。只有显式`--select`更新导航。
+
+ACT预算60k、DP预算100k；同算法Baseline/Gesture预算相同。Checkpoint仍保留全部恢复状态；当前正式协议不写Best，也不创建空验证DataLoader。最终评估同时核实完成状态、配置预算、checkpoint步数及Last文件身份；DP另核对EMA更新步数。Rollout采用ACT时间集成（K30、每观察帧预测、系数0.01）及DP A8；CUDA、无realtime、50个预先固定随机初态、60秒仿真上限。新协议必须新建训练运行，旧结果保持原身份。
+
 ## 正式 Pack Reader
 
 所有正式训练经同一接口读取，不解析 Raw 重做裁剪：
@@ -118,21 +124,23 @@ DP 的 `training/diffusion/data.py::prepare_data` 默认用 `verify(..., check_h
 
 正式入口 `python -m training.papera --task ... --variant baseline|gesture --pack ...`。训练冻结 task_binding、Pack绝对路径/manifest SHA、split、来源指纹、模型配置、相机规格、归一化、variant、seed和源码/Git信息。
 
-ACT直接复用固定官方组件：DETRVAE、Post-LN/ReLU Transformer、原位置编码与CVAE；`training/act/official/SOURCE.json`记录提交742c753及原源码和许可证。任务适配只改变两处S16状态输入投影、配置单oblique/K30与必要Padding消毒，A14不变。输入RGB仍为640×480、ImageNet归一化，State/Action仍按训练split拟合z-score和RPY周期。正式参数hidden512/FF3200、encoder4/decoder7/posterior4、latent32，FP32、batch16、40k；AdamW两组LR1e-5、WD1e-4、常量LR、无warmup/无梯度裁剪。固定上游DETRVAE使用第一个intermediate decoder输出的行为保持不变。
+固定预算新协议的ACT与DP均按Pack的冻结来源进行离线校验，检查完整帧证据、因果目标和Safe Stitch，不因当前评估参数或源码目录变化拒绝旧Pack。ACT另外要求注册任务的ID、版本、场景及声明Schema一致，并保存当前运行代码绑定供追溯；恢复时仍锁定原Pack及归一化。`all-train`仅改变训练成员划分，也采用这项冻结接口。原始数据处理、场景加载及历史ACT协议仍保留原有严格来源检查。
 
-ACT优化的Action L1保持官方分母：先屏蔽无效误差，再对B×K×A全部位置取均值，KL按潜变量维求和后按有效样本均值，权重10。训练另记有效坐标L1供诊断。验证z=0，best仍按`prior_action_l1`（等同`prior_valid_action_l1`）的有效坐标误差选择，另报告`official_action_l1`，不按测试成功率挑best。当前checkpoint契约为`papera-act-official-checkpoint-v2`，保存model/optimizer/scheduler/sampler/RNG、归一化、来源及源码快照；包含全部官方小型源码与许可证。旧`papera-act-offline-checkpoint-v1`不可resume/continue或加载，历史权重原样保留。
+ACT直接复用固定官方组件：DETRVAE、Post-LN/ReLU Transformer、原位置编码与CVAE；`training/act/official/SOURCE.json`记录提交742c753及原源码和许可证。任务适配只改变两处S16状态输入投影、配置单oblique/K30与必要Padding消毒，A14不变。输入RGB仍为640×480、ImageNet归一化，State/Action仍按训练split拟合z-score和RPY周期。正式参数hidden512/FF3200、encoder4/decoder7/posterior4、latent32，FP32、batch16、60k；AdamW两组LR1e-5、WD1e-4、常量LR、无warmup/无梯度裁剪。固定上游DETRVAE使用第一个intermediate decoder输出的行为保持不变。
 
-DP入口仍为 `python -m training.diffusion --task ... --variant baseline|gesture --pack ...`，配置路径不变。当前直接使用固定官方组件，来源及许可证见 `training/diffusion/official/SOURCE.json`：robomimic0.2 VisualCore的ResNet18、官方GN规则、32关键点SpatialSoftmax、64维投影及ReLU；原ConditionalUnet1D、FiLM和skip图不重写，通道 `[512,1024,2048]`、卷积核5。100步cosine前向加噪和100步反向DDPM由diffusers执行。S16/A14、H2、K30/A8继续沿用Pack；网络内部K30补到32再截回30只解决长度整除，不增加训练目标。当前`FP32/batch16/40k`，AdamW1e-4、500步warmup后余弦降0、不裁剪梯度、官方幂次EMA。每个30Hz观察都更新H2，查询帧默认0、8、16……，首个动作不增加To-1偏移。
+ACT优化的Action L1保持官方分母：先屏蔽无效误差，再对B×K×A全部位置取均值，KL按潜变量维求和后按有效样本均值，权重10。训练另记有效坐标L1供诊断。推理z=0。新协议不建验证集、不按Loss选Best，取完成60k的Last；历史验证工具保留原口径用于旧结果读取。当前checkpoint契约为`papera-act-official-checkpoint-v2`，保存model/optimizer/scheduler/sampler/RNG、归一化、来源及源码快照；包含全部官方小型源码与许可证。旧`papera-act-offline-checkpoint-v1`不可resume/continue或加载，历史权重原样保留。
+
+DP入口仍为 `python -m training.diffusion --task ... --variant baseline|gesture --pack ...`，配置路径不变。当前直接使用固定官方组件，来源及许可证见 `training/diffusion/official/SOURCE.json`：robomimic0.2 VisualCore的ResNet18、官方GN规则、32关键点SpatialSoftmax、64维投影及ReLU；原ConditionalUnet1D、FiLM和skip图不重写，通道 `[512,1024,2048]`、卷积核5。100步cosine前向加噪和100步反向DDPM由diffusers执行。S16/A14或S9/A7、H2、K30/A8继续沿用Pack；网络内部K30补到32再截回30只解决长度整除，不增加训练目标。当前`FP32/batch16/100k`，AdamW1e-4、500步warmup后余弦降0、不裁剪梯度、官方幂次EMA。每个30Hz观察都更新H2，查询帧默认0、8、16……，首个动作不增加To-1偏移。
 
 无效Action先清除非有限值再与完整高斯噪声合成；去噪输入不再把noisy后缀置零，Loss仍只按有效坐标计数。数据硬边界Mask和网络内部补齐的2个位置含义不同。旧本地变体的ImageNet归一化、特征128、核3、DDIM10/20和旧EMA属于历史实现，现有34%结果不能作为新官方核心的结果。
 
 Gesture两组均采用权重0.1的左右三分类CE，只有有效手实例参与均值。标签是当前锚点关联的识别类别，Unknown不补类别、不删除机器人帧。ACT辅助头读原input_proj图像特征的空间/相机均值拼接当前S16，不读取latent、posterior或未来动作；旧本地观察Transformer已撤回。该辅助头是本工程研究扩展，不是官方ACT原有模块，Baseline不计其Loss；两组公共参数初始化一致。DP头仍只读H2观察条件。推理均无需手势，细节见`GESTURE_AUXILIARY_EXPERIMENT.md`。
 
-ACT与DP正式默认均为单oblique、640×480、30Hz模型动作、K30、batch16和40,000次更新；ACT历史为1帧，DP历史为2帧。各自Baseline/Gesture固定同Pack、split、相机、历史及预算；跨ACT/DP比较必须披露历史差异，若要求相同输入信息，另做DP-H1对照。之后修改历史长度、分辨率、网络宽度或预算须记录为新实验。
+ACT与DP正式默认均为单oblique、640×480、30Hz模型动作、K30、batch16；ACT固定60,000次、DP固定100,000次更新；ACT历史为1帧，DP历史为2帧。各自Baseline/Gesture固定同Pack、split、相机、历史及预算；跨ACT/DP比较必须披露历史差异，若要求相同输入信息，另做DP-H1对照。之后修改历史长度、分辨率、网络宽度或预算须记录为新实验。
 
-DP run为 `outputs/training/<task>/diffusion/<run_id>/`，冻结配置、数据绑定和模型规格，记录指标、TensorBoard、完成状态及best/last。新Checkpoint契约为 `papera-diffusion-official-checkpoint-v2`：保存model、EMA权重与完整EMA状态（配置、optimization_step、decay）、optimizer、scheduler、sampler、RNG、归一化和数据绑定；run同时记录实际diffusers/robomimic/einops版本、官方commit、实现标识及源码快照。旧 `papera-diffusion-checkpoint-v1` 属于不同网络，当前训练/推理明确拒绝，须从同Pack新建训练；不修改历史权重，也不保留第二套正式旧模型入口。
+DP run为 `outputs/training/<task>/diffusion/<run_id>/`，冻结配置、数据绑定和模型规格，记录指标、TensorBoard、完成状态及Last。新Checkpoint契约为 `papera-diffusion-official-checkpoint-v2`：保存model、EMA权重与完整EMA状态（配置、optimization_step、decay）、optimizer、scheduler、sampler、RNG、归一化和数据绑定；run同时记录实际diffusers/robomimic/einops版本、官方commit、实现标识及源码快照。旧 `papera-diffusion-checkpoint-v1` 属于不同网络，当前训练/推理明确拒绝，须从同Pack新建训练；不修改历史权重，也不保留第二套正式旧模型入口。
 
-`best` 继续按固定噪声和timestep的 **EMA验证noise MSE** 选择，不照搬官方按测试闭环score选TopK；动作误差仅供诊断。`last`恢复同配置、Pack、split和预算。默认不重复大文件内容哈希，`--full-verify`才做完整审计。离线误差不是自主成功率，短工程验证不能宣称新版已通过Panda50例，run/checkpoint仍记录 `closed_loop_verified=false`。
+新协议不进行验证选点；DP正式模型为完成100k时Last里的EMA。中断Last只可恢复，不可当正式模型。普通检查不重算大缓存哈希；`--full-verify`供显式审计。历史Best仅属于原冻结协议。
 
 ## Rollout 与场景一致性
 

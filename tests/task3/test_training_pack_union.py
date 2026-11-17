@@ -55,6 +55,17 @@ class TrainingPackSourceLedgerTests(unittest.TestCase):
         return packer.build(self.prepared, self.pack, split_file=self.inputs["split"],
                             width=64, height=48)
 
+    def test_all_train_conversion_keeps_frozen_multi_source_provenance(self):
+        original=self.build()
+        target=self.root/'all_train'
+        changed=packer.repartition_all_train(self.pack,target)
+        self.assertEqual(len(changed['split']['train']),len(original['episodes']))
+        self.assertEqual(changed['split']['val'],[])
+        for name in packer.SOURCE_MANIFEST_FIELDS:
+            self.assertEqual(changed[name],original[name])
+        self.assertTrue(packer.verify(target)['valid'])
+        self.assertEqual(json.loads((self.pack/'manifest.json').read_text(encoding='utf-8')),original)
+
     def test_one_pack_preserves_source_ledgers_and_uses_the_original_reader(self):
         manifest = self.build()
         frozen = json.loads((self.pack / "prepared.manifest.json").read_text(encoding="utf-8"))

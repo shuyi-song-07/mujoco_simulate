@@ -74,6 +74,10 @@ def verify_files(root, files, *, check_hashes=True):
 def session_split(entries, split_file):
     """Project the frozen session assignment; do not re-randomize subsets."""
     source = json.loads(Path(split_file).read_text(encoding='utf-8'))
+    from dataset.splits import VERSION as ALL_TRAIN, all_train, validate_all_train
+    if source.get('version') == ALL_TRAIN:
+        validate_all_train(source, entries)
+        return all_train(entries)
     groups = {side: set(source[side+'_sessions']) for side in ('train', 'val')}
     if groups['train'] & groups['val']:
         raise ValueError('Frozen split has overlapping train/validation sessions')
@@ -150,6 +154,10 @@ def _validate_episode_sources(entry, original):
 
 
 def _validate_source_split(prepared, split):
+    from dataset.splits import VERSION as ALL_TRAIN, validate_all_train
+    if split.get('version') == ALL_TRAIN:
+        validate_all_train(split, prepared['episodes'])
+        return  # Explicit experiment membership supersedes historical session holdout.
     frozen = (prepared.get('dataset_collection_compatibility') or {}).get('split')
     if frozen is not None and split != frozen:
         raise ValueError('Pack split differs from the frozen Prepared union split')
@@ -420,7 +428,7 @@ def _source_oblique_hash(entry, source):
 
 
 @scoped
-def build(prepared, output, *, split_file, width=640, height=480, resume=False, continue_on_error=False):
+def build(prepared, output, *, split_file=None, width=640, height=480, resume=False, continue_on_error=False):
     prepared, output = Path(prepared).resolve(), Path(output).resolve()
     if not isinstance(width,int) or not isinstance(height,int) or min(width,height) < 32:
         raise ValueError('Cache image dimensions must be integers >=32')
@@ -432,10 +440,12 @@ def build(prepared, output, *, split_file, width=640, height=480, resume=False, 
     for entry in entries:
         source, _, _, _ = _prepared_episode(prepared,entry,manifest['config'])
         _source_oblique_hash(entry,source)
-    split = session_split(entries,split_file)
+    from dataset.splits import all_train
+    split = session_split(entries,split_file) if split_file else all_train(entries)
     _validate_source_split(manifest, split)
     binding = {'prepared': str(prepared), 'prepared_manifest_sha256': sha256(prepared/'manifest.json'),
-        'split_source': str(Path(split_file).resolve()), 'split_source_sha256': sha256(split_file),
+        'split_source': str(Path(split_file).resolve()) if split_file else None,
+        'split_source_sha256': sha256(split_file) if split_file else None,
         'config': {'image_width': width, 'image_height': height, 'cameras': ['oblique']},
         'implementation_sha256': {name: sha256(Path(__file__).with_name(name))
             for name in ('training_pack.py','video_cache.py','sequence_stitching.py',
@@ -502,7 +512,7 @@ def build(prepared, output, *, split_file, width=640, height=480, resume=False, 
                 raise
     if errors:
         raise ValueError(f'{len(errors)} pack episodes failed; resume after correcting the recorded causes')
-    if sha256(prepared/'manifest.json') != binding['prepared_manifest_sha256'] or sha256(split_file) != binding['split_source_sha256']:
+    if sha256(prepared/'manifest.json') != binding['prepared_manifest_sha256'] or (split_file and sha256(split_file) != binding['split_source_sha256']):
         raise ValueError('Prepared/split changed while building pack; completion refused')
     write_json(output/'split.json',split)
     (output/'prepared.manifest.json').write_bytes((prepared/'manifest.json').read_bytes())
@@ -527,6 +537,26 @@ def build(prepared, output, *, split_file, width=640, height=480, resume=False, 
     if (output/'errors.json').exists():
         write_json(output/'errors.json',{'complete': True,'errors': []})
     return record
+
+
+@scoped
+def repartition_all_train(pack, output):
+    """New all-training Pack; retain every certified row and original source."""
+    from dataset.splits import all_train, clone_cache
+    source = Path(pack).resolve()
+    checked = verify(source, check_hashes=False)
+    manifest = copy.deepcopy(checked['manifest'])
+    target = clone_cache(source, output)
+    manifest['split_origin'] = {'pack': source.as_posix(), 'split': manifest['split']}
+    manifest['split'] = all_train(manifest['episodes'])
+    manifest['created_at'] = datetime.now(timezone.utc).isoformat()
+    write_json(target/'split.json', manifest['split'])
+    manifest['files'] = [file_record(target/'split.json', target) if f['path'] == 'split.json' else f
+                         for f in manifest['files']]
+    _verify_contents(target, manifest, check_hashes=False)
+    write_json(target/'manifest.json', manifest)
+    verify(target, check_hashes=False)
+    return manifest
 
 
 def _pack_manifest(pack, *, check_hashes=True):

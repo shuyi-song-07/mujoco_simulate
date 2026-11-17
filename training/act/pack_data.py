@@ -124,7 +124,7 @@ def _close_episode(episode):
 
 
 def prepare_pack(pack_path, selected_train_keys=None, chunk_size=30, *, checked=None,
-                 image_size=(640, 480)):
+                 image_size=(640, 480), check_hashes=True):
     """Verify once and freeze paths, split, statistics, certificates and windows.
 
     Explicit engineering subsets must be a subset of the frozen training split.
@@ -134,7 +134,7 @@ def prepare_pack(pack_path, selected_train_keys=None, chunk_size=30, *, checked=
     root = Path(pack_path).resolve()
     if chunk_size != 30:
         raise ValueError("The current formal ACT contract is K=30")
-    checked = training_pack.verify(root) if checked is None else checked
+    checked = training_pack.verify(root, check_hashes=check_hashes) if checked is None else checked
     if not isinstance(checked, training_pack.VerifiedPack):
         raise ValueError("checked must be the live official verify result")
     manifest = checked["manifest"]
@@ -185,6 +185,8 @@ def prepare_pack(pack_path, selected_train_keys=None, chunk_size=30, *, checked=
         stats=stats, episodes=metadata, counts=counts,
         frame_filter_applied=False, manual_exclusions_are_hard_boundaries=True)
     binding.checked = checked
+    if not check_hashes:
+        binding['check_hashes'] = False
     return binding
 
 
@@ -193,7 +195,8 @@ def restore_binding(binding):
     if binding.get("version") != VERSION:
         raise ValueError("Incompatible ACT data binding")
     result = prepare_pack(binding["pack_path"], selected_train_keys=binding["train_keys"],
-                          chunk_size=binding["chunk_size"], image_size=binding["image_size"])
+                          chunk_size=binding["chunk_size"], image_size=binding["image_size"],
+                          check_hashes=binding.get('check_hashes', True))
     if dict(result) != dict(binding):
         raise ValueError("Frozen ACT data binding changed: manifest/split/statistics/sequence")
     return result

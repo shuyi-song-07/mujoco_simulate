@@ -1,6 +1,6 @@
 """Model support and new-run defaults for push_t; shared model math is untouched."""
 from training.common import task_adapter
-SUPPORTED_MODELS = ('act',)
+SUPPORTED_MODELS = ('act', 'diffusion')
 
 
 def validate_model(algorithm):

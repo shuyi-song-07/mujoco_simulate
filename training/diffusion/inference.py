@@ -26,6 +26,10 @@ def load_policy(checkpoint, device='cpu'):
     model.load_state_dict(saved['ema'])
     model.eval()
     normalizer = Normalizer(saved['data_binding']['stats'])
+    from tasks.data_schema import schema_for
+    layout = schema_for(saved['data_binding'])
+    if normalizer.schema != layout or (model.config.state_dim, model.config.action_dim) != (layout.state_dim, layout.action_dim):
+        raise ValueError('DP model, statistics and frozen task schema disagree')
     metadata = {key: saved[key] for key in ('task_id', 'pack_path', 'model_config', 'step', 'engineering')}
     metadata['image_size'] = saved['config']['image_size']
     metadata['sampler'] = 'official_diffusers_DDPM'

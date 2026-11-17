@@ -157,6 +157,7 @@ def main():
               'note': 'Different losses and training posterior/validation prior are not numerically comparable.'}
     for row, algorithm in enumerate(('act','dp')):
         axes[row,0].set_yscale('log')
+        all_train = False
         for variant, color in (('baseline','#2465a8'), ('gesture','#c75d22')):
             path = getattr(args, algorithm+'_'+variant)
             if not path:
@@ -166,10 +167,14 @@ def main():
                 raise ValueError(f'{algorithm}_{variant}: supplied run has a different algorithm/variant')
             rows = prepare_rows(read_metrics(path), algorithm, variant, identity['config'])
             draw(axes[row,0], rows, 'train', 'total', variant, color, smooth=20)
-            key = 'prior_action_l1' if algorithm == 'act' else 'noise_mse'
-            draw(axes[row,1], rows, 'validation', key, variant, color)
+            from training.protocol import fixed_last
+            training_only = fixed_last(identity['config'])
+            all_train |= training_only
+            event = 'train' if training_only else 'validation'
+            key = ('action' if training_only else 'prior_action_l1') if algorithm == 'act' else 'noise_mse'
+            draw(axes[row,1], rows, event, key, variant, color)
             if variant == 'gesture':
-                draw(axes[row,2], rows, 'validation', 'gesture_loss', 'valid-label CE', color)
+                draw(axes[row,2], rows, event, 'gesture_loss', 'valid-label CE', color)
             valid = [r for r in rows if r['event'] == 'validation']
             report['curves'][algorithm+'_'+variant] = {
                 'run': str(path.resolve()), 'final_logged_step': max((r['step'] for r in rows), default=None),
@@ -180,6 +185,8 @@ def main():
                                                 key=lambda r:r[key], default=None)}
         titles = ['ACT posterior training total (log)', 'ACT z=0 validation action L1', 'ACT gesture validation CE'] if row == 0 else [
                   'DP training total (log)', 'DP EMA validation noise MSE', 'DP gesture validation CE']
+        if all_train:
+            titles = [algorithm.upper()+' training total (log)', 'Training action L1' if algorithm == 'act' else 'Training noise MSE', 'Training gesture CE']
         for ax, title in zip(axes[row], titles):
             ax.set_title(title)
             ax.set_xlabel('Cumulative optimizer updates')

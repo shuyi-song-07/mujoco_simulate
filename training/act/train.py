@@ -11,6 +11,7 @@ from collections import deque
 from dataclasses import asdict
 from datetime import datetime
 import copy
+from training.protocol import VERSION as PROTOCOL, fixed_last, validate_training_data, record as protocol_record
 import hashlib
 import json
 import math
@@ -339,6 +340,10 @@ def load_extension_source(checkpoint_path, target_steps):
     if checkpoint_path.name != "last.pt" or checkpoint_path.parent.name != "checkpoints":
         raise ValueError("--continue-from must name a run's checkpoints/last.pt")
     source_run = checkpoint_path.parent.parent
+    if (source_run / "config.json").is_file():
+        frozen = json.loads((source_run / "config.json").read_text(encoding="utf-8"))
+        if fixed_last(frozen):
+            raise ValueError("Fixed-budget experiments cannot extend a completed run; resume only its original budget or start fresh")
     required = (source_run / "run.json", source_run / "config.json", source_run / "completion.json",
                 source_run / "pack_binding.json", source_run / "split.json", source_run / "stats.json",
                 source_run / "checkpoints/best.pt")
@@ -492,6 +497,7 @@ def snapshot_sources(output):
     files = [Path(__file__), Path(__file__).with_name("act_model.py"),
              Path(__file__).with_name("pack_data.py"), Path(__file__).with_name("data.py"),
              Path(__file__).with_name("engine.py")]
+    files.append(ROOT / "training/protocol.py")
     files.extend(Path(__file__).parent / name for name in official_source_hashes())
     for path in files:
         target = Path(output) / "source_snapshot" / path.relative_to(ROOT)
@@ -545,7 +551,7 @@ def prepare_safe_data(config, count=None, resume=None):
         if count is not None and len(keys) != count:
             raise ValueError("Resume engineering subset differs")
     else:
-        checked = verify(pack)
+        checked = verify(pack, check_hashes=not fixed_last(config))
         split = checked["manifest"]["split"]
         keys = None
         if count is not None:
@@ -555,7 +561,8 @@ def prepare_safe_data(config, count=None, resume=None):
             if len(keys) != count or len(set(keys)) != count or not set(keys) <= set(split["train"]):
                 raise ValueError("Engineering subset must contain N distinct frozen train episode keys")
         binding = prepare_pack(pack, selected_train_keys=keys, chunk_size=config["model"]["chunk_size"],
-                               checked=checked, image_size=config["image_size"])
+                               checked=checked, image_size=config["image_size"],
+                               check_hashes=not fixed_last(config))
     if (list(binding["image_size"]) != config["image_size"]
             or binding["chunk_size"] != config["model"]["chunk_size"]):
         raise ValueError("Resume image size or chunk size differs from frozen binding")
@@ -565,6 +572,10 @@ def prepare_safe_data(config, count=None, resume=None):
 def run(config, variant="baseline", output=None, resume=None, smoke=False, stop_after=None,
         overfit_episodes=None, continue_from=None, extension_source=None):
     config = json.loads(json.dumps(config))
+    if resume is None and continue_from is None and not (smoke or overfit_episodes is not None):
+        config.setdefault("experiment_protocol", PROTOCOL)
+    if continue_from is not None and fixed_last(config):
+        raise ValueError("Fixed-budget experiments start fresh; use --resume only to finish the frozen budget")
     if variant not in EXPERIMENTS:
         raise ValueError(f"本轮只提供 ACT baseline 和 ACT + gesture，收到：{variant}")
     if resume is not None and continue_from is not None:
@@ -585,8 +596,9 @@ def run(config, variant="baseline", output=None, resume=None, smoke=False, stop_
     safe_stitch = "pack_path" in config
     if not safe_stitch or not config.get('pack_path'):
         raise ValueError('Explicit --pack pointing to the official Safe Stitch Training Pack is required')
-    from tasks.artifacts import check_artifact
-    artifact = check_artifact(resolve_path(config['pack_path']), config['task_id'],
+    from tasks.artifacts import check_artifact, check_training_pack
+    artifact_check = check_training_pack if fixed_last(config) else check_artifact
+    artifact = artifact_check(resolve_path(config['pack_path']), config['task_id'],
                               engineering=bool(config.get('engineering_only', False)))
     if artifact['engineering_only'] and not (smoke or is_overfit):
         raise ValueError('Engineering Pack cannot start formal training')
@@ -604,6 +616,7 @@ def run(config, variant="baseline", output=None, resume=None, smoke=False, stop_
         raise ValueError("stop_after must be positive")
     binding = None
     pack, binding, keys = prepare_safe_data(config, overfit_episodes, resume or continue_from)
+    validate_training_data(config, binding, engineering=smoke or is_overfit)
     sequence_provenance = None
     if is_overfit and output is not None:
         if (ROOT / ".local/checks").resolve() not in resolve_path(output).parents:
@@ -638,7 +651,7 @@ def run(config, variant="baseline", output=None, resume=None, smoke=False, stop_
         "action_alignment": "next_control_tick_at_30hz_anchors_v1",
         "sequence_data": sequence_provenance, "engineering_overfit": is_overfit,
         "overfit_episode_keys": keys,
-        "validation_scope": "overfit_reconstruction" if is_overfit else "heldout_sessions"}
+        "validation_scope": "overfit_reconstruction" if is_overfit else ("none_all_train" if fixed_last(config) else "heldout_sessions")}
     if binding:
         provenance.update(data_contract=binding["version"], pack_binding=dict(binding),
                           sequence_contract=binding["sequence_contract"], cameras=binding["cameras"],
@@ -710,8 +723,9 @@ def run(config, variant="baseline", output=None, resume=None, smoke=False, stop_
     heldout = None
     writer = None
     try:
-        heldout = SafeStitchDataset(binding, split="train" if is_overfit else "val",
-                                   chunk_size=model_config.chunk_size, stride=config["validation_stride"])
+        if is_overfit or not fixed_last(config):
+            heldout = SafeStitchDataset(binding, split="train" if is_overfit else "val",
+                                       chunk_size=model_config.chunk_size, stride=config["validation_stride"])
         if variant == 'gesture':
             from dataset.common.training_pack import read_episode
             usable = sum(int(read_episode(pack,key,checked=binding.checked,include_evidence=False)['arrays']['category_mask'].sum())
@@ -730,8 +744,8 @@ def run(config, variant="baseline", output=None, resume=None, smoke=False, stop_
             worker_options.update(multiprocessing_context="spawn", prefetch_factor=2, persistent_workers=True)
         train_loader = DataLoader(train, batch_sampler=sampler, pin_memory=True,
                                   generator=loader_generator, **worker_options)
-        val_loader = DataLoader(heldout, batch_size=config["batch_size"], shuffle=False,
-                                num_workers=0, pin_memory=True, generator=loader_generator)
+        val_loader = (DataLoader(heldout, batch_size=config["batch_size"], shuffle=False,
+                                num_workers=0, pin_memory=True, generator=loader_generator) if heldout is not None else None)
         step, best = 0, math.inf
         resume_loader_generator = None
         resume_elapsed = 0.0
@@ -779,7 +793,7 @@ def run(config, variant="baseline", output=None, resume=None, smoke=False, stop_
                 "model_implementation": IMPLEMENTATION,
                 "official_commit": json.loads((Path(__file__).with_name("official") / "SOURCE.json").read_text(encoding="utf-8"))["commit"],
                 "cuda_runtime": torch.version.cuda, "gpu": torch.cuda.get_device_name(),
-                "train_windows": len(train), "validation_windows": len(heldout),
+                "train_windows": len(train), "validation_windows": (len(heldout) if heldout is not None else 0),
                 "parameters": sum(p.numel() for p in model.parameters()), "engineering_smoke": smoke,
                 "engineering_overfit": is_overfit, "overfit_episode_keys": keys,
                 "validation_scope": provenance["validation_scope"],
@@ -816,11 +830,11 @@ def run(config, variant="baseline", output=None, resume=None, smoke=False, stop_
                 atomic_checkpoint(output / "checkpoints" / "best.pt", best_payload)
         from torch.utils.tensorboard import SummaryWriter
         writer = SummaryWriter(str(output / "tensorboard"), purge_step=step if (resume or extension_source is not None) else None)
-        print(f"{variant} | train windows={len(train)}, validation={len(heldout)} | output={output}", flush=True)
+        print(f"{variant} | train windows={len(train)}, validation={(len(heldout) if heldout is not None else 0)} | output={output}", flush=True)
         steps_per_epoch = math.ceil(len(train) / config["batch_size"])
         print(f"累计训练预算：{config['steps']} 次参数更新；每轮约 {steps_per_epoch} 步，"
               f"预算约 {config['steps'] / steps_per_epoch:.2f} 轮。"
-              "使用固定预算和验证集最优 checkpoint；未启用提前停止。", flush=True)
+              + ("使用全部示范和固定预算 Last；不进行验证选点。" if fixed_last(config) else "历史验证选点协议。"), flush=True)
         if extension_source is not None:
             print(f"从 step {step} 的 last.pt 延续到 {config['steps']}；续训保持 checkpoint 学习率："
                   f"head={optimizer.param_groups[0]['lr']:.3g}, backbone={optimizer.param_groups[1]['lr']:.3g}。", flush=True)
@@ -870,7 +884,7 @@ def run(config, variant="baseline", output=None, resume=None, smoke=False, stop_
                         writer.add_scalar("train/" + key, value, step)
                 print(f"step {step}/{config['steps']} loss={record['total']:.5f} action={record['action']:.5f} "
                       f"KL={record['kl']:.5f} elapsed={record['elapsed_s']:.1f}s", flush=True)
-            if step % config["validation_every"] == 0 or step == config["steps"]:
+            if val_loader is not None and (step % config["validation_every"] == 0 or step == config["steps"]):
                 metrics = validate(model, val_loader, train.normalizer, device, config["precision"],
                                    max_batches=2 if smoke else None)
                 metrics.update(step=step, event="validation", smoke_subset=smoke,
@@ -888,7 +902,7 @@ def run(config, variant="baseline", output=None, resume=None, smoke=False, stop_
                     f"(n={metrics[f'h{h}_valid_samples']})"
                     for h in (0, 4, 9, 29) if metrics.get(f"h{h}_xyz_error_mm") is not None)
                 print(f"prior horizon XYZ: {horizon_text}", flush=True)
-                if metrics["prior_action_l1"] < best:
+                if not fixed_last(config) and metrics["prior_action_l1"] < best:
                     best = metrics["prior_action_l1"]; save("best.pt")
             if step % config["save_every"] == 0 or step == config["steps"] or candidate_due(config, step):
                 save("last.pt")
@@ -912,6 +926,8 @@ def run(config, variant="baseline", output=None, resume=None, smoke=False, stop_
             "engineering_smoke": smoke, "best_prior_action_l1": best if math.isfinite(best) else None,
             "engineering_overfit": is_overfit, "overfit_episode_keys": keys,
             "validation_scope": provenance["validation_scope"],
+            "experiment_protocol": protocol_record(config) if fixed_last(config) else None,
+            "final_checkpoint": "checkpoints/last.pt" if fixed_last(config) and step == config["steps"] else None,
             "continued_from_step": provenance.get("continued_from", {}).get("parent_step"),
             "peak_gpu_allocated_gib": torch.cuda.max_memory_allocated() / 2**30,
             "deployable": False, "human_quality_review": "pending"})
@@ -1009,12 +1025,19 @@ def main(argv=None):
         config["candidate_save_every"] = args.candidate_save_every
     from tasks.registry import get
     task = get(args.task)
-    if not args.config and not args.resume and not args.continue_from:
+    if not args.resume and not args.continue_from:
         from tasks.stages import stage_adapter
         stage_adapter(task, 'training').configure_defaults(config, task, 'act')
     if args.resume or args.continue_from:
         from common.layout import equivalent_binding
-        if config.get('task_id') != task.id or not equivalent_binding(config.get('task_binding'), task.binding()):
+        if fixed_last(config):
+            from tasks.artifacts import check_training_pack
+            frozen = check_training_pack(resolve_path(config['pack_path']), task.id,
+                                         bool(config.get('engineering_only', False)))
+            matches = config.get('task_binding') == frozen['task_binding']
+        else:
+            matches = equivalent_binding(config.get('task_binding'), task.binding())
+        if config.get('task_id') != task.id or not matches:
             raise ValueError('Resume task or sources differ from frozen training configuration')
         if args.pack and args.pack.resolve() != resolve_path(config['pack_path']):
             raise ValueError('Resume cannot switch Pack')
@@ -1025,6 +1048,11 @@ def main(argv=None):
         manifest=json.loads((args.pack/'manifest.json').read_text(encoding='utf-8'))
         config['engineering_only']=bool(manifest.get('engineering_only', False))
         config['pack_manifest_sha256']=file_sha256(args.pack/'manifest.json')
+        if fixed_last(config):
+            from tasks.artifacts import check_training_pack
+            frozen = check_training_pack(args.pack, task.id, config['engineering_only'])
+            config['runtime_task_binding'] = config['task_binding']
+            config['task_binding'] = frozen['task_binding']
     if args.seed is not None:
         config["seed"] = args.seed
     if args.steps is not None:

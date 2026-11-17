@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+from training.protocol import VERSION as PROTOCOL, fixed_last, validate_training_data, record as protocol_record
 import hashlib
 from dataclasses import asdict
 from datetime import datetime
@@ -174,12 +175,13 @@ def validate(model, loader, normalizer, device, config):
     physical_counts = dict.fromkeys(sampled_physical, 0)
     batches = 0
     gesture_sum, gesture_count = 0., 0
-    gesture_confusion = torch.zeros(2, 3, 3, dtype=torch.long)
+    arms = model.config.action_dim // 7
+    gesture_confusion = torch.zeros(arms, 3, 3, dtype=torch.long)
     for i, batch in enumerate(loader):
         if config['validation_batches'] is not None and i >= config['validation_batches']:
             break
         b = move_batch(batch, device)
-        count = int((~b['is_pad']).sum()) * 14
+        count = int((~b['is_pad']).sum()) * model.config.action_dim
         with precision_context(device, config['precision']):
             losses = model.compute_loss(b['images'], b['state'], b['action'], b['is_pad'],
                 generator=noise_rng, **gesture_arguments(model, b))
@@ -199,9 +201,10 @@ def validate(model, loader, normalizer, device, config):
             pred = normalizer.decode_action(prediction.float().cpu().numpy())
             target = normalizer.decode_action(b['action'].float().cpu().numpy())
             valid = ~b['is_pad'].cpu().numpy()
-            for name, columns in (('position_abs_m', [0,1,2,7,8,9]),
-                                  ('rotation_abs_rad', [3,4,5,10,11,12]),
-                                  ('aperture_abs_m', [6,13])):
+            for name, axes in (('position_abs_m', (0, 1, 2)),
+                               ('rotation_abs_rad', (3, 4, 5)),
+                               ('aperture_abs_m', (6,))):
+                columns = [7 * arm + axis for arm in range(arms) for axis in axes]
                 error = pred[..., columns] - target[..., columns]
                 if name == 'rotation_abs_rad':
                     error = (error + np.pi) % (2 * np.pi) - np.pi
@@ -248,6 +251,7 @@ def snapshot_sources(output):
     paths += sorted(path for path in (ROOT/'training/diffusion/official').rglob('*')
                     if path.is_file() and '__pycache__' not in path.parts
                     and path.suffix != '.pyc')
+    paths.append(ROOT/'training/protocol.py')
     hashes = {}
     for path in paths:
         relative = path.relative_to(ROOT)
@@ -275,7 +279,15 @@ def append_metrics(output, writer, event, step, values):
 
 def run(config, pack, task_id, *, output=None, resume=None, engineering=False,
         full_verify=False, stop_after=None, check_only=False):
-    config = copy.deepcopy(validate_config(config))
+    config = copy.deepcopy(config)
+    if resume is None:
+        from tasks.registry import get
+        from tasks.stages import stage_adapter
+        task = get(task_id)
+        config = stage_adapter(task, 'training').configure_defaults(config, task, 'diffusion')
+    if resume is None and not engineering:
+        config.setdefault("experiment_protocol", PROTOCOL)
+    config = validate_config(config)
     torch.set_num_threads(config['cpu_threads'])
     if stop_after is not None and (type(stop_after) is not int or stop_after < 1):
         raise ValueError('stop_after must be a positive number of updates')
@@ -292,14 +304,18 @@ def run(config, pack, task_id, *, output=None, resume=None, engineering=False,
     else:
         binding = prepare_data(pack, task_id, data_config(config),
                                check_hashes=full_verify, engineering=engineering)
+    validate_training_data(config, binding, engineering=engineering)
+    mc = model_config(config)
+    if (mc.state_dim, mc.action_dim) != (binding['state_dim'], binding['action_dim']):
+        raise ValueError('DP model dimensions differ from the frozen Pack schema')
     train = DiffusionDataset(binding, split='train')
-    heldout = DiffusionDataset(binding, split='val')
+    heldout = None if fixed_last(config) else DiffusionDataset(binding, split='val')
     try:
         first = train[0]
         contract = {'task_id': task_id, 'pack_path': str(pack),
                     'images': list(first['images'].shape), 'state': list(first['state'].shape),
                     'action': list(first['action'].shape), 'padding': list(first['is_pad'].shape),
-                    'train_windows': len(train), 'validation_windows': len(heldout),
+                    'train_windows': len(train), 'validation_windows': (len(heldout) if heldout is not None else 0),
                     'validation_level': 'full_hashes' if full_verify else 'format_and_interfaces'}
         if check_only:
             print(json.dumps(contract, ensure_ascii=False, indent=2), flush=True)
@@ -310,7 +326,6 @@ def run(config, pack, task_id, *, output=None, resume=None, engineering=False,
         if device.type == 'cuda' and config['precision'] == 'bf16' and not torch.cuda.is_bf16_supported():
             raise RuntimeError('BF16 is unavailable; use precision=fp32')
         seed(config['seed'])
-        mc = model_config(config)
         model = DiffusionPolicy(mc).to(device)
         ema = EMA(model, config['ema'])
         optimizer = torch.optim.AdamW(model.parameters(), lr=config['learning_rate'],
@@ -322,9 +337,9 @@ def run(config, pack, task_id, *, output=None, resume=None, engineering=False,
         if config['num_workers']:
             options.update(multiprocessing_context='spawn', persistent_workers=True, prefetch_factor=2)
         train_loader = DataLoader(train, batch_sampler=sampler, **options)
-        val_loader = DataLoader(heldout, batch_size=config['batch_size'], shuffle=False,
+        val_loader = (DataLoader(heldout, batch_size=config['batch_size'], shuffle=False,
                                num_workers=0, pin_memory=device.type == 'cuda',
-                               generator=torch.Generator().manual_seed(config['seed'] + 2))
+                               generator=torch.Generator().manual_seed(config['seed'] + 2)) if heldout is not None else None)
         step, best, elapsed_offset = 0, math.inf, 0.
         if resume:
             model.load_state_dict(checkpoint['model'])
@@ -363,7 +378,8 @@ def run(config, pack, task_id, *, output=None, resume=None, engineering=False,
                     'official_commit': json.loads((ROOT/'training/diffusion/official/SOURCE.json').read_text(encoding='utf-8'))['commit'],
                     'packages': {name: package_version(name) for name in ('diffusers', 'robomimic', 'einops')},
                     'gpu': torch.cuda.get_device_name() if device.type == 'cuda' else None},
-                'best_selection': 'EMA validation noise MSE with fixed random draws',
+                'checkpoint_selection': 'completed_last_ema' if fixed_last(config) else 'historical_validation_best',
+                'experiment_protocol': protocol_record(config) if fixed_last(config) else None,
                 'closed_loop_verified': False})
         candidate_signature = run_signature(output, task_id, pack, config, sources)
         if resume:
@@ -372,10 +388,11 @@ def run(config, pack, task_id, *, output=None, resume=None, engineering=False,
             reconcile_resume_candidates(output, candidate_signature, step)
         from torch.utils.tensorboard import SummaryWriter
         writer = SummaryWriter(str(output / 'tensorboard'), purge_step=step if resume else None)
-        print(f'Diffusion Policy | train={len(train)}, val={len(heldout)} windows | output={output}', flush=True)
+        print(f'Diffusion Policy | train={len(train)}, val={(len(heldout) if heldout is not None else 0)} windows | output={output}', flush=True)
         steps_per_epoch = math.ceil(len(train) / config['batch_size'])
         print(f"预算 {config['steps']} 次更新，约 {config['steps']/steps_per_epoch:.2f} 轮；每轮 {steps_per_epoch} 步。", flush=True)
-        print('best 按 EMA 验证噪声 MSE 选择；离线误差不是任务成功率。Ctrl+C 保存 last.pt。', flush=True)
+        print('固定预算 Last EMA；无验证选点。Ctrl+C 在完整更新后保存恢复点。' if fixed_last(config)
+              else '历史验证选点协议。Ctrl+C 保存恢复点。', flush=True)
         iterator = iter(train_loader)
         if checkpoint:
             # Iterator construction consumes a worker seed; restore training RNG afterwards.
@@ -449,7 +466,7 @@ def run(config, pack, task_id, *, output=None, resume=None, engineering=False,
                 final_update = (step == config['steps'] or stop_requested
                                 or (stop_after is not None and step - start_step >= stop_after))
                 validation_record = None
-                if step % config['validation_every'] == 0 or final_update:
+                if val_loader is not None and (step % config['validation_every'] == 0 or final_update):
                     metrics = validate(ema.model, val_loader, train.normalizer, device, config)
                     validation_record = append_metrics(output, writer, 'validation', step, metrics)
                     if metrics['noise_mse'] < best:
@@ -470,7 +487,10 @@ def run(config, pack, task_id, *, output=None, resume=None, engineering=False,
                 signal.signal(signal.SIGINT, previous_handler)
             writer.close()
             write_json(output / 'completion.json', {'status': status, 'step': step,
-                'budget_steps': config['steps'], 'best_noise_mse': best if math.isfinite(best) else None,
+                'budget_steps': config['steps'],
+                'experiment_protocol': protocol_record(config) if fixed_last(config) else None,
+                'final_checkpoint': 'checkpoints/last.pt' if fixed_last(config) and status == 'complete' else None,
+                'best_noise_mse': best if math.isfinite(best) else None,
                 'elapsed_s': elapsed_offset + time.perf_counter() - start,
                 'engineering': engineering, 'closed_loop_verified': False})
             # DataLoader workers hold their own memory maps on Windows.
@@ -479,7 +499,8 @@ def run(config, pack, task_id, *, output=None, resume=None, engineering=False,
         return output
     finally:
         train.close()
-        heldout.close()
+        if heldout is not None:
+            heldout.close()
 
 
 def main(argv=None):

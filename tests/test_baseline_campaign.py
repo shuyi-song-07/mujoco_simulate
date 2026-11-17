@@ -12,9 +12,11 @@ from scripts import run_baseline_campaign as campaign
 class CampaignTests(unittest.TestCase):
     def config_pair(self):
         act = {'test_seeds': list(range(50)), 'max_seconds': 60, 'observation_hz': 30, 'control_hz': 60,
-               'execution': 'temporal_ensemble', 'n_action_steps': 1, 'checkpoint_selection': 'best_validation_prior_action_l1'}
+               'execution': 'temporal_ensemble', 'n_action_steps': 1, 'temporal_ensemble_coeff': .01,
+               'checkpoint_selection': 'fixed_last_training_step',
+               'expected_checkpoint_step': 60000, 'realtime': False}
         dp = dict(act, policy_algorithm='diffusion_policy', execution='chunked', n_action_steps=8,
-                  checkpoint_selection='best_validation_ema_noise_mse')
+                  checkpoint_selection='fixed_last_training_step',expected_checkpoint_step=100000)
         return act, dp
 
     def test_same_case_budget_and_distinct_execution(self):
@@ -24,6 +26,17 @@ class CampaignTests(unittest.TestCase):
             bad = dict(dp, **{field: value})
             with self.subTest(field=field), self.assertRaises(ValueError):
                 campaign.validate_evaluations(act, bad)
+        with self.assertRaises(ValueError):
+            campaign.validate_evaluations(dict(act, execution='chunked', n_action_steps=8), dp)
+
+    def test_act60k_dp100k_budgets_bind_to_evaluation(self):
+        configs={k:campaign.read(campaign.ROOT/'config'/f) for k,f in
+                 [('act','training_baseline.json'),('dp','training_diffusion.json')]}
+        evaluations={k:campaign.read(campaign.ROOT/'config'/f) for k,f in
+                     [('act','evaluation_baseline.json'),('dp','evaluation_diffusion.json')]}
+        campaign.validate_training_configs(configs,evaluations)
+        configs['dp']['steps']=60000
+        with self.assertRaises(ValueError):campaign.validate_training_configs(configs,evaluations)
 
     def test_attach_requires_exact_module_and_output(self):
         run = campaign.ROOT / 'outputs/training/测试实验'

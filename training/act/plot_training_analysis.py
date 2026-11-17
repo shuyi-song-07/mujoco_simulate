@@ -76,6 +76,10 @@ def analysis_context(run, evaluation, *, required=False):
     provenance = run_info["provenance"]
     scope = provenance.get("validation_scope", "overfit_reconstruction"
                            if provenance.get("engineering_overfit") else "heldout_sessions")
+    if scope == "none_all_train":
+        return {"scope": scope, "episodes": 0, "label": "No validation",
+                "population": "all training episodes", "episode_label": "training",
+                "generalization_evidence": False}
     if scope not in ("heldout_sessions", "overfit_reconstruction"):
         raise ValueError(f"Unsupported validation scope: {scope}")
     summary_path = evaluation / "summary.json"
@@ -111,8 +115,27 @@ def log_figures(run, directory, manifest, context=None, max_step=None):
         rows = [row for row in rows if row.get("step", 0) <= max_step]
     train = [row for row in rows if row["event"] == "train"]
     validation = [row for row in rows if row["event"] == "validation"]
-    if not train or not validation:
-        raise ValueError("Both training and validation log records are required.")
+    if not train:
+        raise ValueError("Training log records are required.")
+    if not validation:
+        context = context or analysis_context(run, run / "analysis" / "evaluation")
+        if context["scope"] != "none_all_train":
+            raise ValueError("Missing validation records for historical validation protocol")
+        write_csv(directory / "training_log_points.csv", train)
+        manifest["log_figures"] = {"train_points": len(train), "validation_points": 0,
+            "checkpoint_selection": "completed_last", "validation_scope": "none_all_train",
+            "smoothing": "none", "max_step": max_step}
+        manifest["sources"].append({"path": str(metrics_path), "sha256": sha256(metrics_path)})
+        fig, axes = plt.subplots(2, 2, figsize=(12, 8), layout="constrained")
+        for ax, keys, title in zip(axes.flat, (("total","action"),("kl",),("gradient_norm",),("lr",)),
+                                   ("Training loss", "CVAE KL", "Gradient norm", "Learning rate")):
+            for key in keys:
+                line(ax, train, key, label=key, color=ORANGE if key == "action" else BLUE)
+            ax.set_title(title); ax.legend()
+        fig.suptitle("ACT: all training episodes, fixed budget, completed Last")
+        fig.supxlabel("No held-out validation. Training loss is not task success or generalization evidence.")
+        save_figure(fig, directory, "01_learning_curves", "Training-only raw minibatch metrics; no checkpoint selection by loss.", manifest)
+        return
     best = min(validation, key=lambda row: row["prior_action_l1"])
     run_info = json.loads((run / "run.json").read_text(encoding="utf-8"))
     config = run_info["provenance"]["config"]

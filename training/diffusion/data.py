@@ -13,7 +13,8 @@ import numpy as np
 from dataset.common import training_pack
 from dataset.common.prepare_paper_dataset import digest
 from dataset.common.sequence_stitching import VERSION as SEQUENCE_VERSION
-from training.act.data import ANGLE_COLUMNS, wrap_actions
+from training.act.data import wrap_actions
+from tasks.data_schema import DUAL, descriptor, schema_for
 from training.act.pack_data import (
     PreparedPack, SafeStitchDataset, _close_episode, _metadata, resize_rgb,
 )
@@ -36,14 +37,19 @@ def _data_config(config):
     return result
 
 
-def _fit_statistics(episodes, training_keys):
+def _fit_statistics(episodes, training_keys, *, schema=None):
     """Fit only selected training observations and valid causal action labels."""
-    sine, cosine, action_count, state_count = np.zeros(14), np.zeros(14), 0, 0
-    state_min, state_max = np.full(16, np.inf), np.full(16, -np.inf)
+    layout = schema_for(DUAL if schema is None else schema)
+    sd, ad = layout.state_dim, layout.action_dim
+    angles = [7 * arm + axis for arm in range(len(layout.arm_order)) for axis in (3, 4, 5)]
+    sine, cosine, action_count, state_count = np.zeros(ad), np.zeros(ad), 0, 0
+    state_min, state_max = np.full(sd, np.inf), np.full(sd, -np.inf)
     for key in training_keys:
         arrays = episodes[key]
         state = np.asarray(arrays["state"], np.float64)
         action = np.asarray(arrays["action"], np.float64)[arrays["action_mask"].astype(bool)]
+        if state.ndim != 2 or state.shape[1] != sd or action.ndim != 2 or action.shape[1] != ad:
+            raise ValueError("Normalization input differs from the declared robot schema")
         if not len(state) or not np.isfinite(state).all() or not np.isfinite(action).all():
             raise ValueError("Cannot normalize missing/nonfinite training values")
         state_min = np.minimum(state_min, state.min(0))
@@ -54,12 +60,12 @@ def _fit_statistics(episodes, training_keys):
         action_count += len(action)
     if not action_count:
         raise ValueError("Cannot normalize missing training causal targets")
-    reference = np.zeros(14, np.float64)
-    reference[list(ANGLE_COLUMNS)] = np.arctan2(sine, cosine)[list(ANGLE_COLUMNS)]
-    action_min, action_max = np.full(14, np.inf), np.full(14, -np.inf)
+    reference = np.zeros(ad, np.float64)
+    reference[angles] = np.arctan2(sine, cosine)[angles]
+    action_min, action_max = np.full(ad, np.inf), np.full(ad, -np.inf)
     for key in training_keys:
         arrays = episodes[key]
-        action = wrap_actions(arrays["action"][arrays["action_mask"].astype(bool)], reference)
+        action = wrap_actions(arrays["action"][arrays["action_mask"].astype(bool)], reference, angles)
         if len(action):
             action_min = np.minimum(action_min, action.min(0))
             action_max = np.maximum(action_max, action.max(0))
@@ -67,7 +73,8 @@ def _fit_statistics(episodes, training_keys):
         "state_count": state_count, "action_count": action_count,
         "state_min": state_min.tolist(), "state_max": state_max.tolist(),
         "action_min": action_min.tolist(), "action_max": action_max.tolist(),
-        "action_angle_reference": reference.tolist(), "angle_columns": list(ANGLE_COLUMNS),
+        "action_angle_reference": reference.tolist(), "angle_columns": angles,
+        "data_schema": descriptor(layout),
         "scale_floor": 1e-6, "output_range": [-1, 1], "clip": False}
 
 
@@ -75,16 +82,21 @@ class Normalizer:
     """Frozen train min/max transform; held-out values may exceed [-1, 1]."""
 
     def __init__(self, stats):
+        # Historical DP statistics without a descriptor belong to the original
+        # dual-arm contract. Never infer a new robot merely from vector length.
+        self.schema = schema_for(stats.get("data_schema", DUAL))
+        self.angle_columns = tuple(7 * arm + axis for arm in range(len(self.schema.arm_order))
+                                   for axis in (3, 4, 5))
         if (stats.get("version") != STATS_VERSION or stats.get("fit_split") != "train"
-                or stats.get("angle_columns") != list(ANGLE_COLUMNS)
+                or stats.get("angle_columns") != list(self.angle_columns)
                 or stats.get("clip") is not False):
             raise ValueError("Incompatible frozen diffusion normalization")
         self.stats = copy.deepcopy(stats)
-        self.reference = self._array("action_angle_reference", 14)
+        self.reference = self._array("action_angle_reference", self.schema.action_dim)
         floor = float(stats["scale_floor"])
         if not np.isfinite(floor) or floor <= 0:
             raise ValueError("Invalid normalization scale floor")
-        for name, dim in (("state", 16), ("action", 14)):
+        for name, dim in (("state", self.schema.state_dim), ("action", self.schema.action_dim)):
             low, high = self._array(name+"_min", dim), self._array(name+"_max", dim)
             if np.any(high < low):
                 raise ValueError("Invalid normalization bounds")
@@ -108,11 +120,11 @@ class Normalizer:
         return (np.asarray(value)*self.state_scale+self.state_center).astype(np.float32)
 
     def encode_action(self, value):
-        return ((wrap_actions(value, self.reference)-self.action_center)/self.action_scale).astype(np.float32)
+        return ((wrap_actions(value, self.reference, self.angle_columns)-self.action_center)/self.action_scale).astype(np.float32)
 
     def decode_action(self, value):
         action = np.asarray(value)*self.action_scale+self.action_center
-        action[..., ANGLE_COLUMNS] = (action[..., ANGLE_COLUMNS]+np.pi) % (2*np.pi)-np.pi
+        action[..., self.angle_columns] = (action[..., self.angle_columns]+np.pi) % (2*np.pi)-np.pi
         return action.astype(np.float32)
 
 
@@ -127,6 +139,7 @@ def prepare_data(pack_path, task_id, config, check_hashes=False, engineering=Fal
     root, config = Path(pack_path).resolve(), _data_config(config)
     checked = training_pack.verify(root, check_hashes=check_hashes)
     manifest = checked["manifest"]
+    layout = schema_for(manifest)
     if manifest.get("task_id") != task_id:
         raise ValueError("Cross-task Pack input rejected")
     if bool(manifest.get("engineering_only")) != bool(engineering):
@@ -134,9 +147,9 @@ def prepare_data(pack_path, task_id, config, check_hashes=False, engineering=Fal
     if (manifest.get("version") != training_pack.VERSION
             or manifest.get("sequence_contract") != SEQUENCE_VERSION
             or manifest.get("cameras") != ["oblique"]
-            or manifest.get("state_dim") != 16 or manifest.get("action_dim") != 14
+            or manifest.get("state_dim") != layout.state_dim or manifest.get("action_dim") != layout.action_dim
             or manifest.get("action_alignment") != training_pack.ALIGNMENT):
-        raise ValueError("A complete current S16/A14 single-oblique Safe Stitch Pack is required")
+        raise ValueError("A complete declared S16/A14 or S9/A7 single-oblique Safe Stitch Pack is required")
     split = copy.deepcopy(manifest["split"])
     train_keys = list(split["train"] if selected_train_keys is None else selected_train_keys)
     if (not train_keys or len(set(train_keys)) != len(train_keys)
@@ -155,7 +168,7 @@ def prepare_data(pack_path, task_id, config, check_hashes=False, engineering=Fal
                     for name in ("state", "action", "action_mask")}
         finally:
             _close_episode(episode)
-    stats = _fit_statistics(training_arrays, train_keys)
+    stats = _fit_statistics(training_arrays, train_keys, schema=layout)
     counts = {}
     for side, keys in (("train", train_keys), ("val", split["val"])):
         counts[side] = {"episodes": len(keys)}
@@ -168,7 +181,8 @@ def prepare_data(pack_path, task_id, config, check_hashes=False, engineering=Fal
         manifest_digest=digest(manifest), pack_version=manifest["version"],
         check_hashes=bool(check_hashes), verification=checked["verification"],
         sequence_contract=manifest["sequence_contract"], action_alignment=manifest["action_alignment"],
-        cameras=["oblique"], state_dim=16, action_dim=14, config=config,
+        cameras=["oblique"], state_dim=layout.state_dim, action_dim=layout.action_dim, config=config,
+        data_schema=descriptor(layout),
         chunk_size=config["prediction_horizon"], image_size=config["image_size"],
         cached_image_size=[manifest["config"]["image_width"], manifest["config"]["image_height"]],
         image_transform="whole_frame_PyAV_RGB24_reformat_then_CHW_float32_div255",
@@ -190,6 +204,8 @@ def _validate_binding(binding):
             or binding["chunk_size"] != binding["config"]["prediction_horizon"]
             or binding["image_size"] != binding["config"]["image_size"]):
         raise ValueError("Incompatible diffusion data binding")
+    if Normalizer(binding['stats']).schema != schema_for(binding):
+        raise ValueError("Diffusion normalization differs from the frozen task schema")
 
 
 def restore_data(binding, check_hashes=False):

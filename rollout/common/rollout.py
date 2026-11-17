@@ -1014,33 +1014,44 @@ def main(argv=None):
         sys.stdout.reconfigure(encoding='utf-8')
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--task',required=True)
+    parser.add_argument('--algorithm',choices=('act','diffusion'),
+                        help='prepare时选择模型；有--run时从训练记录自动识别')
     parser.add_argument('--pack',type=Path,help='prepare only: exact verified Pack for both experimental groups')
     parser.add_argument('--engineering',action='store_true',help='Allow completed smoke/overfit model for check or one short preview only')
-    parser.add_argument('--config',type=Path,default=DEFAULT_CONFIG, help='评估配置；默认使用 Task Manifest 的 evaluation_config，单 oblique 输入')
+    parser.add_argument('--config',type=Path, help='显式评估配置；默认组合任务判据与ACT/DP执行配置')
     parser.add_argument('--mode',choices=('check','prepare','preview','batch','summarize'),default='preview',
                         help='check只查来源；prepare固定50初态；preview单次仿真；batch跑50次；summarize重建汇总')
     parser.add_argument('--run',type=Path,help='本次训练目录，包含run.json和checkpoints；不是.pt文件，也不是评估输出目录')
-    parser.add_argument('--checkpoint',type=checkpoint_argument,default='best', help='best、last或ACT step_NNNNNN；固定训练步数选择须在评估配置记录步数与原因')
+    parser.add_argument('--checkpoint',type=checkpoint_argument,default='last', help='正式实验使用完成预算的last；best/step_NNNNNN仅用于历史协议')
     parser.add_argument('--output',type=Path, help='新评估输出目录；summarize时指已有评估目录')
     parser.add_argument('--protocol',type=Path, help='固定50次清单；默认读取配置中的protocol_path')
     parser.add_argument('--workers',type=int,default=1, help='batch并行进程数1至4；不是任务次数，preview固定1')
     parser.add_argument('--device',choices=('cuda','cpu'),default='cuda', help='模型推理设备；本机使用cuda')
     parser.add_argument('--headless',action='store_true',help='preview不弹MuJoCo窗口，仍保存视频；batch默认如此')
     parser.add_argument('--seed',type=int,help='仅preview：独立工程初态种子，不得与示范或固定50次重复')
-    parser.add_argument('--max-seconds',type=float,help='仅preview：单次仿真时间上限；batch使用配置max_seconds并冻结到协议（当前60秒）')
+    parser.add_argument('--max-seconds',type=float,help='仅preview：单次仿真时间上限；batch使用任务配置max_seconds并冻结到协议')
     parser.add_argument('--resume',type=Path,help='已有评估输出目录；条件完全相同时续跑未完成任务，已完成任务不重跑')
     parser.add_argument('--continue-from', type=Path, help='显式新建加速续跑：仅允许all_views转policy_only、仅rollout媒体编排模块变化；保留父批次和混合版本来源')
     args=parser.parse_args(argv)
     from tasks.registry import get
     from common.layout import equivalent_binding
     task=get(args.task)
-    settings=read_json(resolve(task.manifest['evaluation_config'] if args.config == DEFAULT_CONFIG else args.config))
-    settings.update(task_id=task.id, task_binding=task.binding(), scenario=task.manifest['scene_id'],
-                    protocol_path=f'outputs/rollout/{task.id}/protocols/default/protocol.json',
-                    output_root=f'outputs/rollout/{task.id}')
+    algorithm = args.algorithm or 'act'
+    frozen_run = None
     if args.run:
         from rollout.common.policy import read_run_identity
-        frozen_run=read_run_identity(resolve(args.run))
+        frozen_run = read_run_identity(resolve(args.run))
+        detected = 'diffusion' if frozen_run.get('algorithm') == 'diffusion_policy' else 'act'
+        if args.algorithm and args.algorithm != detected:
+            raise ValueError('--algorithm differs from the trained model')
+        algorithm = detected
+    from rollout.common.evaluation_settings import task_evaluation
+    settings = (read_json(resolve(args.config)) if args.config is not None
+                else task_evaluation(task, algorithm))
+    settings.update(task_id=task.id, task_binding=task.binding(), scenario=task.manifest['scene_id'],
+                    protocol_path=f'outputs/rollout/{task.id}/protocols/{algorithm}/default/protocol.json',
+                    output_root=f'outputs/rollout/{task.id}')
+    if args.run:
         if frozen_run.get('task_id')!=task.id or not equivalent_binding(frozen_run.get('task_binding'),task.binding()):
             raise ValueError('Checkpoint/task mismatch')
         settings['pack']=frozen_run['pack']

@@ -45,7 +45,7 @@ def inference_metadata(metadata, settings):
     return result
 
 
-def verify_run(run_dir, checkpoint='best', *, verify_cache=False, allow_engineering=False):
+def verify_run(run_dir, checkpoint='last', *, verify_cache=False, allow_engineering=False):
     """Verify the frozen DP run/selection/interfaces, without opening raw RGB."""
     from dataset.common import training_pack
     from tasks.artifacts import check_artifact
@@ -69,14 +69,17 @@ def verify_run(run_dir, checkpoint='best', *, verify_cache=False, allow_engineer
     candidate = candidate_record(root, checkpoint, signature, config)
     pack = Path(run['pack_path']).resolve()
     manifest = check_artifact(pack, run['task_id'], engineering=engineering)
+    from tasks.data_schema import schema_for, descriptor
+    layout = schema_for(manifest)
     if (binding.get('version') != DATA_VERSION or binding.get('task_id') != run['task_id']
             or binding.get('task_binding') != manifest['task_binding']
             or Path(binding['pack_path']).resolve() != pack
             or binding.get('split') != manifest['split']
             or binding.get('engineering_only') != engineering
             or binding.get('cameras') != ['oblique']
-            or manifest.get('complete') is not True or manifest.get('state_dim') != 16
-            or manifest.get('action_dim') != 14 or manifest.get('cameras') != ['oblique']):
+            or manifest.get('complete') is not True or manifest.get('state_dim') != layout.state_dim
+            or manifest.get('action_dim') != layout.action_dim or manifest.get('cameras') != ['oblique']
+            or schema_for(binding) != layout):
         raise ValueError('DP Pack task/schema/split differs from its frozen run')
     from dataset.common.prepare_paper_dataset import digest
     if binding.get('manifest_digest') != digest(manifest):
@@ -88,6 +91,8 @@ def verify_run(run_dir, checkpoint='best', *, verify_cache=False, allow_engineer
         raise ValueError('DP normalization or training/validation membership differs')
     normalizer = Normalizer(stats)  # Validate all dimensions, finite scales and min-max semantics.
     mc = model_config(config)
+    if (normalizer.schema != layout or (mc.state_dim, mc.action_dim) != (layout.state_dim, layout.action_dim)):
+        raise ValueError('DP model/normalization differs from the frozen robot schema')
     # v1 baseline checkpoints predate the optional gesture fields. Only the
     # dataclass defaults may fill missing fields; frozen values still compare.
     frozen_mc = DiffusionConfig(**run['model_config'])
@@ -113,14 +118,21 @@ def verify_run(run_dir, checkpoint='best', *, verify_cache=False, allow_engineer
             raise ValueError(f'DP checkpoint differs from frozen {key}')
     validations = [json.loads(line) for line in (root/'metrics.jsonl').read_text(encoding='utf-8').splitlines()
                    if line.strip() and json.loads(line).get('event') == 'validation']
-    if not validations or any(not np.isfinite(row['noise_mse']) or row.get('ema') is not True for row in validations):
-        raise ValueError('DP best selection needs finite EMA validation evidence')
-    best = min(validations, key=lambda row: row['noise_mse'])
-    expected_step = candidate['saved_step'] if candidate is not None else (
-        best['step'] if checkpoint == 'best' else completion['step'])
-    if (saved.get('step') != expected_step
-            or not np.isclose(completion['best_noise_mse'], best['noise_mse'], rtol=0, atol=1e-12)):
-        raise ValueError('DP selected checkpoint does not match validation noise MSE selection')
+    from training.protocol import fixed_last, validate_last, validate_training_data
+    if fixed_last(config):
+        validate_training_data(config, binding, engineering=allow_engineering)
+        validate_last(config, completion, saved['step'], checkpoint)
+        if saved.get('ema_updates') != saved['step'] or saved.get('ema_state', {}).get('optimization_step') != saved['step']:
+            raise ValueError('Final EMA does not belong to the completed optimizer step')
+    else:
+        if not validations or any(not np.isfinite(row['noise_mse']) or row.get('ema') is not True for row in validations):
+            raise ValueError('DP best selection needs finite EMA validation evidence')
+        best = min(validations, key=lambda row: row['noise_mse'])
+        expected_step = candidate['saved_step'] if candidate is not None else (
+            best['step'] if checkpoint == 'best' else completion['step'])
+        if (saved.get('step') != expected_step
+                or not np.isclose(completion['best_noise_mse'], best['noise_mse'], rtol=0, atol=1e-12)):
+            raise ValueError('DP selected checkpoint does not match validation noise MSE selection')
     if candidate is not None:
         if (saved.get('candidate_signature') != signature
                 or saved.get('source_sha256') != run['source_sha256']
@@ -152,6 +164,7 @@ def verify_run(run_dir, checkpoint='best', *, verify_cache=False, allow_engineer
         'image_crop_shape': list(mc.crop_shape) if mc.crop_shape is not None else None,
         'observation_horizon': h, 'model_image_shape': [h, 1, 3, *reversed(config['image_size'])],
         'source_image_shape': [480, 640, 3], 'image_size': config['image_size'],
+        'state_dim': layout.state_dim, 'action_dim': layout.action_dim, 'data_schema': descriptor(layout),
         'data_contract': DATA_VERSION, 'action_alignment': manifest['action_alignment'],
         'human_inference_input': False, 'engineering_overfit': engineering,
         'scope': 'user-authorized standalone MuJoCo evaluation; not hardware deployment'}
@@ -159,7 +172,7 @@ def verify_run(run_dir, checkpoint='best', *, verify_cache=False, allow_engineer
 
 
 class DiffusionRolloutPolicy:
-    def __init__(self, run_dir, checkpoint='best', device='cuda', *, verify_cache=False, allow_engineering=False):
+    def __init__(self, run_dir, checkpoint='last', device='cuda', *, verify_cache=False, allow_engineering=False):
         self.metadata, saved, self.normalizer = verify_run(run_dir, checkpoint,
             verify_cache=verify_cache, allow_engineering=allow_engineering)
         self.device = torch.device(device)
@@ -191,9 +204,9 @@ class DiffusionRolloutPolicy:
         if set(images) != {'oblique'}:
             raise ValueError('DP needs exactly one oblique RGB camera')
         image, state = np.asarray(images['oblique']), np.asarray(state)
-        if (image.shape != (480,640,3) or image.dtype != np.uint8 or state.shape != (16,)
+        if (image.shape != (480,640,3) or image.dtype != np.uint8 or state.shape != (self.model.config.state_dim,)
                 or not np.isfinite(state).all()):
-            raise ValueError('DP observation must be RGB uint8 480x640 plus finite S16')
+            raise ValueError(f'DP observation must be RGB uint8 480x640 plus finite S{self.model.config.state_dim}')
         image = resize_rgb(image, self.metadata['image_size']).transpose(2,0,1)[None].astype(np.float32)/255.
         observation = (image, self.normalizer.encode_state(state))
         if not self.history:
@@ -214,7 +227,7 @@ class DiffusionRolloutPolicy:
                        if self.metadata['inference_steps'] != self.model.config.inference_steps else {})
             output = self.model.predict_action(rgb, states, generator=self.generator, **options)
         prediction = output.float().cpu().numpy()[0]
-        if prediction.shape != (self.metadata['chunk_size'],14) or not np.isfinite(prediction).all():
+        if prediction.shape != (self.metadata['chunk_size'],self.model.config.action_dim) or not np.isfinite(prediction).all():
             from rollout.common.policy import InvalidPolicyPrediction
             raise InvalidPolicyPrediction('DP returned a malformed/nonfinite action chunk')
         action = self.normalizer.decode_action(prediction)
