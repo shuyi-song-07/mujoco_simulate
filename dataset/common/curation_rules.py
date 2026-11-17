@@ -1134,6 +1134,8 @@ def select_rows(evidence_rows, config=None):
         for i in range(terminal['completion_index'], len(rows)):
             r = rows[i]
             excluded = i > terminal['last_kept_index']
+            if task_completion and r['frame_role'] == 'INVALID':
+                continue
             r.update(
                 keep=not excluded, effective_keep=not excluded,
                 policy_decision='exclude' if excluded else 'keep',
@@ -1236,9 +1238,9 @@ def resegment_rows(rows):
 
 @scoped
 def derive_episode(episode, config=None):
-    from dataset.task3.frame_evidence import build_frame_evidence
+    from dataset.common.task_evidence import build_task_evidence
     cfg=validate_config(config) if config is not None else load_config()
-    evidence=build_frame_evidence(episode,effective_config(cfg))
+    evidence=build_task_evidence(episode,effective_config(cfg))
     out=select_rows(evidence['rows'],cfg)
     out['events']=evidence.get('events',out['events'])
     out['warnings']=sorted(set(out['warnings']+evidence.get('warnings',[])))

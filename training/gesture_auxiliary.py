@@ -17,8 +17,9 @@ VERSION = "recorded-category-masked-ce-v1"
 def summarize_gesture_confusion(confusion) -> dict:
     """Per-hand class metrics; absent true classes are excluded from macro recall."""
     values = torch.as_tensor(confusion, dtype=torch.float64, device="cpu")
-    if values.shape != (2, 3, 3) or not torch.isfinite(values).all() or (values < 0).any():
-        raise ValueError("Gesture confusion must be finite nonnegative [2, 3, 3]")
+    if (values.ndim != 3 or values.shape[0] not in (1, 2) or values.shape[1:] != (3, 3)
+            or not torch.isfinite(values).all() or (values < 0).any()):
+        raise ValueError("Gesture confusion must be finite nonnegative [hands, 3, 3], hands=1 or 2")
     result = {"categories": list(CATEGORIES)}
     for side, matrix in zip(("left", "right"), values):
         support, predicted = matrix.sum(1), matrix.sum(0)
@@ -43,10 +44,10 @@ def masked_gesture_loss(logits: Tensor, labels: Tensor, valid: Tensor) -> dict[s
     denominator. Returning sufficient statistics avoids averaging unequal
     minibatch coverage in validation.
     """
-    if logits.ndim != 3 or logits.shape[1:] != (2, 3):
-        raise ValueError("gesture logits must have shape [B, 2, 3]")
+    if logits.ndim != 3 or logits.shape[1] not in (1, 2) or logits.shape[2] != 3:
+        raise ValueError("gesture logits must have shape [B, hands, 3], hands=1 or 2")
     if labels.shape != logits.shape[:2] or valid.shape != labels.shape:
-        raise ValueError("gesture labels and masks must have shape [B, 2]")
+        raise ValueError("gesture labels and masks must have shape [B, hands]")
     if labels.dtype != torch.long or valid.dtype != torch.bool:
         raise ValueError("gesture labels must be long and masks must be boolean")
     if labels.device != logits.device or valid.device != logits.device:
@@ -64,6 +65,6 @@ def masked_gesture_loss(logits: Tensor, labels: Tensor, valid: Tensor) -> dict[s
     confusion = torch.stack([torch.bincount(
         (clean_labels[:, side][valid[:, side]] * 3
          + clean_logits[:, side].argmax(-1)[valid[:, side]]), minlength=9).reshape(3, 3)
-        for side in range(2)])
+        for side in range(logits.shape[1])])
     return {"loss": numerator / count.clamp_min(1), "count": count,
             "sum": numerator.detach(), "confusion": confusion.detach()}

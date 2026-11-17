@@ -16,9 +16,10 @@ MODULES=[
     'tests.test_recorded_collection',
     'tests.test_native_source_paths',
     'tests.test_baseline_campaign',
+    'tests.test_fixed_last_protocol',
     *['tests.task3.'+n for n in (
         'test_sequence_stitching','test_event_continuity','test_adjacent_stationarity','test_three_frame_curation','test_wait_compression',
-        'test_height_protection','test_terminal_tail','test_push_task_evidence','test_frame_evidence',
+        'test_height_protection','test_terminal_tail','test_push_task_evidence','test_push_completion_cutoff','test_frame_evidence',
         'test_curation_rules','test_curation_io','test_intent_curation','test_curation_safety','test_review_junction_sources',
         'test_merge_prepared','test_training_pack_union',
         'test_single_view_prepared_pack','test_measurement_journal','test_hand_measurement','test_review_server','test_review_preview',
@@ -32,7 +33,7 @@ MODULES=[
         'test_rollout_collection_sources','test_rollout_checkpoint_selection','test_rollout_lock',
         'test_rollout_candidates','test_gesture_auxiliary','test_gesture_continuation',
         'test_loss_reporting','test_training_plots','test_policy_comparison','test_smoke_continuation_guard','test_rollout_reporting',
-        'test_single_arm_act','test_single_push_executor','test_learning_layout')]
+        'test_single_arm_act','test_single_arm_diffusion','test_single_push_executor','test_learning_layout')]
 ]
 if __name__=='__main__':
     import json

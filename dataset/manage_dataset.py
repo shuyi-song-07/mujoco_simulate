@@ -257,8 +257,9 @@ class DatasetWorkflow:
         else:
             target = Path(output).resolve()
         if resume and split_file is None and (target/'build.json').is_file():
-            split_file = Path(json.loads((target/'build.json').read_text(encoding='utf-8'))['binding']['split_source'])
-        report = self.processing.pack(prepared, target, split_file=split_file or self.create_split(prepared),
+            source = json.loads((target/'build.json').read_text(encoding='utf-8'))['binding']['split_source']
+            split_file = Path(source) if source else None
+        report = self.processing.pack(prepared, target, split_file=split_file,
             width=width, height=height, resume=resume, continue_on_error=continue_on_error)
         if report.get('complete') and not candidate:
             write_navigation(self.output / 'TRAINING_PACK_CURRENT.json', {
@@ -268,12 +269,9 @@ class DatasetWorkflow:
 
 
     def create_split(self, prepared):
-        import hashlib
+        from dataset.splits import all_train
         m=json.loads((Path(prepared)/'manifest.json').read_text(encoding='utf-8'))
-        sessions=sorted({e['session'] for e in m['episodes']},key=lambda s:hashlib.sha256(('20261016:'+s).encode()).hexdigest())
-        if len(sessions)<2:raise ValueError('Need at least two collection sessions for an independent train/val split')
-        n=max(1,round(len(sessions)*.2))
-        doc={'task_id':self.task.id,'seed':20261016,'unit':'whole session','val_sessions':sessions[:n],'train_sessions':sessions[n:]}
+        doc=all_train(m['episodes'])
         folder=self.output/'splits';folder.mkdir(parents=True,exist_ok=True)
         path=folder/('split_'+stamp()+'.json');pipeline.write_json(path,doc)
         return path
@@ -342,6 +340,9 @@ def main(argv=None):
     a.add_argument('--workers',type=int,default=2,help='Independent Prepared source exports, bounded to 1..4')
     a=sub.add_parser('pack');a.add_argument('--prepared',type=Path,required=True);a.add_argument('--split-file',type=Path);a.add_argument('--output',type=Path);a.add_argument('--resume',action='store_true')
     a=sub.add_parser('verify-pack');a.add_argument('--pack',type=Path,required=True)
+    a=sub.add_parser('all-train',help='Create a new all-training Pack by reusing immutable caches; no recropping')
+    a.add_argument('--pack',type=Path,required=True);a.add_argument('--output',type=Path,required=True)
+    a.add_argument('--select',action='store_true',help='Explicitly publish the verified new Pack to CURRENT')
     args=p.parse_args(argv)
     if args.command in ('process','prepare') and not 1 <= args.workers <= 4:
         p.error('--workers must be within 1..4')
@@ -380,6 +381,16 @@ def main(argv=None):
     elif args.command=='pack':
         m=w.pack(args.prepared,args.output,split_file=args.split_file,resume=args.resume)
         print(json.dumps({'complete':m['complete'],'episodes':m['episode_count'],'frames':m['frame_count']},ensure_ascii=False))
+    elif args.command=='all-train':
+        from tasks.artifacts import check_training_pack
+        from dataset.common.training_pack import repartition_all_train
+        check_training_pack(args.pack,args.task,args.engineering)
+        m=repartition_all_train(args.pack,args.output)
+        if args.select:
+            write_navigation(w.output/'TRAINING_PACK_CURRENT.json', {'path':args.output.resolve().as_posix(),
+                'reader':'dataset.common.training_pack.read_episode','training_started':False})
+        print(json.dumps({'complete':True,'episodes':m['episode_count'],'frames':m['frame_count'],
+                          'train':len(m['split']['train']),'val':0,'path':str(args.output.resolve())}))
     elif args.command=='verify-pack':
         from tasks.artifacts import check_artifact
         check_artifact(args.pack,args.task,args.engineering);m=w.processing.verify_pack(args.pack)['manifest']

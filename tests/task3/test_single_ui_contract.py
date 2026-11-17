@@ -24,6 +24,7 @@ class SingleUIContractTests(unittest.TestCase):
     def setUpClass(cls):
         node=shutil.which('node')
         if node is None:raise unittest.SkipTest('Node is required to exercise real browser helpers')
+        cls.node=node
         process=subprocess.run([node,str(Path(__file__).with_name('single_ui_contract_fixture.mjs'))],
             cwd=ROOT,capture_output=True,text=True,encoding='utf-8',check=True)
         cls.fixture=json.loads(process.stdout);cls.config=get('push_t').config()
@@ -41,6 +42,12 @@ class SingleUIContractTests(unittest.TestCase):
         self.assertEqual([p['command'] for p in self.fixture['manualPackets']],['pause','record_start'])
         for packet in self.fixture['manualPackets']:
             self.assertEqual(packet['sentAt'],self.fixture['dispatchEpochMs'])
+
+    def test_real_dispatch_queue_preserves_capture_time(self):
+        process=subprocess.run([self.node,'--test',
+            str(ROOT/'collection/push_t/web/single-dispatch.test.js')],
+            cwd=ROOT,capture_output=True,text=True,encoding='utf-8')
+        self.assertEqual(process.returncode,0,process.stdout+process.stderr)
 
     def test_actual_journal_batches_ack_and_seal_recording_interval(self):
         fixture=self.fixture;checkroot=ROOT/'.local/checks/single_arm_push_t';checkroot.mkdir(parents=True,exist_ok=True)

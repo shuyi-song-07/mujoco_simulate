@@ -1,5 +1,7 @@
 # ACT / DP 的 Gesture 辅助监督对照
 
+当前正式实验采用`all_train_fixed_last_v1`：同算法Baseline/Gesture使用同一全量训练Pack、相同归一化、训练seed、batch与预算；ACT两组60k，DP两组100k，均取完成预算的Last（DP为EMA），A8、相同50个预先固定测试初态。不按Total Loss或测试成功率选择权重。本文后面的Best/验证集选型及2026-11-04成绩是历史设计与证据，不作为新实验规则；本轮没有训练新的Gesture模型。
+
 本实验只增加训练期的左右三分类监督。策略观察仍为单 oblique RGB 640×480 与 S16 机器人状态，输出仍为 K30、A14；机器人动作30 Hz、控制60 Hz、物理500 Hz。不得修改 Raw、裁剪、Safe Stitch、Action 时间对齐、物理保护或成功标准。
 
 2026-11-05起，ACT和DP的Baseline/Gesture都切换到各自固定官方核心与新v2 Checkpoint。下方2026-11-04的ACT90%/80%、DP34%/6%及旧网络/调度描述是历史本地变体结果，不代表新模型表现。两种模型都需在同一Pack分别从头训练，相应旧v1权重不可恢复。当前参数和命令以[RUN_PIPELINE.md](RUN_PIPELINE.md)第4、4.1和5节为准；尚无新版Panda50例成绩。

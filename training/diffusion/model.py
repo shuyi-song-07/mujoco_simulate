@@ -1,7 +1,7 @@
 """Official DP components with only the Paper A observation/action adapter.
 
 Pinned upstream U-Net and crop code retain the original network mathematics.
-Vision is robomimic's VisualCore. Task adaptations are S16/A14, future-only
+Vision is robomimic's VisualCore. Task adaptations are S16/A14 or S9/A7, future-only
 Pack labels, masked invalid targets, K30 alignment and configurable image sizes.
 Old local-variant checkpoints are intentionally incompatible.
 """
@@ -61,8 +61,8 @@ class DiffusionConfig:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"{name} must be a positive integer")
-        if (self.state_dim, self.action_dim) != (16, 14):
-            raise ValueError("Paper A requires state_dim=16 and action_dim=14")
+        if (self.state_dim, self.action_dim) not in ((16, 14), (9, 7)):
+            raise ValueError("Paper A requires the declared S16/A14 or S9/A7 robot layout")
         if self.action_horizon > self.prediction_horizon:
             raise ValueError("action_horizon cannot exceed prediction_horizon")
         if self.inference_steps > self.diffusion_steps:
@@ -174,7 +174,7 @@ class DiffusionPolicy(nn.Module):
         if c.variant == "gesture":
             # Auxiliary classification reads observations only; preserve baseline RNG.
             with torch.random.fork_rng(devices=[]):
-                self.gesture_head = nn.Linear(c.observation_horizon * (c.feature_dim + c.state_dim), 6)
+                self.gesture_head = nn.Linear(c.observation_horizon * (c.feature_dim + c.state_dim), 3 * (c.action_dim // 7))
 
     @property
     def backbone(self):
@@ -260,8 +260,8 @@ class DiffusionPolicy(nn.Module):
             if gesture is None or gesture_mask is None:
                 raise ValueError("Gesture training requires explicit current-anchor labels and masks")
             # Reads RGB/state only: no noisy actions, epsilon, timestep or future.
-            # The six independent rows are two separate three-way classifiers.
-            logits = self.gesture_head(condition).reshape(batch, 2, 3)
+            # One three-way classifier per recorded control hand.
+            logits = self.gesture_head(condition).reshape(batch, c.action_dim // 7, 3)
             auxiliary = masked_gesture_loss(logits, gesture, gesture_mask)
             result.update(loss=loss + c.gesture_weight * auxiliary["loss"],
                           gesture_loss=auxiliary["loss"], gesture_count=auxiliary["count"],

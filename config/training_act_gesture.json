@@ -44,5 +44,6 @@
     "kl": 10.0,
     "gesture": 0.1
   },
-  "lr_scheduler": "constant"
+  "lr_scheduler": "constant",
+  "experiment_protocol": "all_train_fixed_last_v1"
 }

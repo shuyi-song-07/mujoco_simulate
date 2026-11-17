@@ -6,8 +6,9 @@ def validate_model(algorithm, supported):
 
 def configure_defaults(config, task, algorithm, supported):
     validate_model(algorithm, supported)
-    # This is the same ACT new-run dimension selection formerly in main().
-    if algorithm == 'act':
-        schema = task.manifest['schema']
-        config['model'].update(state_dim=schema['state_dim'], action_dim=schema['action_dim'])
+    # Only observation/action projections depend on the robot. Frozen resumes
+    # never call this new-run default resolver.
+    from tasks.data_schema import schema_for
+    schema = schema_for(task.manifest)
+    config['model'].update(state_dim=schema.state_dim, action_dim=schema.action_dim)
     return config

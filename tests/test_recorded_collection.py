@@ -16,6 +16,14 @@ from tasks.registry import validate_binding
 
 
 class RecordedCollectionTests(unittest.TestCase):
+    def test_motion_threshold_is_a_recorded_operator_setting(self):
+        proof = copy.deepcopy(self.provenance)
+        proof['config_differences'].append(
+            {'path': 'gesture_control.motion_score_min', 'current': .75, 'recorded': .5})
+        with recorded_collection_scope(self.recorded, proof) as accepted:
+            self.assertIs(validate_binding(self.recorded), self.task)
+            self.assertEqual(accepted['config_differences'][-1]['recorded'], .5)
+
     def setUp(self):
         self.current = {
             'version': 'papera-task-binding-v1',
@@ -243,6 +251,16 @@ class RecordedInputGroupingTests(unittest.TestCase):
     def test_camera_or_physics_changes_are_not_collection_compatibility(self):
         self.change_recorded(lambda value: value['config']['scene'].update(table_top_z=.4))
         with self.assertRaisesRegex(ValueError, 'Unapproved frozen setting'):
+            self.groups()
+
+    def test_motion_threshold_changes_use_frozen_settings_and_keep_original_binding(self):
+        self.change_recorded(lambda value: value['config']['gesture_control'].update(motion_score_min=.5))
+        group = self.groups()[1]
+        self.assertEqual(group['binding'], self.old)
+        self.assertIn({'path': 'gesture_control.motion_score_min', 'current': .75, 'recorded': .5},
+                      group['provenance']['config_differences'])
+        self.change_recorded(lambda value: value['config']['gesture_control'].update(motion_score_min=True))
+        with self.assertRaisesRegex(ValueError, 'Invalid gesture threshold'):
             self.groups()
 
     def test_another_asset_change_is_rejected(self):

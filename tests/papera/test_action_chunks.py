@@ -1,11 +1,28 @@
 """Causal scheduling, finite validity and rotation-safe ACT aggregation."""
 import unittest
+import json
+from pathlib import Path
 import numpy as np
 
 from rollout.action_chunks import ActionChunkScheduler, InvalidActionChunk, LEGACY, _rotation
 
 
 class ActionChunkTests(unittest.TestCase):
+    def test_act_defaults_and_dp_execution_remain_distinct(self):
+        from training.protocol import record
+        root = Path(__file__).resolve().parents[2]
+        for path in [root/'config/evaluation_baseline.json', *sorted((root/'tasks').glob('*/evaluation.json'))]:
+            config = json.loads(path.read_text(encoding='utf-8'))
+            self.assertEqual(config['execution'], 'temporal_ensemble', str(path))
+            self.assertEqual(config['n_action_steps'], 1)
+            self.assertEqual(config['temporal_ensemble_coeff'], .01)
+        dp = json.loads((root/'config/evaluation_diffusion.json').read_text(encoding='utf-8'))
+        self.assertEqual((dp['execution'], dp['n_action_steps']), ('chunked', 8))
+        for filename, execution, steps in [('training_baseline.json', 'temporal_ensemble', 1),
+                                           ('training_diffusion.json', 'chunked', 8)]:
+            config = json.loads((root/'config'/filename).read_text(encoding='utf-8'))
+            self.assertEqual((record(config)['execution'], record(config)['execute_steps']), (execution, steps))
+
     def test_chunk_offsets_advance_without_extra_model_queries(self):
         calls = []
         def predict():

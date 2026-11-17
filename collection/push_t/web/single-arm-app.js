@@ -50,6 +50,7 @@ async function pump() {
       if(input.command==='continuous_input'&&Date.now()-input.sentAt>engine.parameters.maximum_age_ms)continue;
       // Manual operations are created now; their separately frozen journal
       // boundary is unchanged. Camera actions retain the original capture time.
+      // Two absent event IDs must not classify camera input as a button event.
       const manual=input.command==='pause'||Boolean(operation?.eventId&&operation.eventId===input.eventId);
       const packet=stamped(manual?{...input,sentAt:Date.now()}:input);
       journal.add('dispatch',{event_id:packet.eventId,measurement_id:packet.measurement_id??null,command:packet.command,packet},context());
